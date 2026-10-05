@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 ALLOWLIST = ROOT / "deps-allowlist.txt"
 
+
 # 依赖名 → 规范包名：取 PEP 508 描述里的名字部分（去掉版本区间、extras、环境标记）
 def normalize(spec: str) -> str:
     name = spec.split(";", 1)[0].strip()
@@ -49,7 +50,9 @@ def main() -> int:
         print("[FAIL] 发现未审批的运行期依赖：")
         for name in unapproved:
             print(f"    - {name}")
-        print("  处理：按 docs/项目规则.md §4 提交审批，登记进 docs/03 §6，再加入 deps-allowlist.txt")
+        print(
+            "  处理：按 docs/项目规则.md §4 提交审批，登记进 docs/03 §6，再加入 deps-allowlist.txt"
+        )
         return 1
 
     print(f"[OK] 运行期依赖 {len(deps)} 项，全部在白名单内")

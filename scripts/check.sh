@@ -23,16 +23,18 @@ step() {
   fi
 }
 
+# need <可执行文件> <标签> <命令...>
 need() {
   local tool="$1"; shift
+  local label="$1"; shift
   if have "$tool"; then
-    step "$*" "$@"
+    step "$label" "$@"
   elif [ "$MODE" = "--strict" ]; then
-    echo "==> $*"
+    echo "==> ${label}"
     echo "    [FAIL] 缺少工具：${tool}（--strict 模式下算失败）"
     FAILED=$((FAILED + 1))
   else
-    echo "==> $*"
+    echo "==> ${label}"
     echo "    [SKIP] 未安装 ${tool}；先跑 scripts/bootstrap.sh"
     SKIPPED=$((SKIPPED + 1))
   fi
@@ -40,12 +42,12 @@ need() {
 
 cd "$(dirname "$0")/.." || exit 1
 
-need ruff  "lint"        ruff check src tests
-need ruff  "format"      ruff format --check src tests
+need ruff   "lint"   ruff check src tests scripts
+need ruff   "format" ruff format --check src tests scripts
 
 if [ "$MODE" != "--fast" ]; then
-  need mypy   "types"  mypy src
-  need pytest "tests"  pytest -q
+  need mypy   "types" mypy src
+  need pytest "tests" pytest -q
 fi
 
 if have python; then

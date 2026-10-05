@@ -32,7 +32,12 @@ src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-ignore = ["E501"]  # 行宽交给 formatter
+ignore = [
+    "E501",      # 行宽交给 formatter
+    "RUF001",    # 全宽标点误报：本项目注释/文案是中文，全宽括号引号是正常写法
+    "RUF002",    # 同上（docstring）
+    "RUF003",    # 同上（注释）
+]
 
 [tool.mypy]
 python_version = "3.11"
@@ -46,3 +51,4 @@ strict = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["src"]

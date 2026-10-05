@@ -34,7 +34,7 @@ def rule_body(path: Path) -> str:
 def _first_diff(left: str, right: str, left_name: str, right_name: str) -> None:
     a_lines = left.splitlines()
     b_lines = right.splitlines()
-    for lineno, (x, y) in enumerate(zip(a_lines, b_lines), start=1):
+    for lineno, (x, y) in enumerate(zip(a_lines, b_lines, strict=False), start=1):
         if x != y:
             print(f"  首处差异在第 {lineno} 行：")
             print(f"    {left_name}: {x!r}")
