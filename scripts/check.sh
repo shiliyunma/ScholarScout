@@ -42,11 +42,11 @@ need() {
 
 cd "$(dirname "$0")/.." || exit 1
 
-need ruff   "lint"   ruff check src tests scripts
-need ruff   "format" ruff format --check src tests scripts
+need ruff   "lint"   ruff check src tests scripts eval
+need ruff   "format" ruff format --check src tests scripts eval
 
 if [ "$MODE" != "--fast" ]; then
-  need mypy   "types" mypy src
+  need mypy   "types" mypy src eval
   need pytest "tests" pytest -q
 fi
 

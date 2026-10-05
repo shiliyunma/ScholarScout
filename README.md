@@ -81,6 +81,10 @@ bash scripts/check.sh
 
 # 5) 打开桌面窗口（需要 pywebview，已在依赖白名单里）
 .venv/Scripts/python.exe scripts/scout.py --desktop
+
+# 6) 跑评测（离线集秒级，报告落 eval/reports/）
+.venv/Scripts/python.exe eval/run_eval.py --set all --ablation
+.venv/Scripts/python.exe eval/run_eval.py --set e3 --live   # 端到端，需要 .env 里的密钥与网络
 ```
 
 > ⚠️ **不要用 `pip install -e .`**：项目路径含中文，editable 安装写的 `.pth` 会让解释器启动失败
@@ -103,6 +107,19 @@ python -m scholarscout --rpc 子进程  ← 与 CLI/测试走同一个分发器
 
 界面能做到的三件事：**问**（流式显示工具调用与出处）、**查**（资料库搜索、看摘要与原件位置）、**收**（学习路线、主题地图、抽背卡的展示与导出）。
 `python scripts/scout.py --check-ui` 会校验界面文件齐全、**只调真实存在的 RPC 方法**、且没有任何外网资源。
+
+## 评测（论文第 5 章的数字从这里来）
+
+三套题集 + 一条取数口径（`docs/05-评测方案.md`）：
+
+| 集 | 规模 | 需要模型 | 现状 |
+|---|---|---|---|
+| E1 判权一致性 | 24 条 | 否 | tier 一致率 **100%**（κ 1.000）、verdict 一致率 58.3%（κ 0.444），10 条分歧如实列出 |
+| E2 反幻觉守卫 | 12 条 | 否 | 守卫行为符合预期 **12/12**；关掉守卫时出处覆盖率虚高 96%→79% |
+| E3 端到端 | 6 条 | **是** | 待配置模型密钥后运行 |
+
+对照臂 A_no_rules（撤掉规则表）：tier 一致率从 100% 掉到 **16.7%** —— 规则表确实在干活。
+所有调用类指标（成功率、P50/P95 时延、token）**只从 `tool_traces` / `usage_records` 取数**，不另造一套埋点。
 
 ## 本地化与隐私
 

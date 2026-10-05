@@ -59,6 +59,29 @@ def recency_score(year: int | None, *, current_year: int) -> float:
     return 2.0
 
 
+def term_coverage(term: str, haystack: str) -> float:
+    """单个主题词的覆盖度（0–1）。
+
+    - 整体命中 → 1.0
+    - 否则退到**中文二元组**：一个长主题词（如「教育智能体」）在标题里只出现一半
+      （「人工智能教育课程」）也算部分相关。这是 E1 评测逼出来的改进：
+      纯整体匹配时中文单主题词几乎全灭，全体判成「排除」（见 docs/05 §3.1）。
+    - 单字词或非中文词不做二元组拆解，避免过松
+    """
+    needle = term.lower()
+    if not needle:
+        return 0.0
+    if needle in haystack:
+        return 1.0
+    if len(needle) < MIN_TERM_CHARS + 1:
+        return 0.0
+    bigrams = [needle[index : index + 2] for index in range(len(needle) - 1)]
+    if not bigrams:
+        return 0.0
+    hits = sum(1 for bigram in bigrams if bigram in haystack)
+    return hits / len(bigrams)
+
+
 def local_relevance(
     *,
     title: str,
@@ -69,7 +92,9 @@ def local_relevance(
 ) -> RelevanceResult:
     terms = topic_terms(topic)
     haystack = f"{title}\n{abstract or ''}".lower()
-    hits = [term for term in terms if term.lower() in haystack]
+    coverages = {term: term_coverage(term, haystack) for term in terms}
+    hits = [term for term, value in coverages.items() if value >= 1.0]
+    partial = [term for term, value in coverages.items() if 0.0 < value < 1.0]
     recency = recency_score(year, current_year=current_year)
     bonus = ABSTRACT_BONUS if (abstract or "").strip() else 0.0
 
@@ -86,16 +111,22 @@ def local_relevance(
             reason="未给主题，相关性无法判断（只判权威性）。",
         )
 
-    coverage = len(hits) / len(terms)
+    coverage = sum(coverages.values()) / len(terms)
     topic_score = coverage * 5.0
     score = min(5.0, max(0.0, WEIGHT_TOPIC * topic_score + WEIGHT_RECENCY * recency + bonus))
-    if not hits:
-        # 主题词一个都没中：一票压到不相关区间（否则"新 + 有摘要"能白拿 2 分）
+    if coverage <= 0.0:
+        # 主题词与它的二元组全都没中：一票压到不相关区间（否则"新 + 有摘要"能白拿 2 分）
         score = min(score, NO_HIT_CAP)
     signals: list[dict[str, Any]] = [
         {"name": "topic_terms", "value": terms},
         {"name": "topic_hits", "value": hits},
-        {"name": "topic_coverage", "value": round(coverage, 3), "weight": WEIGHT_TOPIC},
+        {"name": "topic_partial", "value": partial},
+        {
+            "name": "topic_coverage",
+            "value": round(coverage, 3),
+            "weight": WEIGHT_TOPIC,
+            "detail": {term: round(value, 3) for term, value in coverages.items()},
+        },
         {"name": "recency", "value": recency, "weight": WEIGHT_RECENCY, "year": year},
         {"name": "has_abstract", "value": bool(bonus)},
     ]
@@ -103,16 +134,22 @@ def local_relevance(
         score=round(score, 2),
         source="local",
         signals=signals,
-        reason=_local_reason(hits, terms, year, abstract),
+        reason=_local_reason(hits, terms, year, abstract, partial),
     )
 
 
-def _local_reason(hits: list[str], terms: list[str], year: int | None, abstract: str | None) -> str:
+def _local_reason(
+    hits: list[str], terms: list[str], year: int | None, abstract: str | None, partial: list[str]
+) -> str:
     if not terms:
         return "未给主题，相关性只能按时效与信息量粗判。"
-    if not hits:
-        return "标题与摘要里都没有出现主题词，判为不相关。"
-    parts = [f"命中主题词：{'、'.join(hits)}"]
+    if not hits and not partial:
+        return "标题与摘要里既没有主题词、也没有它的二元组，判为不相关。"
+    parts = []
+    if hits:
+        parts.append(f"命中主题词：{'、'.join(hits)}")
+    if partial:
+        parts.append(f"部分命中（中文二元组）：{'、'.join(partial)}")
     if year is not None:
         parts.append(f"年份 {year}")
     if not (abstract or "").strip():

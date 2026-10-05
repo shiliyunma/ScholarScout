@@ -40,7 +40,11 @@ class TierRule:
     def matches(self, *, url: str, domain: str, source_type: str) -> bool:
         pattern = self.pattern
         if self.match_type == "domain":
-            return domain == pattern.lower()
+            # 域名规则**同时覆盖子域**：规则写 `zhihu.com` 要能命中 `zhuanlan.zhihu.com`、
+            # 写 `nature.com` 要能命中 `www.nature.com` —— 否则绝大多数真实链接会漏判成 tier 4
+            # （E1 评测集跑出来的第一条真问题，见 docs/05 §3.1）。
+            lowered = pattern.lower()
+            return domain == lowered or domain.endswith("." + lowered)
         if self.match_type == "domain_suffix":
             return domain.endswith(pattern.lower())
         if self.match_type == "source_type":

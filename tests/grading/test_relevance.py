@@ -67,7 +67,28 @@ def test_local_relevance_no_hits_is_capped_into_irrelevant() -> None:
     )
     assert result.score is not None and result.score <= rel.NO_HIT_CAP
     assert rel.verdict_for(5.0, result.score) == "排除"
-    assert result.reason is not None and "没有出现主题词" in result.reason
+    assert result.reason is not None and "二元组" in result.reason
+
+
+def test_term_coverage_gives_partial_credit_for_chinese_bigrams() -> None:
+    """中文长主题词只出现一半也要给分（否则单主题词几乎全灭，见 docs/05 §3.1）。"""
+    haystack = "人工智能教育课程主页"
+    assert rel.term_coverage("教育智能体", haystack) == pytest.approx(0.5)  # 教育 ✓ / 智能 ✓
+    assert rel.term_coverage("教育智能体", "完全无关的标题") == 0.0
+    assert rel.term_coverage("教育智能体", "教育智能体的检索增强方法") == 1.0
+
+
+def test_local_relevance_partial_hit_lands_in_outer_ring() -> None:
+    result = rel.local_relevance(
+        title="人工智能教育课程主页",
+        abstract=None,
+        topic="教育智能体",
+        year=2026,
+        current_year=2026,
+    )
+    assert result.score is not None
+    assert rel.NO_HIT_CAP < result.score < 5.0
+    assert rel.verdict_for(4.0, result.score) in {"外围", "相关"}
 
 
 def test_local_relevance_ignores_tier_entirely() -> None:

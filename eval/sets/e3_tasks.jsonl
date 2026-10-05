@@ -1,0 +1,6 @@
+{"id": "e3-01", "topic": "教育智能体", "level": "入门", "weeks": 4, "weekly_hours": 6, "query": "educational agent", "request": "帮我找教育智能体方向的入门资料，判一下权威性，再排一条 4 周学习路线"}
+{"id": "e3-02", "topic": "retrieval augmented generation", "level": "进阶", "weeks": 3, "weekly_hours": 8, "query": "retrieval augmented generation survey", "request": "我想系统了解检索增强生成，先找资料再给我一条 3 周的路线"}
+{"id": "e3-03", "topic": "LLM agent tool use", "level": "研究", "weeks": 6, "weekly_hours": 6, "query": "LLM agent tool use benchmark", "request": "调研大模型智能体的工具使用能力，给我能读的论文和最少的必读清单"}
+{"id": "e3-04", "topic": "知识追踪", "level": "入门", "weeks": 4, "weekly_hours": 5, "query": "knowledge tracing deep learning", "request": "知识追踪这个方向我从零开始，先看什么？给我一条路线"}
+{"id": "e3-05", "topic": "教育数据挖掘", "level": "入门", "weeks": 3, "weekly_hours": 5, "query": "educational data mining review", "request": "教育数据挖掘有没有值得读的综述？顺便告诉我入门顺序"}
+{"id": "e3-06", "topic": "大模型评测", "level": "进阶", "weeks": 4, "weekly_hours": 6, "query": "LLM evaluation benchmark", "request": "大模型评测这个方向，我该读哪些论文，怎么安排四周？"}
