@@ -21,7 +21,7 @@ from typing import Any
 from scholarscout.config import Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import ChatReply, LlmClient, LlmError, ToolCall
-from scholarscout.runtime import registry
+from scholarscout.runtime import context_budget, registry
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import sessions, traces
@@ -142,6 +142,8 @@ def run_turn(
 
     executed: list[str] = []
     usage_total: dict[str, int] = {}
+    #: 本轮已发给模型的 source_id —— 同一条来源第二次出现时只回锚点，摘要不再重复计费
+    seen_source_ids: set[str] = set()
     stop_reason = "completed"
     final_text = ""
     error_message: str | None = None
@@ -207,18 +209,26 @@ def run_turn(
 
             for call in reply.tool_calls:
                 result_text, tool_refs, canonical = _execute_tool(
-                    ctx, session_id, turn_id, len(executed), call, emit
+                    ctx,
+                    session_id,
+                    turn_id,
+                    len(executed),
+                    call,
+                    emit,
+                    seen_source_ids=seen_source_ids,
                 )
                 _merge_refs(refs_total, tool_refs)
                 executed.append(canonical)
                 messages.append(
                     {
                         "role": "tool",
+                        "content": result_text,
                         "tool_call_id": call.id,
                         "name": call.name,
-                        "content": result_text,
                     }
                 )
+                # 更早的工具结果折叠成一行：带着 3 万 tokens 的历史一路重发是最贵的写法
+                context_budget.collapse_old_tool_results(messages)
                 sessions.append_message(
                     ctx.db,
                     session_id,
@@ -284,6 +294,8 @@ def _execute_tool(
     step: int,
     call: ToolCall,
     emit: Emitter | None,
+    *,
+    seen_source_ids: set[str] | None = None,
 ) -> tuple[str, dict[str, Any], str]:
     """执行一次工具调用，返回（喂回模型的文本, 该工具报出的 refs, 规范工具名）。
 
@@ -358,7 +370,7 @@ def _execute_tool(
             },
         )
         return (
-            json.dumps(result, ensure_ascii=False),
+            context_budget.project_tool_result(result, seen_source_ids=seen_source_ids),
             (refs if isinstance(refs, dict) else {}),
             canonical,
         )

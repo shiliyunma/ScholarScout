@@ -76,6 +76,14 @@ function esc(text) {
     .replace(/>/g, "&gt;");
 }
 
+/** token 数按人看的写法：12345 → "12.3k"。 */
+function fmtTokens(value) {
+  const n = Number(value || 0);
+  if (!n) return "0";
+  if (n < 1000) return String(n);
+  return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+}
+
 function short(text, n) {
   const value = String(text === null || text === undefined ? "" : text);
   return value.length > n ? value.slice(0, n) + "…" : value;
@@ -290,6 +298,15 @@ async function send(text) {
       result.stop_reason === "completed" ? "ok" : "warn",
       "stop_reason=" + result.stop_reason + "｜工具 " + (result.tool_calls || []).length + " 次"
     );
+    const usage = result.usage || {};
+    if (usage.prompt_tokens || usage.completion_tokens) {
+      // 把每一轮的真实 token 摆出来 —— 用户抱怨"缓存没效果、账单很高"，界面就该给得出数字
+      state.pending.add(
+        "ok",
+        "token 输入 " + fmtTokens(usage.prompt_tokens) + " ／ 输出 " + fmtTokens(usage.completion_tokens) +
+          (usage.cached_tokens ? "（命中缓存 " + fmtTokens(usage.cached_tokens) + "）" : "")
+      );
+    }
     await refreshSide();
     // 首条消息发出后标题才有值 → 刷一次会话列表，让新标题立刻出现
     await loadSessions();
