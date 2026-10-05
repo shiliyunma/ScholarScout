@@ -205,6 +205,137 @@ def record_mention(
 
 def latest_summary(db: Database, doc_id: str) -> dict[str, Any] | None:
     row = db.query_one(
-        "SELECT * FROM summaries WHERE doc_id = ? ORDER BY created_at DESC LIMIT 1", (doc_id,)
+        """
+        SELECT * FROM summaries WHERE doc_id = ?
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+        """,
+        (doc_id,),
     )
     return dict(row) if row is not None else None
+
+
+def latest_summary_for_source(db: Database, source_id: str) -> dict[str, Any] | None:
+    row = db.query_one(
+        """
+        SELECT * FROM summaries WHERE source_id = ?
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+        """,
+        (source_id,),
+    )
+    return dict(row) if row is not None else None
+
+
+def document_for_source(db: Database, source_id: str) -> dict[str, Any] | None:
+    row = db.query_one(
+        """
+        SELECT * FROM documents WHERE source_id = ?
+        ORDER BY fetched_at DESC, rowid DESC LIMIT 1
+        """,
+        (source_id,),
+    )
+    return dict(row) if row is not None else None
+
+
+# --------------------------------------------------------------------- 判权结果（M4）
+
+
+def save_grade(
+    db: Database,
+    *,
+    source_id: str,
+    tier: int,
+    tier_label: str,
+    authority: float,
+    verdict: str,
+    relevance: float | None = None,
+    topic: str | None = None,
+    matched_rule_id: int | None = None,
+    signals: list[dict[str, Any]] | None = None,
+    reason: str | None = None,
+    relevance_source: str | None = None,
+    guard_failed: bool = False,
+    model: str | None = None,
+    prompt_version: str | None = None,
+) -> str:
+    """判权结果**只追加不覆盖**（论文要能回答"这条判断是怎么来的、出自哪版规则/提示词"）。"""
+    grade_id = new_id("grd")
+    db.execute(
+        """
+        INSERT INTO source_grades (id, source_id, topic, tier, tier_label, authority, relevance,
+                                   verdict, matched_rule_id, signals_json, reason, relevance_source,
+                                   guard_failed, model, prompt_version, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            grade_id,
+            source_id,
+            topic,
+            tier,
+            tier_label,
+            authority,
+            relevance,
+            verdict,
+            matched_rule_id,
+            json.dumps(signals or [], ensure_ascii=False),
+            reason,
+            relevance_source,
+            1 if guard_failed else 0,
+            model,
+            prompt_version,
+            now_iso(),
+        ),
+    )
+    return grade_id
+
+
+def apply_tier_to_source(db: Database, source_id: str, *, tier: int, authority: float) -> None:
+    """把判权结果反范式化到 ``sources.tier/authority``（列表筛选要用，不必连表）。"""
+    db.execute(
+        "UPDATE sources SET tier = ?, authority = ? WHERE id = ?", (tier, authority, source_id)
+    )
+
+
+def latest_grade(
+    db: Database, source_id: str, *, topic: str | None = None
+) -> dict[str, Any] | None:
+    if topic is None:
+        row = db.query_one(
+            """
+            SELECT * FROM source_grades WHERE source_id = ?
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
+            """,
+            (source_id,),
+        )
+    else:
+        row = db.query_one(
+            """
+            SELECT * FROM source_grades WHERE source_id = ? AND topic = ?
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
+            """,
+            (source_id, topic),
+        )
+    return dict(row) if row is not None else None
+
+
+def list_grades(
+    db: Database, *, verdict: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    if verdict:
+        rows = db.query(
+            """
+            SELECT g.*, s.title AS source_title, s.url AS source_url
+            FROM source_grades g JOIN sources s ON s.id = g.source_id
+            WHERE g.verdict = ? ORDER BY g.created_at DESC LIMIT ?
+            """,
+            (verdict, limit),
+        )
+    else:
+        rows = db.query(
+            """
+            SELECT g.*, s.title AS source_title, s.url AS source_url
+            FROM source_grades g JOIN sources s ON s.id = g.source_id
+            ORDER BY g.created_at DESC LIMIT ?
+            """,
+            (limit,),
+        )
+    return [dict(r) for r in rows]

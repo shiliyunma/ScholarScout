@@ -20,8 +20,12 @@ def migrations_dir() -> Path:
 
 
 def now_iso() -> str:
-    """带本地时区偏移的 ISO-8601 时间字符串（项目统一的时间格式）。"""
-    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
+    """带本地时区偏移的 ISO-8601 时间字符串（项目统一的时间格式）。
+
+    **带微秒**：同一秒内可能写入多条记录（例如一次判权多行），秒级精度会让
+    ``ORDER BY created_at DESC`` 取到非确定的"最新一条"（踩过）。
+    """
+    return datetime.now(UTC).astimezone().isoformat(timespec="microseconds")
 
 
 def discover(directory: Path | None = None) -> list[tuple[int, Path]]:

@@ -18,6 +18,7 @@ EXPECTED_TABLES = set(DOMAIN_TABLES) | {
     "schema_version",
     "state_meta",
     "source_tier_rules",
+    "source_grades",
     "summaries_fts",
     "messages_fts",
 }
@@ -90,16 +91,31 @@ def test_cascade_delete_removes_documents_and_summaries(db: Database) -> None:
 
 def test_migration_is_idempotent(db: Database) -> None:
     first = current_version(db)
+    assert first == 2
     applied_again = apply_migrations(db)
     assert applied_again == [], "重复执行迁移不应再次应用"
     assert current_version(db) == first
-    assert db.scalar("SELECT count(*) FROM schema_version") == 1
+    assert db.scalar("SELECT count(*) FROM schema_version") == 2
 
 
 def test_migration_files_are_well_named() -> None:
     versions = [number for number, _ in discover()]
     assert versions == sorted(versions)
-    assert versions == [1]
+    assert versions == [1, 2]
+
+
+def test_tier_rules_are_seeded(db: Database) -> None:
+    """分层规则是**数据**：迁移里就要有种子，建库即可用（docs/02 §3）。"""
+    total = db.scalar_int("SELECT count(*) FROM source_tier_rules")
+    assert total >= 30
+    row = db.query_one(
+        "SELECT tier, weight FROM source_tier_rules WHERE match_type = 'domain' AND pattern = 'arxiv.org'"
+    )
+    assert row is not None
+    assert row["tier"] == 1
+    assert (
+        db.scalar_int("SELECT count(*) FROM source_tier_rules WHERE match_type = 'url_regex'") >= 1
+    )
 
 
 def test_target_limits_applied_version(tmp_path) -> None:
