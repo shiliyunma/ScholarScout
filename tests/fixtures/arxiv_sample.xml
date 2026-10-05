@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title>ArXiv Query: search_query=all:"education agent"</title>
+  <entry>
+    <id>http://arxiv.org/abs/2501.00001v2</id>
+    <updated>2025-01-03T00:00:00Z</updated>
+    <published>2025-01-01T00:00:00Z</published>
+    <title>Retrieval-Augmented
+      Education Agents: A Survey</title>
+    <summary>  We survey retrieval-augmented education agents.
+      On MATH the reported accuracy rises from 42% to 58%.
+    </summary>
+    <author><name>Ada Lovelace</name></author>
+    <author><name>Alan Turing</name></author>
+    <arxiv:doi>10.1000/example.1</arxiv:doi>
+    <arxiv:primary_category term="cs.CL"/>
+    <category term="cs.CL"/>
+    <link href="http://arxiv.org/abs/2501.00001v2" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2501.00001v2" rel="related" type="application/pdf"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2502.00002v1</id>
+    <updated>2025-02-02T00:00:00Z</updated>
+    <published>2025-02-02T00:00:00Z</published>
+    <title>Tool Use for Study Planning</title>
+    <summary>A short note on tool-use planning for learners.</summary>
+    <author><name>Grace Hopper</name></author>
+    <arxiv:primary_category term="cs.AI"/>
+    <link href="http://arxiv.org/abs/2502.00002v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2502.00002v1" rel="related" type="application/pdf"/>
+  </entry>
+</feed>
