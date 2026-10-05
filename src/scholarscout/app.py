@@ -61,6 +61,7 @@ def build_context(
             cache_dir=cfg.fetch_cfg.cache_dir(cfg.data_dir.parent),
             cache_ttl_hours=cfg.fetch_cfg.cache_ttl_hours,
             respect_robots=cfg.fetch_cfg.respect_robots,
+            robots_exempt_hosts=cfg.fetch_cfg.robots_exempt_hosts,
         )
 
     register_tools()

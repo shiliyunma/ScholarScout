@@ -206,11 +206,11 @@ def run_turn(
                 break
 
             for call in reply.tool_calls:
-                result_text, tool_refs = _execute_tool(
+                result_text, tool_refs, canonical = _execute_tool(
                     ctx, session_id, turn_id, len(executed), call, emit
                 )
                 _merge_refs(refs_total, tool_refs)
-                executed.append(call.name)
+                executed.append(canonical)
                 messages.append(
                     {
                         "role": "tool",
@@ -284,9 +284,15 @@ def _execute_tool(
     step: int,
     call: ToolCall,
     emit: Emitter | None,
-) -> tuple[str, dict[str, Any]]:
-    """执行一次工具调用，返回（喂回模型的文本, 该工具报出的 refs）。失败也要如实回话并记 trace。"""
+) -> tuple[str, dict[str, Any], str]:
+    """执行一次工具调用，返回（喂回模型的文本, 该工具报出的 refs, 规范工具名）。
+
+    失败也要如实回话并记 trace；规范名用于事件、轨迹与对外结果（线上名只在 API 报文里用）。
+    """
     spec = registry.get_spec(call.name)
+    # 模型回的是**线上名**（research__search），落到 trace/事件里一律用规范名（research.search），
+    # 这样 docs/01 的方法名、指标的取数口径与论文里的名字始终是一份
+    canonical = spec.name if spec is not None else call.name
     _emit(
         emit,
         "chat.tool_call",
@@ -294,7 +300,7 @@ def _execute_tool(
             "turn_id": turn_id,
             "seq": step,
             "call_id": call.id,
-            "tool": call.name,
+            "tool": canonical,
             "args_digest": traces.digest(call.arguments),
             "args_preview": call.arguments[:200],
         },
@@ -306,7 +312,7 @@ def _execute_tool(
             session_id=session_id,
             turn_id=turn_id,
             step=step,
-            tool_name=call.name,
+            tool_name=canonical,
             ok=False,
             args=call.arguments,
             error="tool_not_registered",
@@ -316,7 +322,7 @@ def _execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return message, {}
+        return message, {}, canonical
 
     import time
 
@@ -331,7 +337,7 @@ def _execute_tool(
             session_id=session_id,
             turn_id=turn_id,
             step=step,
-            tool_name=call.name,
+            tool_name=canonical,
             ok=True,
             args=arguments,
             result=result,
@@ -351,7 +357,11 @@ def _execute_tool(
                 "refs": refs,
             },
         )
-        return json.dumps(result, ensure_ascii=False), (refs if isinstance(refs, dict) else {})
+        return (
+            json.dumps(result, ensure_ascii=False),
+            (refs if isinstance(refs, dict) else {}),
+            canonical,
+        )
     except Exception as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
         traces.record_trace(
@@ -359,7 +369,7 @@ def _execute_tool(
             session_id=session_id,
             turn_id=turn_id,
             step=step,
-            tool_name=call.name,
+            tool_name=canonical,
             ok=False,
             args=call.arguments,
             error=f"{type(exc).__name__}: {exc}",
@@ -370,7 +380,7 @@ def _execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return f"工具 {call.name} 执行失败：{exc}", {}
+        return f"工具 {call.name} 执行失败：{exc}", {}, canonical
 
 
 def mark_system_prompt(

@@ -26,10 +26,24 @@ def _clean(text: str | None) -> str:
     return _WS.sub(" ", (text or "").strip())
 
 
+def build_query_expression(text: str) -> str:
+    """把自由文本查询转成 arXiv 的 ``search_query`` 表达式。
+
+    **不要整句加引号**：``all:"educational agent LLM"`` 会被当成一个精确短语，
+    真实检索几乎永远返回 0 条（2026-10-05 真机跑 E3 实测：provider 报 ok 但 n=0，
+    模型只好反复换关键词重试直到烧光预算）。正确做法是**按空格切成词，各自 ``all:`` 并用 AND 连接**，
+    这正是 arXiv API 文档给的写法。中文查询通常没有空格，会原样作为单个词项。
+    """
+    terms = [term for term in _WS.split(_clean(text)) if term][:8]
+    if not terms:
+        return 'all:""'
+    return " AND ".join(f"all:{term}" for term in terms)
+
+
 def build_url(query: Query) -> str:
-    """按 arXiv API 语法拼检索 URL（短语加引号，避免被拆词）。"""
+    """按 arXiv API 语法拼检索 URL（多词用 AND 组合，见 build_query_expression）。"""
     params = {
-        "search_query": f'all:"{query.text}"',
+        "search_query": build_query_expression(query.text),
         "start": 0,
         "max_results": max(1, query.limit),
         "sortBy": "submittedDate" if query.sort == "date" else "relevance",

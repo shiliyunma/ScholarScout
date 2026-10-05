@@ -237,6 +237,37 @@ def test_body_over_limit_is_rejected() -> None:
     assert info.value.kind == "too_large"
 
 
+def test_robots_exempt_hosts_bypass_check_for_official_apis() -> None:
+    """robots.txt 是给爬虫看的，不是给 API 客户端看的。
+
+    arXiv 的 robots 明确禁掉 ``/api/query`` —— 照字面执行会让**官方检索 API** 整体不可用
+    （真机跑 E3 时检索恒返回 0 条，根因就在这里）。
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /api/")
+        return httpx.Response(200, text="<feed/>")
+
+    client = make_client(handler, respect_robots=True)
+    result = client.fetch("https://export.arxiv.org/api/query?search_query=all:test")
+    assert result.text == "<feed/>"
+    assert not any(url.endswith("/robots.txt") for url in seen), "豁免主机不该去读 robots.txt"
+
+
+def test_robots_exemption_does_not_leak_to_other_hosts() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /api/")
+        return httpx.Response(200, text="secret")
+
+    client = make_client(handler, respect_robots=True)
+    with pytest.raises(FetchError):
+        client.fetch("https://evil.example.org/api/query")
+
+
 def test_robots_disallow_blocks_request() -> None:
     seen: list[str] = []
 

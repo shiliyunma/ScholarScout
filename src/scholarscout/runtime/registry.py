@@ -2,10 +2,15 @@
 
 **M2 阶段注册表是空的** —— M3 起在各 ``tools/*.py`` 里用 ``@tool`` 注册。
 空注册表是刻意的：模型只能调用真正注册过的工具，绝不在 loop 里塞假工具或特例分支。
+
+**命名**：注册名是带点的命名空间（``research.search``），这是项目内部与文档里的**规范名**；
+但 OpenAI 兼容 API（DeepSeek 实测）只接受 ``^[a-zA-Z0-9_-]+$``，点号会被 400 拒掉 ——
+所以发给模型时换成 ````（点 → 双下划线），收到调用再映射回来。规范名始终只有一份。
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +19,28 @@ from scholarscout.config import Features
 
 #: 工具集白名单（docs/01 §5.0）
 TOOLSETS = ("research", "kb")
+
+#: API 允许的工具名字符集（DeepSeek / OpenAI 同款校验）
+_WIRE_SAFE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+#: 点号在线上名字里的替代物（双下划线，同样落在允许字符集内）
+_WIRE_SEPARATOR = "__"
+
+
+def wire_name(name: str) -> str:
+    """规范名 → 线上名：``research.search`` → ``research__search``。
+
+    已经是合法字符集的（如 ``kb_search``）原样返回。
+    """
+    return name if _WIRE_SAFE.match(name) else name.replace(".", _WIRE_SEPARATOR)
+
+
+def canonical_name(wire: str) -> str:
+    """线上名 → 规范名。优先按已注册工具精确反查，查不到再按分隔符还原创名。"""
+    for registered in _REGISTRY:
+        if wire_name(registered) == wire:
+            return registered
+    return wire.replace(_WIRE_SEPARATOR, ".")
 
 
 @dataclass(frozen=True)
@@ -28,13 +55,15 @@ class ToolSpec:
     def to_openai(self) -> dict[str, Any]:
         """OpenAI 工具声明。
 
-        层数必须是 ``function.parameters``；写成 ``tools[i]["parameters"]`` 会拿不到参数
-        （本项目踩过的坑，见 docs/03 §7）。
+        - 层数必须是 ``function.parameters``；写成 ``tools[i]["parameters"]`` 会拿不到参数
+          （本项目踩过的坑，见 docs/03 §7）
+        - ``name`` 必须换成**线上名**：点号会被 API 判为非法字符直接 400
+          （2026-10-05 真机跑 E3 才暴露：整个工具层对着 DeepSeek 从来没通过）
         """
         return {
             "type": "function",
             "function": {
-                "name": self.name,
+                "name": wire_name(self.name),
                 "description": self.description,
                 "parameters": self.parameters,
             },
@@ -47,6 +76,9 @@ _REGISTRY: dict[str, ToolSpec] = {}
 def register(spec: ToolSpec, *, replace: bool = False) -> ToolSpec:
     if spec.toolset not in TOOLSETS:
         raise ValueError(f"未知工具集：{spec.toolset!r}（允许：{TOOLSETS}）")
+    if _WIRE_SEPARATOR in spec.name:
+        # 名字里带双下划线会让「线上名 → 规范名」的映射出现歧义，注册时就拦下
+        raise ValueError(f"工具名不得包含双下划线 {_WIRE_SEPARATOR!r}：{spec.name}")
     if spec.name in _REGISTRY and not replace:
         raise ValueError(f"工具名重复：{spec.name}")
     _REGISTRY[spec.name] = spec
@@ -82,7 +114,8 @@ def registered_names() -> list[str]:
 
 
 def get_spec(name: str) -> ToolSpec | None:
-    return _REGISTRY.get(name)
+    """按名字取工具：规范名（``research.search``）与线上名（``research__search``）都认。"""
+    return _REGISTRY.get(name) or _REGISTRY.get(canonical_name(name))
 
 
 def get_tools(

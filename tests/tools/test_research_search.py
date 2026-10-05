@@ -74,7 +74,13 @@ def test_search_reports_unknown_provider_as_not_implemented(ctx: AppContext) -> 
     assert result["refs"]["source_ids"] == []
 
 
-def test_provider_failure_does_not_block_other_sources(ctx: AppContext) -> None:
+def test_total_provider_failure_is_reported_as_failure(ctx: AppContext) -> None:
+    """全部来源都失败：必须 ok=False 并带原因。
+
+    只回 `items: []` 会让模型以为"这个方向没资料"，于是反复重试同一个查询直到烧光工具预算
+    并开始编造（真机跑 E3 实测过）。
+    """
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="arxiv is down")
 
@@ -83,6 +89,25 @@ def test_provider_failure_does_not_block_other_sources(ctx: AppContext) -> None:
     assert status["ok"] is False
     assert "server" in status["error"]
     assert result["data"]["items"] == []
+    assert result["ok"] is False
+    assert "所有检索来源都失败了" in result["error"]
+    assert "arxiv" in result["error"]
+
+
+def test_one_provider_failure_does_not_block_the_others(ctx: AppContext) -> None:
+    """有来源成功时，空结果或部分失败都不算整体失败（失败不阻塞，docs/05 §3.3）。"""
+    xml = FIXTURE.read_text(encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=xml, headers={"content-type": "application/atom+xml"})
+
+    result = research_search(
+        _tool_ctx(ctx, handler), "education agent", sources=["arxiv", "openalex"]
+    )
+    assert result["ok"] is True
+    assert len(result["data"]["items"]) >= 1
+    kinds = {entry["provider"]: entry["ok"] for entry in result["data"]["provider_status"]}
+    assert kinds == {"arxiv": True, "openalex": False}
 
 
 def test_duplicate_sources_are_not_inserted_twice(ctx: AppContext) -> None:

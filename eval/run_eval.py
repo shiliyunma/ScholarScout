@@ -282,6 +282,7 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
                 "id": row["id"],
                 "topic": row["topic"],
                 "stop_reason": result["stop_reason"],
+                "error": result.get("error"),
                 "tool_calls": result["tool_calls"],
                 "elapsed_ms": elapsed_ms,
                 "traces": len(traces_rows),

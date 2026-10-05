@@ -84,7 +84,9 @@ def test_registered_tool_executes_and_is_traced(ctx: AppContext) -> None:
     assert result.tool_calls == ["research.echo"]
     assert result.text == "根据资料，这个方向从三篇综述入手"
     # 工具声明确实传给了模型
-    assert stub.calls[0]["tools"][0]["function"]["name"] == "research.echo"
+    assert stub.calls[0]["tools"][0]["function"]["name"] == "research__echo", (
+        "发给模型的必须是线上名（点号会被 API 拒掉）；而落库与对外结果仍是规范名 research.echo"
+    )
     # 轨迹落库且成功
     row = ctx.db.query_one("SELECT * FROM tool_traces")
     assert row is not None and row["ok"] == 1 and row["tool_name"] == "research.echo"

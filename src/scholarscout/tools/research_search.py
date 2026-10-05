@@ -119,11 +119,35 @@ def research_search(
         source_ids.append(source_id)
         items.append(_card_payload(card, source_id))
 
+    failure = _all_providers_failed(status) if not items else None
+    if failure is not None:
+        return {
+            "ok": False,
+            "error": failure,
+            "data": {"items": [], "provider_status": status, "query": query},
+            "refs": {"source_ids": []},
+        }
+
     return {
         "ok": True,
         "data": {"items": items, "provider_status": status, "query": query},
         "refs": {"source_ids": source_ids},
     }
+
+
+def _all_providers_failed(status: list[dict[str, Any]]) -> str | None:
+    """所有来源都失败且一条都没拿到时，返回一句给人看的原因。
+
+    **为什么必须区分「没结果」与「全失败」**：只回 ``items: []`` 会让模型以为"这个方向没资料"，
+    于是反复重试同一个查询、直到把工具预算烧光并开始编造（2026-10-05 真机跑 E3 实测）。
+    如实回失败原因，模型才会停下来告诉用户「检索通路有问题」。
+    """
+    if not status:
+        return "没有任何可用的检索来源"
+    if any(entry.get("ok") for entry in status):
+        return None  # 有来源成功过：空结果是真实结论，不算失败
+    reasons = "；".join(f"{entry['provider']}: {entry.get('error')}" for entry in status)
+    return f"所有检索来源都失败了（{reasons}）"
 
 
 SPEC = ToolSpec(

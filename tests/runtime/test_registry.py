@@ -74,17 +74,51 @@ def test_openai_declaration_nests_parameters_under_function() -> None:
     spec = registry.register(_spec())
     decl = spec.to_openai()
     assert decl["type"] == "function"
-    assert decl["function"]["name"] == "research.search"
+    # 线上名不能带点：DeepSeek/OpenAI 只接受 ^[a-zA-Z0-9_-]+$，带点直接 400
+    assert decl["function"]["name"] == "research__search"
     # 关键：参数在 function.parameters 里，不是在顶层（踩过的坑）
     assert decl["function"]["parameters"] == SCHEMA
     assert "parameters" not in decl
+
+
+def test_wire_name_has_no_dots_and_is_reversible() -> None:
+    assert registry.wire_name("research.search") == "research__search"
+    assert registry.wire_name("kb_search") == "kb_search"  # 本来就合法就不用动
+    assert registry.canonical_name("research__search") == "research.search"
+    registry.register(_spec("research.search"))
+    # 已注册时优先按注册名反查，不靠字符还原
+    assert registry.canonical_name("research__search") == "research.search"
+
+
+def test_tool_names_sent_to_api_are_all_accepted_by_the_pattern() -> None:
+    """注册名全部转线上名后，必须都落在 API 允许的字符集里（这条拦的是"工具层整体不可用"）。"""
+    import re
+
+    from scholarscout.tools import register_tools
+
+    register_tools()
+    allowed = re.compile(r"^[a-zA-Z0-9_-]+$")
+    for spec in registry.get_tools(["research"]):
+        wire = spec.to_openai()["function"]["name"]
+        assert allowed.match(wire), f"{spec.name} → {wire} 会被 API 拒掉"
+
+
+def test_get_spec_accepts_both_names() -> None:
+    registry.register(_spec("research.search"))
+    assert registry.get_spec("research.search") is not None
+    assert registry.get_spec("research__search") is not None
+
+
+def test_register_rejects_wire_separator_in_name() -> None:
+    with pytest.raises(ValueError, match="双下划线"):
+        registry.register(_spec("research__bad"))
 
 
 def test_openai_tools_helper() -> None:
     registry.register(_spec("research.a"))
     registry.register(_spec("research.b"))
     decls = registry.openai_tools(registry.get_tools(["research"]))
-    assert [d["function"]["name"] for d in decls] == ["research.a", "research.b"]
+    assert [d["function"]["name"] for d in decls] == ["research__a", "research__b"]
     assert registry.openai_tools([]) == []
 
 

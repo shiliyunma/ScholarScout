@@ -22,12 +22,25 @@ def feed_xml() -> str:
     return FIXTURE.read_text(encoding="utf-8")
 
 
-def test_build_url_quotes_phrase_and_sets_limit() -> None:
+def test_build_url_splits_terms_with_and() -> None:
+    """多词查询要按 AND 组合，不能整句加引号（整句短语在真实检索里几乎恒 0 条）。"""
     url = build_url(Query("education agent", limit=5))
-    assert "search_query=all%3A%22education+agent%22" in url
+    assert "search_query=all%3Aeducation+AND+all%3Aagent" in url
+    assert "%22" not in url, "不应出现引号（那会变成精确短语查询）"
     assert "max_results=5" in url
     assert "sortBy=relevance" in url
     assert "sortBy=submittedDate" in build_url(Query("x", sort="date"))
+
+
+def test_build_query_expression_handles_chinese_and_empty() -> None:
+    from scholarscout.providers.arxiv import build_query_expression
+
+    assert build_query_expression("教育智能体") == "all:教育智能体"  # 中文无空格：单词项
+    assert build_query_expression("  a   b ") == "all:a AND all:b"  # 多余空白折叠
+    assert build_query_expression("") == 'all:""'
+    assert (
+        build_query_expression(" ".join(f"t{i}" for i in range(20))).count("AND") == 7
+    )  # 最多 8 词
 
 
 def test_parse_feed_extracts_fields(feed_xml: str) -> None:

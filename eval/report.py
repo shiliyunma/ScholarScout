@@ -193,6 +193,7 @@ def render(results: dict[str, Any]) -> str:
                     _pct(task["coverage"]),
                     str(task["artifacts"]["topic_maps"]) + "/" + str(task["artifacts"]["routes"]),
                     f"{task['elapsed_ms'] / 1000:.1f}s",
+                    (task.get("error") or "—")[:60],
                 ]
                 for task in e3["tasks"]
             ]
@@ -206,11 +207,26 @@ def render(results: dict[str, Any]) -> str:
                         "出处覆盖率",
                         "主题图/路线",
                         "端到端耗时",
+                        "错误",
                     ],
                     rows,
                 ),
                 "",
             ]
+
+            failed = [task for task in e3["tasks"] if task["stop_reason"] != "completed"]
+            if failed:
+                reasons: dict[str, int] = {}
+                for task in failed:
+                    key = (task.get("error") or "未记录原因").split("：")[0]
+                    reasons[key] = reasons.get(key, 0) + 1
+                parts += [
+                    f"### ⚠️ 有 {len(failed)}/{e3['n']} 个任务没有正常完成（原因必须显式列出）",
+                    "",
+                ]
+                for reason, count in sorted(reasons.items(), key=lambda item: -item[1]):
+                    parts += [f"- `{count}` 次：{reason}"]
+                parts += [""]
 
     parts += [
         "## 结论口径提醒",

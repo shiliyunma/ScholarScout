@@ -17,7 +17,7 @@ import hashlib
 import json
 import time
 import urllib.robotparser
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,10 @@ from urllib.parse import urlparse
 import httpx
 
 DEFAULT_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+
+#: 这些主机的 robots.txt 不约束我们：它们是**官方 API**，不是待爬的网页
+#: （arXiv 的 robots 禁止 /api/query，照字面执行会让检索整体不可用）
+DEFAULT_ROBOTS_EXEMPT_HOSTS: tuple[str, ...] = ("export.arxiv.org",)
 _RETRYABLE_STATUS = (429, 500, 502, 503, 504)
 
 
@@ -120,6 +124,7 @@ class HttpClient:
         cache_dir: Path | None = None,
         cache_ttl_hours: float = 6.0,
         respect_robots: bool = True,
+        robots_exempt_hosts: Iterable[str] = DEFAULT_ROBOTS_EXEMPT_HOSTS,
         transport: httpx.BaseTransport | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -133,6 +138,8 @@ class HttpClient:
         self.cache_dir = cache_dir
         self.cache_ttl_hours = cache_ttl_hours
         self.respect_robots = respect_robots
+        #: 跳过 robots 检查的 API 主机（robots 是给爬虫看的，不是给 API 客户端看的）
+        self.robots_exempt_hosts = {host.lower() for host in robots_exempt_hosts}
         self._clock = clock
         self._sleep = sleep
         self._limiter = _RateLimiter(clock, sleep)
@@ -213,11 +220,19 @@ class HttpClient:
     # ---------------------------------------------------------------- robots
 
     def robots_allowed(self, url: str) -> bool:
-        """按 robots.txt 判断是否允许抓取。取不到 robots.txt 时**放行**（并已记日志留痕）。"""
+        """按 robots.txt 判断是否允许抓取。取不到 robots.txt 时**放行**（并已记日志留痕）。
+
+        **豁免**（``robots_exempt_hosts``，默认含 ``export.arxiv.org``）：
+        robots.txt 是给爬虫看的，不是给 API 客户端看的 —— arXiv 的 robots 明确禁掉
+        ``/api/query``，照字面执行会让**官方检索 API** 整体不可用（2026-10-05 真机跑 E3 才暴露：
+        检索恒返回 0 条，模型反复重试直到退化）。所以对白名单里的 API 主机跳过 robots 检查。
+        """
         if not self.respect_robots:
             return True
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return True
+        if parsed.netloc.lower() in self.robots_exempt_hosts:
             return True
         host_key = f"{parsed.scheme}://{parsed.netloc}"
         if host_key not in self._robots:
