@@ -2,6 +2,11 @@
 
 改动这里会改变 ``system_prompt_hash``，写入会话后历史回答就与新版不可比 —— 这是刻意的
 （照 AIHOT 的"提示词版本=内容哈希"思路，见 docs/04 §2）。
+
+**为什么要把流程与预算写死在这里**：2026-10-05 首次真机跑 E3，六个任务里有四个把
+10-12 次工具预算全花在反复 `research.search` 上（连续 8-12 次检索），一次都没走到
+`topic.build_map` / `route.plan`，最终**一件学习产物都没产出**。模型不是不会用这些工具，
+而是没人告诉它"什么时候可以停下来往下走"。所以流程与预算必须是提示词的硬内容。
 """
 
 from __future__ import annotations
@@ -18,13 +23,28 @@ BASE_PROMPT = """你是 ScholarScout，一个面向开放世界的学术调研�
 5. 用户说要学习路线时，按"先读什么、为什么读它、读完能回答什么问题"组织，每条都要挂真实来源。
 6. 资料不足时先说明缺口，并按需向用户澄清一次（不要连续追问）。"""
 
+PIPELINE_PROMPT = """
+调研流程（按顺序走，不要反复回到第一步）：
+1. **检索**：调 research.search。**最多 2-3 次**，换个角度也够了；检索关键词用英文（arXiv 只索引英文），中文只用于主题与摘要。
+2. **取原文**：对最有价值的 **2-3 条**调 source.fetch，拿到摘要与要点即可，不要逐条抓完所有结果。
+3. **判权**：需要区分核心与外围时调 source.grade（不调也可以，检索结果已带 tier）。
+4. **出产物**：这是用户真正要的东西，**必须做**：
+   - 要方向全景 → topic.build_map
+   - 要学习路线 → route.plan（用户的"该怎么学/从哪开始/几周计划"都归这里）
+   - 要总结或抽背卡 → note.save
+5. 最后用自然语言把结果讲清楚，指出哪些结论来自哪些资料。
+
+**预算纪律**：一共大约 10 次工具调用。检索与抓取合计不要超过 5 次，
+把剩下的留给第 4 步的产物 —— **用户要的是路线和地图，不是一长串链接**。
+如果某个方向确实资料稀少，就带着已有资料把产物做出来，并在回答里说明资料有限。"""
+
 CLARIFY_RULE = """
 澄清规则：当检索结果明显不足或问题有多种理解时，你可以反问一次，然后继续推进；
 不要连续追问，也不要把澄清当成不回答的借口。"""
 
 
 def build_system_prompt(*, toolsets: list[str] | None = None, allow_clarify: bool = True) -> str:
-    parts = [BASE_PROMPT]
+    parts = [BASE_PROMPT, PIPELINE_PROMPT]
     if allow_clarify:
         parts.append(CLARIFY_RULE)
     active = ", ".join(toolsets or ["research"])
