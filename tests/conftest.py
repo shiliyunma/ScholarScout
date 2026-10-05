@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from scholarscout.config import Config, Features, LlmProfile, RuntimeProfile
+from scholarscout.providers.llm import ChatReply, ToolCall
+from scholarscout.rpc.methods import AppContext
+from scholarscout.runtime import registry
 from scholarscout.state.db import Database
 from scholarscout.state.migrate import apply_migrations
 
@@ -118,3 +122,63 @@ def seeded(db: Database) -> Database:
     insert_session(db)
     insert_message(db)
     return db
+
+
+# --------------------------------------------------------------------- M2：模型桩与装配
+
+
+class StubLlm:
+    """按预设脚本返回的模型桩。记录每次调用的 messages/tools，供断言。"""
+
+    def __init__(self, *replies: ChatReply) -> None:
+        self.replies: list[ChatReply] = list(replies)
+        self.calls: list[dict[str, object]] = []
+
+    def chat(
+        self,
+        messages: list[dict[str, object]],
+        *,
+        tools: list[dict[str, object]] | None = None,
+    ) -> ChatReply:
+        self.calls.append({"messages": list(messages), "tools": tools})
+        if not self.replies:
+            raise AssertionError("StubLlm 的脚本用完了，用例应显式给出足够的回复")
+        return self.replies.pop(0)
+
+
+def reply(content: str = "好的", *, tool_calls: list[ToolCall] | None = None) -> ChatReply:
+    return ChatReply(
+        content=content,
+        tool_calls=list(tool_calls or []),
+        finish_reason="tool_calls" if tool_calls else "stop",
+        model="stub-model",
+        usage={"prompt_tokens": 11, "completion_tokens": 7},
+    )
+
+
+def tool_call(name: str, arguments: str = "{}", *, call_id: str = "call_1") -> ToolCall:
+    return ToolCall(id=call_id, name=name, arguments=arguments)
+
+
+@pytest.fixture
+def config(tmp_path: Path) -> Config:
+    """测试配置：库在 tmp_path 下，模型档位用假值（不联网）。"""
+    return Config(
+        chat=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
+        summary=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
+        runtime=RuntimeProfile(max_tool_calls_per_turn=3, stream=False, allow_clarify=True),
+        features=Features(enable_kb=False),
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "state.db",
+        raw={},
+    )
+
+
+@pytest.fixture
+def ctx(db: Database, config: Config) -> Iterator[AppContext]:
+    """已装配的应用上下文，模型桩可后置替换（``ctx.llm = StubLlm(...)``）。"""
+    context = AppContext(config=config, db=db, llm=StubLlm(), toolsets=("research",))
+    try:
+        yield context
+    finally:
+        registry.clear_registry()
