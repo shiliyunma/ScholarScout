@@ -1,0 +1,49 @@
+# ===== 模型（密钥请放 .env，不要写这里）=====
+llm:
+  model: "deepseek-chat"
+  base_url: "https://api.deepseek.com/v1"
+  temperature: 0.2
+  max_tokens: 4096
+  timeout_s: 60
+
+# ===== 对话循环 =====
+runtime:
+  max_tool_calls_per_turn: 12     # 防死循环；超限 stop_reason="tool_limit"
+  max_context_chars: 60000        # 超过则压缩历史
+  stream: true
+
+# ===== 检索来源（全部免费无 key；web 未实现）=====
+search:
+  providers: ["arxiv", "openalex", "semantic_scholar"]
+  default_limit: 10
+  per_provider_limit: 8
+  min_interval_s:                 # 限速：每个 provider 的最小请求间隔
+    arxiv: 3.0                    # 踩过的坑：arXiv 连续请求会被 406 限速
+    openalex: 0.5
+    semantic_scholar: 1.0
+  cache_ttl_hours: 6              # 抓取缓存有效期
+
+# ===== 抓取 =====
+fetch:
+  timeout_s: 20
+  retries: 3
+  user_agent: "ScholarScout/0.1 (academic research assistant; contact: <you@example.com>)"
+  max_bytes: 20000000             # 单文件下载上限 20MB
+  respect_robots: true
+
+# ===== 正文分块 =====
+chunk:
+  max_chars: 1200                 # 单块上限（进 FTS 的粒度）
+  overlap_chars: 100
+  max_chunks_per_doc: 400         # 超长文档截断，documents 记 truncated
+
+# ===== 路径 =====
+paths:
+  data_dir: "data"
+  db_path: "run/state.db"
+
+# ===== 装配开关（论文消融用）=====
+features:
+  enable_kb: false                # kb.search 降级通道，默认关
+  enable_topic_map: true
+  enable_route_plan: true

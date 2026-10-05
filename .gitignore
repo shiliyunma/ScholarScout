@@ -1,0 +1,32 @@
+# ===== 本地数据与运行产物（绝不入库）=====
+data/
+run/
+*.db
+*.db-wal
+*.db-shm
+
+# ===== 密钥 =====
+.env
+*.env
+!.env.example
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# ===== 打包 =====
+build/
+dist/
+*.spec
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

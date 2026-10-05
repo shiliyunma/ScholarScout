@@ -1,0 +1,48 @@
+[project]
+name = "scholarscout"
+version = "0.0.1"
+description = "开放世界学术调研与学习辅助智能体（本科毕业设计）"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "httpx>=0.28.1,<1",
+    "PyYAML>=6.0.2,<7",
+    "pywebview>=5.3,<6",
+]
+
+[project.optional-dependencies]
+# 待审批（见 docs/03 §6），未进白名单前不要启用
+pdf = ["pymupdf>=1.24,<2"]
+dev = [
+    "pytest>=8.3,<9",
+    "ruff>=0.7,<1",
+    "mypy>=1.13,<2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scholarscout"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]  # 行宽交给 formatter
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+# 目标：逐步收紧到 strict = true（W2 起）
+strict = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
