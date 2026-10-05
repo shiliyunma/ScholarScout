@@ -12,9 +12,19 @@ __all__: list[str] = []
 def register_tools() -> list[str]:
     """注册本版所有工具，返回注册后的工具名列表。"""
     from scholarscout.runtime import registry
-    from scholarscout.tools import research_search, source_fetch, source_grade
+    from scholarscout.tools import (
+        note_save,
+        research_search,
+        route_plan,
+        source_fetch,
+        source_grade,
+        topic_map,
+    )
 
     research_search.register()
     source_fetch.register()
     source_grade.register()
+    topic_map.register()
+    route_plan.register()
+    note_save.register()
     return registry.registered_names()

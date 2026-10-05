@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from scholarscout import __version__, paths
@@ -17,7 +18,7 @@ from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient, LlmError
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.runtime import loop, registry
-from scholarscout.state import archive, sessions, traces
+from scholarscout.state import archive, learning, sessions, traces
 from scholarscout.state.db import Database
 
 Handler = Callable[["AppContext", dict[str, Any]], Any]
@@ -306,6 +307,89 @@ def archive_paths(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     payload = archive.document_paths(ctx.db, doc_id)
     if payload is None:
         raise RpcError(Code.NOT_FOUND, f"资料不存在：{doc_id}")
+    return payload
+
+
+# --------------------------------------------------------------------- 学习产物
+
+
+@method("topic.get")
+def topic_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    params = _params(params)
+    topic_id = _require(params, "topic_id")
+    payload = learning.get_topic_map(ctx.db, topic_id)
+    if payload is None:
+        raise RpcError(Code.NOT_FOUND, f"主题地图不存在：{topic_id}")
+    return payload
+
+
+@method("route.get")
+def route_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    params = _params(params)
+    route_id = _require(params, "route_id")
+    payload = learning.get_route(ctx.db, route_id)
+    if payload is None:
+        raise RpcError(Code.NOT_FOUND, f"学习路线不存在：{route_id}")
+    return payload
+
+
+@method("route.export")
+def route_export(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """把路线导出成可直接看的 Markdown（条目带 why 与来源链接）。"""
+    params = _params(params)
+    route_id = _require(params, "route_id")
+    payload = learning.get_route(ctx.db, route_id)
+    if payload is None:
+        raise RpcError(Code.NOT_FOUND, f"学习路线不存在：{route_id}")
+
+    plan = payload["plan"]
+    lines = [f"# 学习路线：{payload['topic']}", ""]
+    lines.append(
+        f"- 水平：{payload.get('level') or '未指定'}｜周数：{payload.get('weeks') or len(plan.get('weeks', []))}"
+    )
+    lines.append(f"- 生成方式：{plan.get('mode', 'unknown')}")
+    lines.append("")
+    for week in plan.get("weeks", []):
+        lines.append(f"## 第 {week['idx']} 周：{week.get('goal', '')}")
+        lines.append("")
+        for item in week.get("items", []):
+            source = item.get("source_id")
+            ref = f"（`{source}`）" if source else "（无出处）"
+            lines.append(
+                f"- **{item.get('title', '')}**｜{item.get('kind', '')}｜约 {item.get('est_minutes', 0)} 分钟{ref}"
+            )
+            if item.get("why"):
+                lines.append(f"  - 为什么读它：{item['why']}")
+        if week.get("checkpoint"):
+            lines.append("")
+            lines.append(f"**检查点**：{week['checkpoint']}")
+        lines.append("")
+
+    out = params.get("out")
+    if isinstance(out, str) and out.strip():
+        target = paths.under_data(out.strip())
+    else:
+        target = paths.under_data(Path("notes") / f"route_{route_id}.md")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines), encoding="utf-8")
+    return {"ok": True, "path": paths.rel_to_home(target), "route_id": route_id}
+
+
+@method("note.list")
+def note_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    params = _params(params)
+    kind = params.get("kind") if isinstance(params.get("kind"), str) else None
+    limit = _int_param(params, "limit", 50)
+    return {"items": learning.list_notes(ctx.db, kind=kind, limit=limit)}
+
+
+@method("note.get")
+def note_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    params = _params(params)
+    note_id = _require(params, "note_id")
+    payload = learning.get_note(ctx.db, note_id)
+    if payload is None:
+        raise RpcError(Code.NOT_FOUND, f"笔记不存在：{note_id}")
     return payload
 
 

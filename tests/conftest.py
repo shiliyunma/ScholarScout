@@ -182,3 +182,20 @@ def ctx(db: Database, config: Config) -> Iterator[AppContext]:
         yield context
     finally:
         registry.clear_registry()
+
+
+def tool_ctx(ctx: AppContext):
+    """把应用上下文塞进工具层要的 ToolContext（与真实调用同一形状）。"""
+    from scholarscout.runtime.toolctx import ToolContext
+
+    return ToolContext(db=ctx.db, config=ctx.config, http=getattr(ctx, "http", None), llm=ctx.llm)
+
+
+def redirect_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """把落盘根目录重定向到 tmp，避免用例往仓库的 data/ 里写文件。"""
+
+    from scholarscout import paths
+
+    monkeypatch.setenv("SCHOLARSCOUT_HOME", str(tmp_path))
+    paths.ensure_dirs()
+    return tmp_path
