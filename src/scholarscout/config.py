@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from scholarscout import paths
+from scholarscout.summary.settings import SummarySettings
 
 DEFAULT_CHAT = {
     "model": "deepseek-chat",
@@ -77,6 +78,9 @@ class Config:
     data_dir: Path
     db_path: Path
     raw: dict[str, Any] = field(default_factory=dict)
+    summary_cfg: SummarySettings = field(
+        default_factory=lambda: SummarySettings.from_raw(None, home=paths.home())
+    )
 
     def api_key(self, profile: LlmProfile | None = None) -> str | None:
         return (profile or self.chat).api_key()
@@ -152,4 +156,5 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         data_dir=paths.data_dir(),
         db_path=paths.db_path(),
         raw=raw,
+        summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),
     )
