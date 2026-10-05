@@ -65,26 +65,25 @@
 ## 快速开始
 
 ```bash
-# 1) 建虚拟环境与装依赖（uv）
-uv venv --python 3.11
-uv pip install -e ".[dev]"
+# 1) 建虚拟环境 + 装依赖（已实测可用）
+bash scripts/bootstrap.sh
 
-# 2) 配置
+# 2) 配置（密钥进 .env，设置进 config.yaml）
 cp config.example.yaml config.yaml
 cp .env.example .env            # 填 LLM_API_KEY
 
-# 3) 建库
-python -m scholarscout.state.initdb --db run/state.db
+# 3) 建库（幂等，可重复跑）
+.venv/Scripts/python.exe scripts/scout.py --initdb
 
-# 4) 跑起来
-python -m scholarscout --cli    # 先有 CLI，M2 起接桌面壳
-python -m scholarscout          # 桌面应用（M2 后）
-
-# 5) 门槛
+# 4) 门槛（lint + 类型 + 测试 + 两项校验，一个不过就不合）
 bash scripts/check.sh
 ```
 
-> 当前状态：**规格阶段，M1（骨架与存储）尚未开工**。以上命令是目标形态，尚未可用。
+> ⚠️ **不要用 `pip install -e .`**：项目路径含中文，editable 安装写的 `.pth` 会让解释器启动失败
+> （`UnicodeDecodeError: 'gbk' codec ...`，连 `print(1)` 都跑不了）。装依赖用 `scripts/install_deps.py`，
+> 跑 CLI 用 `scripts/scout.py`。原因链见 `docs/03 §9`。
+>
+> 当前状态：**M1（骨架与存储）已落地并实测通过**（36 个测试绿）；对话与桌面壳在 M2。
 
 ## 本地化与隐私
 
