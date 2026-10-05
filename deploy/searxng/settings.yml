@@ -1,0 +1,21 @@
+# SearxNG 最小配置：只改两处 —— 开启 JSON 输出、收紧到可自用
+#
+# JSON 输出是**必须**的：我们的 provider 走 `format=json`（比抓 HTML 稳）；
+# SearxNG 默认只给 html，必须在这里显式打开，否则接口恒 400/403。
+use_default_settings: true
+
+server:
+  secret_key: "scholarscout-local-only-change-me"
+  limiter: false # 本地自用：关掉防滥用限流，否则同一秒多次查询会被拒
+
+search:
+  # 关键：开启 json（默认只有 html）
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "auto"
+
+ui:
+  static_use_hash: true

@@ -9,6 +9,7 @@ import pytest
 
 from scholarscout.config import Config, Features, LlmProfile, RuntimeProfile
 from scholarscout.providers.llm import ChatReply, ToolCall
+from scholarscout.providers.settings import SearchSettings
 from scholarscout.rpc.methods import AppContext
 from scholarscout.runtime import registry
 from scholarscout.state.db import Database
@@ -162,7 +163,12 @@ def tool_call(name: str, arguments: str = "{}", *, call_id: str = "call_1") -> T
 
 @pytest.fixture
 def config(tmp_path: Path) -> Config:
-    """测试配置：库在 tmp_path 下，模型档位用假值（不联网）。"""
+    """测试配置：库在 tmp_path 下，模型档位用假值（不联网）。
+
+    检索来源**显式钉成 arxiv**：每个测试只 mock 一个 transport handler，
+    若跟随产品默认来源（arxiv+bing）会打出意料之外的请求 —— 测试不该依赖默认值。
+    默认来源的正确性由 ``test_default_providers_are_keyless_and_live_verified`` 单独钉。
+    """
     return Config(
         chat=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
         summary=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
@@ -170,6 +176,7 @@ def config(tmp_path: Path) -> Config:
         features=Features(enable_kb=False),
         data_dir=tmp_path / "data",
         db_path=tmp_path / "state.db",
+        search_cfg=SearchSettings(providers=("arxiv",)),
         raw={},
     )
 

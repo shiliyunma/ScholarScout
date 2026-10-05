@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +143,16 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
     runtime_section = raw.get("runtime", {}) if isinstance(raw.get("runtime"), dict) else {}
     feature_section = raw.get("features", {}) if isinstance(raw.get("features"), dict) else {}
 
+    search_cfg = SearchSettings.from_raw(raw.get("search"))
+    fetch_cfg = FetchSettings.from_raw(raw.get("fetch"))
+    if search_cfg.robots_exempt_hosts():
+        # 只有显式打开"抓搜索结果页"开关时，才把搜索页主机加进 robots 豁免名单；
+        # 默认不动 robots（Bing 的 robots.txt 明确 Disable /search，见 providers/settings.py）
+        fetch_cfg = replace(
+            fetch_cfg,
+            robots_exempt_hosts=(*fetch_cfg.robots_exempt_hosts, *search_cfg.robots_exempt_hosts()),
+        )
+
     return Config(
         chat=_profile(llm_section.get("chat", {}) or {}, DEFAULT_CHAT),
         summary=_profile(llm_section.get("summary", {}) or {}, DEFAULT_SUMMARY),
@@ -162,6 +172,6 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         db_path=paths.db_path(),
         raw=raw,
         summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),
-        fetch_cfg=FetchSettings.from_raw(raw.get("fetch")),
-        search_cfg=SearchSettings.from_raw(raw.get("search")),
+        fetch_cfg=fetch_cfg,
+        search_cfg=search_cfg,
     )

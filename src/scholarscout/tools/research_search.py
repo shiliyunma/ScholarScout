@@ -13,14 +13,23 @@ from typing import Any
 from scholarscout.fetch.http import FetchError
 from scholarscout.providers.arxiv import ArxivProvider
 from scholarscout.providers.base import Query, dedupe_cards
-from scholarscout.providers.settings import KNOWN
+from scholarscout.providers.bing import BingProvider
+from scholarscout.providers.brave import BraveProvider
+from scholarscout.providers.duckduckgo import DuckDuckGoProvider
+from scholarscout.providers.google_cse import GoogleCseProvider
+from scholarscout.providers.searxng import SearxngProvider
+from scholarscout.providers.serper import SerperProvider
+from scholarscout.providers.settings import AUTO, COMMERCIAL_KEYS, KNOWN, api_key_for
+from scholarscout.providers.tavily import TavilyProvider
 from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.ingest import upsert_source
 
 DESCRIPTION = (
-    "在外部学术与公开网络上检索资料。返回带 source_id 的候选清单（已入库，可直接引用），"
+    "在多个来源里检索资料并入库，返回带 source_id 的结果，"
     "并在 provider_status 里报告每个来源的成败。用于回答“这个方向有哪些资料/该怎么入门”。"
+    "来源：arxiv（学术预印本）；bing / duckduckgo / searxng（通用网页检索，免 key）；"
+    "tavily / serper / brave（商用检索，需在 .env 配 key，未配置时会如实报告 missing_api_key）。"
 )
 
 PARAMETERS: dict[str, Any] = {
@@ -46,9 +55,70 @@ PARAMETERS: dict[str, Any] = {
 
 
 def available_providers(ctx: ToolContext) -> dict[str, Any]:
-    """本版已实现的来源（M3 只有 arXiv，其余在 M3 末补齐）。"""
+    """本版所有**可直接用**的来源。
+
+    - 学术：``arxiv``
+    - 通用（免 key）：``searxng``（配了实例地址才有）、``bing``/``duckduckgo``
+      （**仅当** ``search.allow_searchpage_scraping`` 打开才装配 —— Bing robots 禁止 /search）
+    - 商用（需 key）：``tavily`` / ``serper`` / ``brave`` / ``google_cse``（后者还要 ``cx``）
+    """
     http = ctx.require_http()
-    return {"arxiv": ArxivProvider(http)}
+    settings = ctx.config.search_cfg
+    providers: dict[str, Any] = {"arxiv": ArxivProvider(http)}
+    if settings.allow_searchpage_scraping:
+        providers["bing"] = BingProvider(http)
+        providers["duckduckgo"] = DuckDuckGoProvider(http)
+    if settings.searxng_base_url.strip():
+        providers["searxng"] = SearxngProvider(http, base_url=settings.searxng_base_url)
+    for name, factory in (
+        ("tavily", TavilyProvider),
+        ("serper", SerperProvider),
+        ("brave", BraveProvider),
+    ):
+        key = api_key_for(name)
+        if key:
+            providers[name] = factory(http, api_key=key)
+    cse_key = api_key_for("google_cse")
+    if cse_key and settings.google_cse_cx.strip():
+        providers["google_cse"] = GoogleCseProvider(
+            http, api_key=cse_key, cx=settings.google_cse_cx
+        )
+    return providers
+
+
+def unavailable_providers(ctx: ToolContext) -> dict[str, str]:
+    """不可用来源 → 原因。**用户必须能区分"没搜到"与"这层没配"**。"""
+    settings = ctx.config.search_cfg
+    reasons: dict[str, str] = {}
+    if not settings.searxng_base_url.strip():
+        reasons["searxng"] = "missing_config: search.searxng_base_url（自建实例地址）"
+    if not settings.allow_searchpage_scraping:
+        blocked = (
+            "blocked_by_robots: 搜索结果页在 robots.txt 里被禁（Bing 禁 /search）；"
+            "要抓就打开 search.allow_searchpage_scraping，或改用商用 API / 自建 SearxNG"
+        )
+        reasons["bing"] = blocked
+        reasons["duckduckgo"] = blocked + "；另外该站国内需梯子"
+    for name, env_name in COMMERCIAL_KEYS.items():
+        if api_key_for(name) is None:
+            reasons[name] = f"missing_api_key: {env_name}（写在 .env 里）"
+    if api_key_for("google_cse") and not settings.google_cse_cx.strip():
+        reasons["google_cse"] = (
+            "missing_config: search.google_cse_cx（搜索引擎 ID，在 config.yaml）"
+        )
+    for name in ("openalex", "semantic_scholar", "github"):
+        reasons[name] = "not_implemented"
+    return reasons
+
+
+def resolve_wanted(settings: Any, requested: list[str]) -> list[str]:
+    """把 ``auto``（以及"用户点名 + auto"的混写）解析成实际要查的来源，保持顺序、去重。"""
+    names: list[str] = []
+    for name in requested:
+        for resolved in settings.auto_names() if name == AUTO else (name,):
+            if resolved not in names:
+                names.append(resolved)
+    return names
 
 
 def _card_payload(card: Any, source_id: str) -> dict[str, Any]:
@@ -79,8 +149,10 @@ def research_search(
     sort: str = "relevance",
 ) -> dict[str, Any]:
     settings = ctx.config.search_cfg
-    wanted = [str(name) for name in sources] if sources else list(settings.providers)
+    requested = [str(name) for name in sources] if sources else list(settings.providers)
+    wanted = resolve_wanted(settings, requested)
     providers = available_providers(ctx)
+    missing = unavailable_providers(ctx)
     per_provider = max(1, min(int(limit or settings.per_provider_limit), 50))
 
     status: list[dict[str, Any]] = []
@@ -88,7 +160,17 @@ def research_search(
     for name in wanted:
         provider = providers.get(name)
         if provider is None:
-            status.append({"provider": name, "ok": False, "n": 0, "error": "not_implemented"})
+            if name in KNOWN:
+                status.append(
+                    {
+                        "provider": name,
+                        "ok": False,
+                        "n": 0,
+                        "error": missing.get(name, "unavailable"),
+                    }
+                )
+            else:
+                status.append({"provider": name, "ok": False, "n": 0, "error": "unknown_provider"})
             continue
         interval = settings.interval_for(name, provider.min_interval_s)
         try:

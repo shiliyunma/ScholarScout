@@ -51,6 +51,22 @@
 | 2026-10-05 | 复用 Hermes 技术栈，废弃旧 1680 行脚手架 | 上层架构值得学，旧代码可弃；教训（arXiv 限速等）继承 |
 | 2026-10-05 | 原件存本地目录 + 纯文本进 SQLite FTS + 元数据进表 | 备份/迁移/可读三种需求分开满足 |
 | 2026-10-05 | 桌面壳不 import 业务模块，改为拉起 `--rpc` 子进程 | 分发只有一份（CLI/桌面/测试同路径）；后端崩了窗口还在；中文路径编码坑挡在子进程里 |
+| 2026-10-05 | 检索来源分三层：学术（arxiv）/ 通用（SearxNG 自建、商用 API）/ 抓取（默认关） | 抓搜索结果页既违反 robots（Bing 禁 `/search`）又质量差（匿名请求返回词典类结果，实测） |
+| 2026-10-05 | `providers: ["auto"]` —— 只带"现在真能用的"来源 | 填了 key 就自动生效；没配的来源不刷 `missing_api_key`；抓取/需梯子的来源不带上，免得每次检索都撞超时 |
+
+## 检索来源（通用搜索 / 商用搜索）
+
+| 来源 | 类型 | 要什么 | 怎么开 |
+|---|---|---|---|
+| `arxiv` | 学术预印本 | 免 key | 默认开（≥3s 限速，只索引英文） |
+| `searxng` | **通用（推荐）** | 免 key，需自建实例 | `cd deploy/searxng && docker compose up -d`，再把 `search.searxng_base_url` 配成 `http://localhost:8080` |
+| `bing` / `duckduckgo` | 通用（抓结果页） | 免 key | **默认关**：需显式开 `search.allow_searchpage_scraping`（Bing robots 禁 `/search`；DDG 国内需梯子） |
+| `tavily` / `serper` / `brave` / `google_cse` | 商用 API | `.env` 里的 key（`google_cse` 还要 `search.google_cse_cx`） | 填 key 即自动生效（Brave/Google CSE 有免费额度） |
+
+```bash
+# 真机自检：逐个来源打一次真请求，缺 key / 被拦 / 解析失效都会当场说出来
+.venv/Scripts/python.exe scripts/check_search_sources.py --all
+```
 
 ## 文档
 

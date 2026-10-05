@@ -264,6 +264,7 @@ class HttpClient:
         accept: str = DEFAULT_ACCEPT,
         min_interval_s: float = 0.0,
         cache: bool = True,
+        headers: dict[str, str] | None = None,
     ) -> FetchResult:
         if cache:
             cached = self._read_cache(url, accept)
@@ -271,9 +272,51 @@ class HttpClient:
                 return cached
         if not self.robots_allowed(url):
             raise FetchError("forbidden", f"robots.txt 不允许抓取：{url}", url=url)
-        result = self._request_once(url, accept, urlparse(url).netloc, min_interval_s)
+        result = self._request_once(
+            url,
+            accept,
+            urlparse(url).netloc,
+            min_interval_s,
+            headers=headers,
+        )
         if cache:
             self._write_cache(url, accept, result)
+        return result
+
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        accept: str = "application/json",
+        min_interval_s: float = 0.0,
+        cache: bool = True,
+        headers: dict[str, str] | None = None,
+    ) -> FetchResult:
+        """POST 一个 JSON 请求体（商用检索 API 都走 POST）。
+
+        - 出网仍然**只有这一层**：robots、限速、退避、体积上限、缓存都在这里生效
+        - 缓存键 = URL + 请求体哈希（POST 不能只用 URL 做键，否则两次不同查询会串台）
+        """
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        cache_key = f"{url}#post:{hashlib.sha256(body).hexdigest()[:16]}"
+        if cache:
+            cached = self._read_cache(cache_key, accept)
+            if cached is not None:
+                return cached
+        if not self.robots_allowed(url):
+            raise FetchError("forbidden", f"robots.txt 不允许抓取：{url}", url=url)
+        result = self._request_once(
+            url,
+            accept,
+            urlparse(url).netloc,
+            min_interval_s,
+            method="POST",
+            body=body,
+            headers=headers,
+        )
+        if cache:
+            self._write_cache(cache_key, accept, result)
         return result
 
     def _request_once(
@@ -282,14 +325,23 @@ class HttpClient:
         accept: str,
         rate_key: str,
         min_interval_s: float,
+        *,
+        method: str = "GET",
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
     ) -> FetchResult:
         started = self._clock()
         self._limiter.wait(rate_key, min_interval_s)
         last_error: FetchError | None = None
+        request_headers = {"Accept": accept, **(headers or {})}
 
         for attempt in range(self.retries):
             try:
-                response = self._client.get(url, headers={"Accept": accept})
+                if method == "POST":
+                    post_headers = {"Content-Type": "application/json", **request_headers}
+                    response = self._client.post(url, headers=post_headers, content=body)
+                else:
+                    response = self._client.get(url, headers=request_headers)
             except httpx.TimeoutException as exc:
                 last_error = FetchError("timeout", f"请求超时（{self.timeout_s}s）：{url}", url=url)
                 last_error.__cause__ = exc

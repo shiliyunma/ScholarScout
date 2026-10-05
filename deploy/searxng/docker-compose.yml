@@ -1,0 +1,30 @@
+# 自建 SearxNG：把"通用搜索"变成一条自己可控、免 key 的本地服务
+#
+# 为什么是这个方案（而不是抓 Bing/百度的结果页）：
+#   1. 抓结果页要么违反 robots.txt（Bing 明确禁 /search），要么在国内根本不通（DDG）
+#   2. 匿名的结果页质量极差（实测 Bing 对英文查询返回词典/百科类结果）
+#   3. SearxNG 自己聚合多个引擎，返回**结构化 JSON**，比抓 HTML 稳得多
+#
+# 用法：
+#   cd deploy/searxng && docker compose up -d
+#   浏览器验证： http://localhost:8080  （能搜到东西就对了）
+#   接口验证：   curl "http://localhost:8080/search?q=test&format=json" | head -c 200
+#   然后在 config.yaml 里写： search: { searxng_base_url: "http://localhost:8080" }
+#   最后： .venv/Scripts/python.exe scripts/check_search_sources.py --only searxng
+#
+# 国内拉不到镜像时（docker hub 被墙），在 Docker Desktop 设置里配镜像加速，或：
+#   docker pull docker.m.daocloud.io/searxng/searxng:latest
+#   然后 docker tag docker.m.daocloud.io/searxng/searxng:latest searxng/searxng:latest
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: scholarscout-searxng
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_SECRET=scholarscout-local-only-change-me
+    restart: unless-stopped

@@ -32,17 +32,35 @@ summary:
   guard_check_numbers: true       # 数字可溯源守卫（摘要里的数字必须在正文里找得到）
   max_points: 4
 
-# ===== 检索来源（决议 2：先只做免 key 的源）=====
+# ===== 检索来源（学术 / 通用 / 商用，三层）=====
 search:
-  providers: ["arxiv", "openalex", "semantic_scholar", "github"]
+  # 默认来源：auto = 只带"现在真能用的"来源
+  #   arxiv + 已配实例的 searxng + 已配 key 的商用来源（tavily/serper/brave/google_cse）
+  #   抓取类来源（bing/duckduckgo）不进 auto：一个 robots 禁、一个需梯子，带上就每次撞墙
+  providers: ["auto"]
   default_limit: 10
   per_provider_limit: 8
+  # 通用搜索（免 key、推荐）：自建 SearxNG 实例，见 deploy/searxng/
+  #   cd deploy/searxng && docker compose up -d  →  然后填 http://localhost:8080
+  searxng_base_url: ""
+  # Google 可编程搜索的搜索引擎 ID（不是密钥；key 放 .env 的 GOOGLE_CSE_KEY）
+  #   在 https://programmablesearchengine.google.com/ 创建，每天 100 次免费额度
+  google_cse_cx: ""
+  # 是否允许抓搜索结果页（默认 false —— Bing 的 robots.txt 明确 Disable /search）
+  #   打开即把 bing/duckduckgo 主机加进 robots 豁免名单，这是你的选择，不是默认行为
+  allow_searchpage_scraping: false
   min_interval_s:                 # 限速：每个 provider 的最小请求间隔
     arxiv: 3.0                    # 踩过的坑：arXiv 连续请求会被 406 限速
+    bing: 1.0
+    duckduckgo: 1.5
+    searxng: 1.0
+    tavily: 0.5
+    serper: 0.5
+    brave: 1.0
+    google_cse: 0.5
     openalex: 0.5
     semantic_scholar: 1.0
     github: 1.0
-  cache_ttl_hours: 6
 
 # ===== 抓取 =====
 fetch:
