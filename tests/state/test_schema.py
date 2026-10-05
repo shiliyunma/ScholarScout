@@ -91,17 +91,17 @@ def test_cascade_delete_removes_documents_and_summaries(db: Database) -> None:
 
 def test_migration_is_idempotent(db: Database) -> None:
     first = current_version(db)
-    assert first == 4
+    assert first == 5
     applied_again = apply_migrations(db)
     assert applied_again == [], "重复执行迁移不应再次应用"
     assert current_version(db) == first
-    assert db.scalar("SELECT count(*) FROM schema_version") == 4
+    assert db.scalar("SELECT count(*) FROM schema_version") == 5
 
 
 def test_migration_files_are_well_named() -> None:
     versions = [number for number, _ in discover()]
     assert versions == sorted(versions)
-    assert versions == [1, 2, 3, 4]
+    assert versions == [1, 2, 3, 4, 5]
 
 
 def test_tier_rules_are_seeded(db: Database) -> None:

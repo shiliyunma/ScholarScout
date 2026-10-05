@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import sys
 import threading
 import time
@@ -33,11 +34,19 @@ def window_icon() -> str | None:
 
 
 def _open_settings_later(window: Any, delay_s: float = 2.0) -> None:
-    """页面渲染完再打开设置面板（`evaluate_js` 会自己排到 UI 线程，所以可以在子线程里等）。"""
+    """页面渲染完再执行一段 JS（设置面板 / `SCHOLARSCOUT_DEBUG_JS` 指定的排障片段）。
+
+    为什么不在 URL 上加 `#settings`：pywebview 解析 `index.html#settings` 会加载失败，
+    窗口全白（实测）。所以改成页面起来之后再调 JS —— 界面里的函数都是全局的。
+    """
     time.sleep(delay_s)
+    snippet = "if (typeof openSettings === 'function') { openSettings(); }"
+    override = os.environ.get("SCHOLARSCOUT_DEBUG_JS", "").strip()
+    if override:
+        snippet = override
     # 纯排障用途：窗口已经关了 / JS 报错都不该影响应用
     with contextlib.suppress(Exception):
-        window.evaluate_js("if (typeof openSettings === 'function') { openSettings(); }")
+        window.evaluate_js(snippet)
 
 
 def launch(
@@ -88,9 +97,8 @@ def launch(
             细节见 `desktop/icon.py` 的模块说明。
             """
             apply_window_icon(WINDOW_TITLE, ICON_PATH)
-            if open_settings:
-                # 为什么不在 URL 上加 #settings：pywebview 解析 "index.html#settings" 会加载失败，
-                # 窗口全白（实测）。所以改成页面起来之后再调一次 JS —— 界面里的 openSettings 是全局函数。
+            if open_settings or os.environ.get("SCHOLARSCOUT_DEBUG_JS", "").strip():
+                # 排障入口：--open-settings 开设置面板；SCHOLARSCOUT_DEBUG_JS 可直接跑一段 JS
                 thread = threading.Thread(target=_open_settings_later, args=(window,), daemon=True)
                 thread.start()
 

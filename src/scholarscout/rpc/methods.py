@@ -21,7 +21,7 @@ from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient, LlmError, create_client
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.runtime import loop, registry
-from scholarscout.state import archive, learning, sessions, traces
+from scholarscout.state import archive, export_session, learning, sessions, traces
 from scholarscout.state.db import Database
 
 Handler = Callable[["AppContext", dict[str, Any]], Any]
@@ -196,6 +196,50 @@ def session_messages(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         before_idx=int(before) if isinstance(before, int | float) else None,
     )
     return {"items": rows, "has_more": has_more}
+
+
+@method("session.pin")
+def session_pin(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """置顶 / 取消置顶。不碰 `updated_at`（置顶只是换位置，不该假装"最近更新过"）。"""
+    params = _params(params)
+    session_id = _require(params, "session_id")
+    pinned = bool(params.get("pinned", True))
+    if not sessions.set_pinned(ctx.db, session_id, pinned):
+        raise RpcError(Code.NOT_FOUND, f"会话不存在：{session_id}")
+    return {"ok": True, "session_id": session_id, "pinned": pinned}
+
+
+@method("session.delete")
+def session_delete(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """删会话。返回各表删掉的行数 —— 界面要如实告诉用户删掉了什么。
+
+    `keep_artifacts=true` 只删对话，留下这次会话产出的路线/地图/笔记。
+    """
+    params = _params(params)
+    session_id = _require(params, "session_id")
+    keep = bool(params.get("keep_artifacts", False))
+    removed = sessions.delete_session(ctx.db, session_id, keep_artifacts=keep)
+    if removed is None:
+        raise RpcError(Code.NOT_FOUND, f"会话不存在：{session_id}")
+    return {"ok": True, "session_id": session_id, "removed": removed, "kept_artifacts": keep}
+
+
+@method("session.export")
+def session_export(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """导出成可复制的 Markdown：既落一份文件到 `data/exports/`，也把正文回给界面复制。"""
+    params = _params(params)
+    session_id = _require(params, "session_id")
+    try:
+        result = export_session.export_to_file(ctx.db, session_id)
+    except KeyError:
+        raise RpcError(Code.NOT_FOUND, f"会话不存在：{session_id}") from None
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "path": result["path"],
+        "text": result["text"],
+        "chars": len(result["text"]),
+    }
 
 
 # --------------------------------------------------------------------- 对话

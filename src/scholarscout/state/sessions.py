@@ -97,11 +97,11 @@ def list_sessions(db: Database, *, limit: int = 50, offset: int = 0) -> list[dic
     rows = db.query(
         """
         SELECT s.id AS session_id, s.title, s.source, s.model,
-               s.created_at, s.updated_at,
+               s.created_at, s.updated_at, COALESCE(s.pinned, 0) AS pinned,
                (SELECT count(*) FROM messages m WHERE m.session_id = s.id AND m.active = 1)
                    AS message_count
         FROM sessions s
-        ORDER BY s.updated_at DESC
+        ORDER BY COALESCE(s.pinned, 0) DESC, s.updated_at DESC
         LIMIT ? OFFSET ?
         """,
         (limit, offset),
@@ -237,3 +237,49 @@ def rename_session(db: Database, session_id: str, title: str) -> str | None:
         (cleaned, now_iso(), session_id),
     )
     return cleaned if cursor.rowcount else None
+
+
+def set_pinned(db: Database, session_id: str, pinned: bool) -> bool:
+    """置顶/取消置顶。
+
+    **故意不碰 updated_at**：置顶只是换个位置，不该把它顶成"最近更新过"，
+    否则取消置顶之后它会莫名其妙地跑到列表最前面。
+    """
+    cursor = db.execute(
+        "UPDATE sessions SET pinned = ? WHERE id = ?",
+        (1 if pinned else 0, session_id),
+    )
+    return bool(cursor.rowcount)
+
+
+#: 删会话时会一起清掉的**会话内**表（外键级联的也算在内，便于报数）
+_SESSION_TABLES = ("messages", "tool_traces", "source_mentions")
+#: 会话里产出的学习产物（要不要跟着删由 keep_artifacts 决定）
+_ARTIFACT_TABLES = ("topic_maps", "learning_routes", "notes")
+
+
+def delete_session(
+    db: Database, session_id: str, *, keep_artifacts: bool = False
+) -> dict[str, int] | None:
+    """删掉一次会话，返回各表删掉的行数；会话不存在返回 None。
+
+    边界（都是踩过的/想过的坑）：
+
+    - `messages` / `tool_traces` 有外键级联（`db.py` 开了 `PRAGMA foreign_keys=ON`），
+      但 `source_mentions` **没有**外键 → 必须显式删，否则留下指不到会话的引用行；
+    - 产物（`topic_maps` / `learning_routes` / `notes`）默认一起删（用户点"删除会话"的
+      预期是这次会话连同产出一起消失），`keep_artifacts=True` 可只删对话；
+    - **`summaries` 与 `usage_records` 一律保留**：前者属于资料库（不属于某次对话），
+      后者是花费账本 —— 账本不该因为删对话被改写。
+    """
+    if db.query_one("SELECT id FROM sessions WHERE id = ?", (session_id,)) is None:
+        return None
+
+    victims = list(_SESSION_TABLES) + ([] if keep_artifacts else list(_ARTIFACT_TABLES))
+    counts: dict[str, int] = {}
+    with db.transaction() as conn:
+        for table in victims:
+            cursor = conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+            counts[table] = int(cursor.rowcount or 0)
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    return counts

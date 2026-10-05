@@ -104,6 +104,23 @@
     </div>
   </div>
 
+  <div id="textmodal" class="overlay" hidden>
+    <div class="sheet">
+      <div class="sheet-head">
+        <strong id="textmodal-title">导出</strong>
+        <span class="hint" id="textmodal-note"></span>
+        <button id="btn-textmodal-copy" type="button">复制</button>
+        <button id="btn-textmodal-close" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="sheet-body">
+        <textarea id="textmodal-body" readonly spellcheck="false"></textarea>
+      </div>
+      <div class="sheet-foot">
+        <span class="hint" id="textmodal-path"></span>
+      </div>
+    </div>
+  </div>
+
   <script src="markdown.js"></script>
   <script src="app.js"></script>
 </body>

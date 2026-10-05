@@ -130,7 +130,11 @@ function renderSessions(items) {
   items.forEach(function (item) {
     const li = document.createElement("li");
     if (item.session_id === state.sessionId) li.className = "is-active";
+    if (item.pinned) li.classList.add("is-pinned");
+    // 置顶要有可见标记：不然用户点了置顶只看到顺序变了，不知道是不是生效了
+    const badge = item.pinned ? '<span class="pin-flag" title="已置顶">顶</span>' : "";
     li.innerHTML =
+      badge +
       esc(short(item.title || "未命名会话", 16)) +
       '<span class="meta">' +
       esc(short(item.updated_at || "", 16)) +
@@ -145,6 +149,7 @@ function renderSessions(items) {
       event.stopPropagation();
       startRename(item, li);
     });
+    li.appendChild(rowMenuButton(item, li));
     list.appendChild(li);
   });
 }
@@ -1352,7 +1357,156 @@ async function saveSettings() {
   }
 }
 
+/* ---------------------------------------------------------- 会话行菜单 */
+
+function rowMenuButton(item, li) {
+  var button = document.createElement("button");
+  button.type = "button";
+  button.className = "row-menu-btn";
+  button.textContent = "⋯";
+  button.title = "更多：置顶 / 重命名 / 分享 / 删除";
+  button.addEventListener("click", function (event) {
+    event.stopPropagation(); // 别顺手把会话打开/收起
+    toggleRowMenu(item, li);
+  });
+  return button;
+}
+
+function toggleRowMenu(item, li) {
+  var already = li.querySelector(".row-menu");
+  closeRowMenus();
+  if (already) return; // 再点一次就是收起
+  var menu = document.createElement("div");
+  menu.className = "row-menu";
+  var rows = [
+    [item.pinned ? "取消置顶" : "置顶", function () { pinSession(item); }, false],
+    ["重命名", function () { closeRowMenus(); startRename(item, li); }, false],
+    ["分享（导出 Markdown）", function () { exportSession(item); }, false],
+    ["", null, false],
+    ["删除会话", function () { deleteSession(item); }, true],
+  ];
+  rows.forEach(function (row) {
+    if (!row[1]) {
+      var sep = document.createElement("div");
+      sep.className = "sep";
+      menu.appendChild(sep);
+      return;
+    }
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = row[0];
+    button.className = row[2] ? "is-danger" : "";
+    button.addEventListener("click", function (event) {
+      event.stopPropagation();
+      row[1]();
+    });
+    menu.appendChild(button);
+  });
+  li.appendChild(menu);
+  // 点别处就收起（菜单项自己会 stopPropagation，所以只有真的点到外面才关）
+  setTimeout(function () {
+    document.addEventListener("click", closeRowMenus, { once: true });
+  }, 0);
+}
+
+function closeRowMenus() {
+  document.querySelectorAll(".row-menu").forEach(function (node) {
+    node.remove();
+  });
+}
+
+async function pinSession(item) {
+  closeRowMenus();
+  try {
+    await scout.call("session.pin", { session_id: item.session_id, pinned: !item.pinned });
+  } catch (error) {
+    el("status").textContent = "置顶失败：" + error.message;
+  }
+  await loadSessions();
+}
+
+async function exportSession(item) {
+  closeRowMenus();
+  el("status").textContent = "正在导出…";
+  try {
+    var result = await scout.call("session.export", { session_id: item.session_id });
+    showTextModal(item.title || "会话", result.text, result.path);
+    el("status").textContent = "已导出 " + result.chars + " 字";
+  } catch (error) {
+    el("status").textContent = "导出失败：" + error.message;
+  }
+}
+
+async function deleteSession(item) {
+  closeRowMenus();
+  var what = "「" + (item.title || "未命名会话") + "」（" + (item.message_count || 0) + " 条消息）";
+  var ok = window.confirm(
+    "删除 " + what + "？\n\n" +
+      "会同时删掉这次会话产生的笔记与产物；资料库里的资料、花费账本不受影响。\n" +
+      "（删之前可以先用「分享」导出成 Markdown）"
+  );
+  if (!ok) return;
+  try {
+    var result = await scout.call("session.delete", { session_id: item.session_id });
+    var removed = result.removed || {};
+    var parts = [];
+    if (removed.messages) parts.push(removed.messages + " 条消息");
+    if (removed.notes) parts.push(removed.notes + " 条笔记");
+    var artifacts = (removed.topic_maps || 0) + (removed.learning_routes || 0);
+    if (artifacts) parts.push(artifacts + " 个产物");
+    el("status").textContent = "已删除" + (parts.length ? "：" + parts.join("、") : "该会话");
+    var list = await loadSessions();
+    if (item.session_id === state.sessionId) {
+      if (list.length) await openSession(list[0].session_id);
+      else await newSession();
+    }
+  } catch (error) {
+    el("status").textContent = "删除失败：" + error.message;
+  }
+}
+
+/* 文本弹层：导出的 Markdown 既能一键复制，也能看到落盘位置 */
+function showTextModal(title, text, path) {
+  el("textmodal-title").textContent = title;
+  el("textmodal-body").value = text || "";
+  el("textmodal-path").textContent = path ? "已保存：" + path : "";
+  el("textmodal-note").textContent = "";
+  el("textmodal-note").className = "hint";
+  el("textmodal").hidden = false;
+  el("textmodal-body").focus();
+  el("textmodal-body").select();
+}
+
+function closeTextModal() {
+  el("textmodal").hidden = true;
+}
+
+async function copyTextModal() {
+  var area = el("textmodal-body");
+  var note = el("textmodal-note");
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(area.value);
+    } else {
+      area.select();
+      document.execCommand("copy");
+    }
+    note.textContent = "已复制到剪贴板";
+    note.className = "hint set-ok";
+  } catch (error) {
+    // 复制失败就把文本选中，让用户自己 Ctrl+C —— 总比什么都没发生好
+    area.select();
+    note.textContent = "自动复制不可用，已帮你选中，Ctrl+C 即可";
+    note.className = "hint set-bad";
+  }
+}
+
 function wire() {
+  el("btn-textmodal-close").addEventListener("click", closeTextModal);
+  el("btn-textmodal-copy").addEventListener("click", copyTextModal);
+  el("textmodal").addEventListener("click", function (event) {
+    if (event.target === el("textmodal")) closeTextModal();
+  });
   el("btn-settings").addEventListener("click", function () {
     openSettings().catch(function (error) {
       el("status").textContent = "打开设置失败：" + error.message;
