@@ -185,3 +185,20 @@ def test_create_client_uses_env_key(monkeypatch) -> None:
     client = create_client(profile)
     assert client.api_key == "sk-test"
     client.close()
+
+
+def test_chat_reply_truncated_flag() -> None:
+    """finish_reason=length 就是被 max_tokens 截断（推理模型的 reasoning token 也算 completion）。"""
+    from scholarscout.providers.llm import ChatReply
+
+    assert ChatReply(content="", finish_reason="length").truncated is True
+    assert ChatReply(content="答案", finish_reason="stop").truncated is False
+    assert ChatReply(content="答案").truncated is False
+
+
+def test_default_max_tokens_leaves_room_for_reasoning() -> None:
+    """推理模型的实际 completion 里 reasoning 占大头（实测 5379/5586），额度必须留足。"""
+    from scholarscout.config import DEFAULT_CHAT, DEFAULT_SUMMARY
+
+    assert DEFAULT_CHAT["max_tokens"] >= 8192
+    assert DEFAULT_SUMMARY["max_tokens"] >= 2048

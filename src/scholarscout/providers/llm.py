@@ -53,6 +53,16 @@ class ChatReply:
     model: str = ""
     usage: dict[str, int] = field(default_factory=dict)
 
+    @property
+    def truncated(self) -> bool:
+        """是否被 max_tokens 截断。
+
+        推理模型的 reasoning token 也算在 completion 里，额度给小了会出现
+        ``content`` 为空而 ``finish_reason == "length"`` —— 静默返回空串会让上层
+        「按兜底模式生成」却不知道为什么（真机跑 E3 踩过）。
+        """
+        return self.finish_reason == "length"
+
 
 class LlmClient(Protocol):
     """对话客户端协议（测试用桩实现它即可）。"""

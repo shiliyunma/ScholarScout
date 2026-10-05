@@ -86,3 +86,19 @@ def render_sources(rows: list[dict[str, Any]]) -> str:
 
 def valid_ids(rows: list[dict[str, Any]]) -> set[str]:
     return {str(row["id"]) for row in rows}
+
+
+def degrade_reason(*, finish_reason: str, content: str, parsed_ok: bool) -> str | None:
+    """兜底模式的**原因**（产物里要留痕，否则"降级率 100%"这种数字无法诊断）。
+
+    真机跑 E3 时踩过：推理模型的 reasoning token 吃满 ``max_tokens``，
+    ``content`` 空着回来、``finish_reason=length``，产物静默退化成 flat/skeleton，
+    报告里只看到一个 100% 的降级率而不知道该改哪里。
+    """
+    if parsed_ok:
+        return None
+    if finish_reason == "length":
+        return "模型输出被 max_tokens 截断（推理 token 计入 completion），content 不完整"
+    if not (content or "").strip():
+        return "模型返回空内容"
+    return "模型输出无法解析为约定的行格式"

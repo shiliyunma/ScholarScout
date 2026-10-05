@@ -214,6 +214,20 @@ def render(results: dict[str, Any]) -> str:
                 "",
             ]
 
+            degraded = [task for task in e3["tasks"] if task.get("degrade_reasons")]
+            if degraded:
+                reasons_count: dict[str, int] = {}
+                for task in degraded:
+                    for reason in task["degrade_reasons"]:
+                        reasons_count[reason] = reasons_count.get(reason, 0) + 1
+                parts += [
+                    f"### ⚠️ 有 {len(degraded)}/{e3['n']} 个任务的产物走了兜底模式（原因必须列出）",
+                    "",
+                ]
+                for reason, count in sorted(reasons_count.items(), key=lambda item: -item[1]):
+                    parts += [f"- `{count}` 次：{reason}"]
+                parts += [""]
+
             failed = [task for task in e3["tasks"] if task["stop_reason"] != "completed"]
             if failed:
                 reasons: dict[str, int] = {}

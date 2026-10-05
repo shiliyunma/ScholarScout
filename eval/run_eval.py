@@ -255,9 +255,12 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
 
         grounded = total = ungrounded = 0
         modes: list[str] = []
+        reasons: list[str] = []
         for row_map in maps:
             graph = json.loads(str(row_map["graph_json"]))
             modes.append(str(graph.get("mode")))
+            if graph.get("mode_reason"):
+                reasons.append(str(graph["mode_reason"]))
             stats = graph.get("stats") or {}
             ungrounded += int(stats.get("ungrounded_nodes") or 0)
             nodes = graph.get("nodes") or []
@@ -266,6 +269,8 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
         for row_plan in plans:
             plan = json.loads(str(row_plan["plan_json"]))
             modes.append(str(plan.get("mode")))
+            if plan.get("mode_reason"):
+                reasons.append(str(plan["mode_reason"]))
             stats = plan.get("stats") or {}
             ungrounded += int(stats.get("ungrounded_items") or 0)
             items = [item for week in plan.get("weeks") or [] for item in week.get("items") or []]
@@ -295,6 +300,7 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
                 ),
                 "artifacts": {"topic_maps": len(maps), "routes": len(plans)},
                 "modes": modes,
+                "degrade_reasons": reasons,
                 "coverage": metrics.float_rate(grounded, total),
                 "ungrounded_ratio": metrics.float_rate(ungrounded, total),
                 "tokens": {"prompt": int(usage["pin"]), "completion": int(usage["pout"])},

@@ -148,11 +148,30 @@ def test_build_map_with_bad_model_output_falls_back(ctx: AppContext) -> None:
     ctx.llm = StubLlm(reply("我今天不想干活"))
     result = topic_build_map(tool_ctx(ctx), "教育智能体", source_ids=[a, b])
     assert result["data"]["mode"] == "flat"
+    assert "无法解析" in str(result["data"]["mode_reason"]), (
+        "兜底必须留下原因（否则降级率无法诊断）"
+    )
 
     ctx.llm = StubLlm(reply("node: n1 | A | method | src_a"))
     result = topic_build_map(tool_ctx(ctx), "教育智能体", source_ids=[a, b])
     assert result["data"]["mode"] == "model"
+    assert result["data"]["mode_reason"] is None
     assert result["data"]["stats"]["ungrounded_nodes"] == 1
+
+
+def test_build_map_records_truncation_reason(ctx: AppContext) -> None:
+    """被 max_tokens 截断时 content 为空：必须记下"截断"而不是含糊的"解析失败"。
+
+    真机跑 E3 踩过：推理模型把额度烧在 reasoning 上，content 空着回来，
+    六个任务的产物全走兜底，报告里只看到一个 100% 的降级率。
+    """
+    from scholarscout.providers.llm import ChatReply
+
+    a, _ = _seed(ctx)
+    ctx.llm = StubLlm(ChatReply(content="", tool_calls=[], finish_reason="length", model="stub"))
+    result = topic_build_map(tool_ctx(ctx), "教育智能体", source_ids=[a])
+    assert result["data"]["mode"] == "flat"
+    assert "max_tokens" in str(result["data"]["mode_reason"])
 
 
 def test_build_map_prefers_graded_sources(ctx: AppContext) -> None:

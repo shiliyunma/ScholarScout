@@ -23,14 +23,15 @@ DEFAULT_CHAT = {
     "model": "deepseek-chat",
     "base_url": "https://api.deepseek.com/v1",
     "temperature": 0.2,
-    "max_tokens": 4096,
+    #: 推理模型（如 deepseek-flash）的 reasoning token 也算 completion，额度必须留足
+    "max_tokens": 16384,
     "timeout_s": 60,
 }
 DEFAULT_SUMMARY = {
     "model": "deepseek-chat",
     "base_url": "https://api.deepseek.com/v1",
     "temperature": 0.1,
-    "max_tokens": 800,
+    "max_tokens": 4096,
     "timeout_s": 60,
 }
 
@@ -42,7 +43,7 @@ class LlmProfile:
     model: str
     base_url: str
     temperature: float = 0.2
-    max_tokens: int = 4096
+    max_tokens: int = 16384
     timeout_s: float = 60.0
     api_key_env: str = "LLM_API_KEY"
 

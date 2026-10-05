@@ -15,7 +15,12 @@ from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.learning import save_topic_map
 from scholarscout.summary.prompts import PromptPack
-from scholarscout.tools.source_context import candidate_sources, render_sources, valid_ids
+from scholarscout.tools.source_context import (
+    candidate_sources,
+    degrade_reason,
+    render_sources,
+    valid_ids,
+)
 
 DESCRIPTION = (
     "把一个方向的已有资料整理成知识地图：节点是概念/方法/数据集/工具，边是前置、变体、使用、评测关系。"
@@ -175,12 +180,17 @@ def topic_build_map(
     pack = PromptPack(ctx.config.summary_cfg.prompts_dir)
 
     mode = "flat"
+    reason: str | None = None
     graph: dict[str, Any]
     if use_model and ctx.llm is not None and rows:
         prompt = pack.compose("build-topic-map", topic=topic, sources=render_sources(rows))
+        content = ""
+        finish_reason = ""
         try:
             reply = ctx.llm.chat([{"role": "user", "content": prompt}])
-            parsed = parse_map(str(getattr(reply, "content", "")))
+            content = str(getattr(reply, "content", ""))
+            finish_reason = str(getattr(reply, "finish_reason", "") or "")
+            parsed = parse_map(content)
         except Exception:
             parsed = {"nodes": [], "edges": []}
         if parsed["nodes"]:
@@ -188,13 +198,15 @@ def topic_build_map(
             graph = apply_guards(parsed, allowed_ids=allowed, max_nodes=limit)
         else:
             graph = build_flat_map(rows, max_nodes=limit)
+            reason = degrade_reason(finish_reason=finish_reason, content=content, parsed_ok=False)
     else:
         graph = build_flat_map(rows, max_nodes=limit)
+        reason = "未使用模型（use_model=false 或没有可用模型）"
 
     topic_id = save_topic_map(
         ctx.db,
         topic=topic,
-        graph={**graph, "topic": topic, "mode": mode},
+        graph={**graph, "topic": topic, "mode": mode, "mode_reason": reason},
         session_id=ctx.session_id,
     )
 
@@ -204,6 +216,7 @@ def topic_build_map(
             "topic_id": topic_id,
             "topic": topic,
             "mode": mode,
+            "mode_reason": reason,
             "source_count": len(rows),
             "nodes": graph["nodes"],
             "edges": graph["edges"],

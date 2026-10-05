@@ -15,7 +15,12 @@ from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.learning import save_route
 from scholarscout.summary.prompts import PromptPack
-from scholarscout.tools.source_context import candidate_sources, render_sources, valid_ids
+from scholarscout.tools.source_context import (
+    candidate_sources,
+    degrade_reason,
+    render_sources,
+    valid_ids,
+)
 
 DESCRIPTION = (
     "为某个方向排一条 N 周学习路线：每周有目标和检查点，每个条目挂真实资料 id 或标明无出处。"
@@ -209,6 +214,7 @@ def route_plan(
     pack = PromptPack(ctx.config.summary_cfg.prompts_dir)
 
     mode = "skeleton"
+    reason: str | None = None
     plan: dict[str, Any]
     if use_model and ctx.llm is not None and rows:
         prompt = pack.compose(
@@ -219,9 +225,13 @@ def route_plan(
             weeklyHours=str(hours),
             sources=render_sources(rows),
         )
+        content = ""
+        finish_reason = ""
         try:
             reply = ctx.llm.chat([{"role": "user", "content": prompt}])
-            parsed = parse_plan(str(getattr(reply, "content", "")))
+            content = str(getattr(reply, "content", ""))
+            finish_reason = str(getattr(reply, "finish_reason", "") or "")
+            parsed = parse_plan(content)
         except Exception:
             parsed = {"weeks": []}
         if parsed["weeks"]:
@@ -229,15 +239,24 @@ def route_plan(
             plan = apply_guards(parsed, allowed_ids=allowed, weeks=week_count)
         else:
             plan = build_skeleton(rows, weeks=week_count)
+            reason = degrade_reason(finish_reason=finish_reason, content=content, parsed_ok=False)
     else:
         plan = build_skeleton(rows, weeks=week_count)
+        reason = "未使用模型（use_model=false 或没有可用模型）"
 
     route_id = save_route(
         ctx.db,
         topic=topic,
         level=level,
         weeks=week_count,
-        plan={**plan, "topic": topic, "level": level, "mode": mode, "weekly_hours": hours},
+        plan={
+            **plan,
+            "topic": topic,
+            "level": level,
+            "mode": mode,
+            "mode_reason": reason,
+            "weekly_hours": hours,
+        },
         session_id=ctx.session_id,
     )
 
@@ -248,6 +267,7 @@ def route_plan(
             "topic": topic,
             "level": level,
             "mode": mode,
+            "mode_reason": reason,
             "weeks": plan["weeks"],
             "stats": plan["stats"],
         },
