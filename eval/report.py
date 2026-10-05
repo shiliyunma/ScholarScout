@@ -193,6 +193,11 @@ def render(results: dict[str, Any]) -> str:
                             str(e3.get("exercise_items", "—")),
                             "—",
                         ],
+                        [
+                            "每题用到的不同来源数（均值，防全挂同一个 id 式退化）",
+                            _num(e3.get("distinct_sources"), 1),
+                            "—",
+                        ],
                         ["降级率（flat/skeleton）", _pct(e3["degraded_rate"]), "—"],
                         [
                             "token（prompt / completion）",

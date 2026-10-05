@@ -270,6 +270,7 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
         plans = ctx.db.query("SELECT * FROM learning_routes WHERE session_id = ?", (session_id,))
 
         grounded = total = ungrounded = exercises = 0
+        sources_seen: set[str] = set()
         modes: list[str] = []
         reasons: list[str] = []
         for row_map in maps:
@@ -282,6 +283,7 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
             nodes = graph.get("nodes") or []
             total += len(nodes)
             grounded += sum(1 for node in nodes if node.get("source_ids"))
+            sources_seen |= {str(ref) for node in nodes for ref in (node.get("source_ids") or [])}
         for row_plan in plans:
             plan = json.loads(str(row_plan["plan_json"]))
             modes.append(str(plan.get("mode")))
@@ -300,6 +302,7 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
                 if stats.get("grounded_resource_items") is not None
                 else sum(1 for item in items if item.get("source_id"))
             )
+            sources_seen |= {str(item["source_id"]) for item in items if item.get("source_id")}
 
         usage = ctx.db.query_one(
             "SELECT coalesce(sum(prompt_tokens),0) AS pin, coalesce(sum(completion_tokens),0) AS pout"
@@ -328,6 +331,7 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
                 "coverage": metrics.float_rate(grounded, total),
                 "ungrounded_ratio": metrics.float_rate(ungrounded, total),
                 "exercise_items": exercises,
+                "distinct_sources": len(sources_seen),
                 "counts": {"grounded": grounded, "total": total, "ungrounded": ungrounded},
                 "tokens": {"prompt": int(usage["pin"]), "completion": int(usage["pout"])},
                 "refs": result.get("refs", {}),
@@ -367,6 +371,7 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
             len(tasks),
         ),
         "exercise_items": sum(t["exercise_items"] for t in tasks),
+        "distinct_sources": metrics.mean([t["distinct_sources"] for t in tasks]),
         "counts": {
             "grounded": sum(t["counts"]["grounded"] for t in tasks),
             "total": sum(t["counts"]["total"] for t in tasks),

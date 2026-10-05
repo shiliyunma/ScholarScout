@@ -14,6 +14,24 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 
+def distinct_sources(graph: Mapping[str, Any] | None, plan: Mapping[str, Any] | None) -> int:
+    """一件产物里用到的**不同来源**个数（地图节点引用 + 路线资料类条目的 source_id）。
+
+    为什么必须和"出处覆盖率"一起看：覆盖率只校验"每条都挂着一个存在的 id"，
+    如果模型把每条都挂同一个 id，覆盖率照样 100% 却毫无价值。真机抽样验证过
+    （e3-04：14 节点 30 次引用 8 个来源，路线 7 条 7 个来源），这个数就是那种退化的照妖镜。
+    """
+    refs: set[str] = set()
+    for node in (graph or {}).get("nodes") or []:
+        refs.update(str(ref) for ref in (node.get("source_ids") or []) if ref)
+    for week in (plan or {}).get("weeks") or []:
+        for item in week.get("items") or []:
+            source_id = item.get("source_id")
+            if source_id:
+                refs.add(str(source_id))
+    return len(refs)
+
+
 def agreement(pairs: Sequence[tuple[str, str]]) -> float | None:
     """一致率 = 相同的对数 / 总对数。"""
     if not pairs:

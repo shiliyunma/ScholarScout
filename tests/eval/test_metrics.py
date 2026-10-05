@@ -10,7 +10,37 @@ def test_agreement_counts_and_empty() -> None:
     assert metrics.agreement([]) is None, "没有样本 ≠ 全错"
 
 
-def test_perfect_agreement_is_one() -> None:
+def test_distinct_sources_counts_unique_ids() -> None:
+    """不同来源数：地图节点引用 ∪ 路线资料类条目，重复只算一次。"""
+    graph = {
+        "nodes": [
+            {"source_ids": ["src_a", "src_b"]},
+            {"source_ids": ["src_a"]},
+            {"source_ids": []},
+        ]
+    }
+    plan = {
+        "weeks": [
+            {"items": [{"source_id": "src_b"}, {"source_id": "src_c"}, {"source_id": None}]},
+            {"items": [{"source_id": "src_c"}]},
+        ]
+    }
+    assert metrics.distinct_sources(graph, plan) == 3
+
+
+def test_distinct_sources_exposes_single_source_degeneration() -> None:
+    """全挂同一个 id：覆盖率可以 100%，但不同来源数必然是 1 —— 这就是这个指标的用途。"""
+    graph = {"nodes": [{"source_ids": ["src_a"]} for _ in range(20)]}
+    plan = {"weeks": [{"items": [{"source_id": "src_a"} for _ in range(5)]}]}
+    assert metrics.distinct_sources(graph, plan) == 1
+
+
+def test_distinct_sources_handles_empty_and_missing() -> None:
+    assert metrics.distinct_sources(None, None) == 0
+    assert metrics.distinct_sources({}, {"weeks": []}) == 0
+
+
+def test_agreement_pairs() -> None:
     assert metrics.agreement([("x", "x")] * 5) == 1.0
 
 
