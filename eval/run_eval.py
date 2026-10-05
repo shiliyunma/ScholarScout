@@ -372,6 +372,16 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
         ),
         "exercise_items": sum(t["exercise_items"] for t in tasks),
         "distinct_sources": metrics.mean([t["distinct_sources"] for t in tasks]),
+        # 产物完整率：同时出主题图与路线的任务占比。
+        # 真机第三轮有两道题只出路线没出地图 —— 光看"任务完成 6/6"会完全漏掉这件事。
+        "artifact_completeness": metrics.float_rate(
+            sum(
+                1
+                for task in tasks
+                if task["artifacts"]["topic_maps"] >= 1 and task["artifacts"]["routes"] >= 1
+            ),
+            len(tasks),
+        ),
         "counts": {
             "grounded": sum(t["counts"]["grounded"] for t in tasks),
             "total": sum(t["counts"]["total"] for t in tasks),

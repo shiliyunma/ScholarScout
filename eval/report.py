@@ -164,6 +164,11 @@ def render(results: dict[str, Any]) -> str:
                     ["指标", "值", "分子/分母"],
                     [
                         ["任务数", str(e3["n"]), "—"],
+                        [
+                            "产物完整率（同时出主题图与路线）",
+                            _pct(e3.get("artifact_completeness")),
+                            "—",
+                        ],
                         ["模型", str(e3["model"]), "—"],
                         ["工具成功率", _pct(e3["tool_success_rate"]), "—"],
                         [

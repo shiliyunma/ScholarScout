@@ -27,6 +27,20 @@ def test_prompt_states_the_pipeline_in_order() -> None:
     )
 
 
+def test_prompt_requires_both_artifacts_by_default() -> None:
+    """默认"主题图 + 路线"两件都出。
+
+    真机 E3 第三轮：6 道题里有两道只出了路线、没出主题图（题面只说"帮我找资料+排路线"，
+    按旧提示词的"要方向全景才画图"确实不用画）。但产物数一顿一顿地变，度量就没法用，
+    而且地图是路线的依据 —— 所以约定：方向型提问默认两件都出，只出一件不算收工。
+    """
+    prompt = build_system_prompt(toolsets=["research"])
+    assert "别只出一件就收工" in prompt
+    assert "先 topic.build_map" in prompt
+    # 地图要排在路线之前（先看清方向再排顺序）
+    assert prompt.index("topic.build_map") < prompt.index("route.plan")
+
+
 def test_prompt_carries_budget_discipline() -> None:
     prompt = build_system_prompt(toolsets=["research"])
     assert "最多 2-3 次" in prompt
