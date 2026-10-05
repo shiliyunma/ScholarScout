@@ -132,18 +132,38 @@ def test_invalid_tool_arguments_json_is_handled(ctx: AppContext) -> None:
     assert "JSON" in str(row["error"])
 
 
-def test_tool_limit_stops_the_loop(ctx: AppContext) -> None:
+def test_exhausted_tool_budget_still_lets_the_model_answer(ctx: AppContext) -> None:
+    """用满工具预算 ≠ 超限：最后一轮不给工具，模型仍要把结果讲完。"""
     _register_echo()
     session_id = _session(ctx)
-    # 每轮都要求调用工具，配置上限是 3（见 conftest 的 runtime profile）
+    stub = StubLlm(
+        reply("", tool_calls=[tool_call("research.echo", '{"query":"1"}', call_id="c1")]),
+        reply("", tool_calls=[tool_call("research.echo", '{"query":"2"}', call_id="c2")]),
+        reply("", tool_calls=[tool_call("research.echo", '{"query":"3"}', call_id="c3")]),
+        reply("三次都查完了，结论是……"),  # 预算用尽后的那一轮（此时 tools=None）
+    )
+    ctx.llm = stub
+    result = loop.run_turn(_context(ctx), session_id=session_id, text="循环")
+
+    assert result.stop_reason == "completed"
+    assert result.tool_calls == ["research.echo"] * 3
+    assert result.text == "三次都查完了，结论是……"
+    assert ctx.db.scalar_int("SELECT count(*) FROM tool_traces") == 3
+    assert stub.calls[-1]["tools"] is None, "预算用尽后必须收走工具，逼模型收口"
+
+
+def test_tool_limit_when_model_tries_to_exceed_budget(ctx: AppContext) -> None:
+    _register_echo()
+    session_id = _session(ctx)
     ctx.llm = StubLlm(
         reply("", tool_calls=[tool_call("research.echo", '{"query":"1"}', call_id="c1")]),
         reply("", tool_calls=[tool_call("research.echo", '{"query":"2"}', call_id="c2")]),
         reply("", tool_calls=[tool_call("research.echo", '{"query":"3"}', call_id="c3")]),
+        reply("", tool_calls=[tool_call("research.echo", '{"query":"4"}', call_id="c4")]),
     )
     result = loop.run_turn(_context(ctx), session_id=session_id, text="循环")
     assert result.stop_reason == "tool_limit"
-    assert ctx.db.scalar_int("SELECT count(*) FROM tool_traces") == 3
+    assert ctx.db.scalar_int("SELECT count(*) FROM tool_traces") == 3, "第 4 次调用不该被执行"
 
 
 def test_llm_error_sets_error_stop_reason(ctx: AppContext) -> None:

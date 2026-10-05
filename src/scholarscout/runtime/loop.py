@@ -6,6 +6,7 @@
 
 约束：
 - 工具调用次数受 ``runtime.max_tool_calls_per_turn`` 限制，超限 ``stop_reason="tool_limit"``
+- 轮次预算 = 工具预算 + 1：最后一轮**不给工具**，留给模型把结果讲完（用满工具预算≠tool_limit）
 - 模型返回了未注册的工具 → 记 trace（``ok=0``）并如实告诉模型，**不伪造结果**
 - 助手消息与工具消息都落库，保证会话可回放
 """
@@ -129,12 +130,16 @@ def run_turn(
     final_text = ""
     error_message: str | None = None
 
+    # 轮次预算 = 工具预算 + 1：**最后那一轮不给工具**，专门留给模型把结果讲成人话。
+    # 否则模型刚好用满工具预算时会被判 tool_limit，最终答案直接丢掉（踩过）。
+    tool_budget = max(1, ctx.config.runtime.max_tool_calls_per_turn)
     try:
-        for _round in range(max(1, ctx.config.runtime.max_tool_calls_per_turn)):
+        for _round in range(tool_budget + 1):
             if ctx.is_cancelled(turn_id):
                 stop_reason = "cancelled"
                 break
-            reply = ctx.llm.chat(messages, tools=tool_decls)
+            tools_for_round = None if len(executed) >= tool_budget else tool_decls
+            reply = ctx.llm.chat(messages, tools=tools_for_round)
             _accumulate_usage(usage_total, reply)
             final_text = reply.content or final_text
 
@@ -174,7 +179,7 @@ def run_turn(
             )
             del assistant_row  # 已落库，无需再用
 
-            if len(executed) + len(reply.tool_calls) > ctx.config.runtime.max_tool_calls_per_turn:
+            if len(executed) + len(reply.tool_calls) > tool_budget:
                 stop_reason = "tool_limit"
                 _emit(
                     emit,
