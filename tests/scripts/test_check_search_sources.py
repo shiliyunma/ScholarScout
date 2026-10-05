@@ -74,8 +74,8 @@ def test_default_path_resolves_auto_to_real_sources(
     code = script.main()
 
     out = capsys.readouterr().out
-    assert "解析后的来源：arxiv, github" in out
-    assert called == ["arxiv", "github"], f"auto 没被完整展开：{called}"
+    assert "解析后的来源：arxiv, openalex, github" in out
+    assert called == ["arxiv", "openalex", "github"], f"auto 没被完整展开：{called}"
     assert code == 0
     assert "命中 1 条" in out
 

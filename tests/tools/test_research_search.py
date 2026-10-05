@@ -63,15 +63,31 @@ def test_search_ingests_sources_and_returns_ids(ctx: AppContext) -> None:
     ]
 
 
-def test_search_reports_unknown_provider_as_not_implemented(ctx: AppContext) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - 不应被调用
-        raise AssertionError("未实现的来源不应发起请求")
+def test_search_reports_unknown_provider_name(ctx: AppContext) -> None:
+    """配置里写了一个不存在的来源名 → 如实报 unknown_provider（不再有"未实现"占位）。"""
 
-    result = research_search(_tool_ctx(ctx, handler), "x", sources=["openalex"])
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - 不应被调用
+        raise AssertionError("未知来源不应发起请求")
+
+    result = research_search(_tool_ctx(ctx, handler), "x", sources=["crossref"])
     status = result["data"]["provider_status"]
-    assert status == [{"provider": "openalex", "ok": False, "n": 0, "error": "not_implemented"}]
+    assert status == [{"provider": "crossref", "ok": False, "n": 0, "error": "unknown_provider"}]
     assert result["data"]["items"] == []
     assert result["refs"]["source_ids"] == []
+
+
+def test_semantic_scholar_reports_missing_key_not_unimplemented(
+    ctx: AppContext, monkeypatch
+) -> None:
+    """Semantic Scholar 无 key 恒 429（真机实测）→ 按"需要 key"报，而不是含糊的 not_implemented。"""
+    monkeypatch.delenv("S2_API_KEY", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("缺 key 的来源不应发起请求")
+
+    result = research_search(_tool_ctx(ctx, handler), "x", sources=["semantic_scholar"])
+    error = result["data"]["provider_status"][0]["error"]
+    assert error.startswith("missing_api_key: S2_API_KEY")
 
 
 def test_search_reports_missing_api_key_for_commercial_source(ctx: AppContext, monkeypatch) -> None:
@@ -131,18 +147,35 @@ def test_auto_only_includes_usable_providers(monkeypatch) -> None:
     """
     from scholarscout.providers.settings import SearchSettings
 
-    for env in ("TAVILY_API_KEY", "SERPER_API_KEY", "BRAVE_API_KEY", "GOOGLE_CSE_KEY"):
+    for env in (
+        "TAVILY_API_KEY",
+        "SERPER_API_KEY",
+        "BRAVE_API_KEY",
+        "GOOGLE_CSE_KEY",
+        "S2_API_KEY",
+    ):
         monkeypatch.delenv(env, raising=False)
 
-    assert SearchSettings().auto_names() == ("arxiv", "github")
+    # openalex 免 key 且真机可用 → 默认就在 auto 里（学术索引那一层）
+    assert SearchSettings().auto_names() == ("arxiv", "openalex", "github")
 
     monkeypatch.setenv("TAVILY_API_KEY", "k")
-    assert SearchSettings().auto_names() == ("arxiv", "github", "tavily")
+    assert SearchSettings().auto_names() == ("arxiv", "openalex", "github", "tavily")
     assert "bing" not in SearchSettings().auto_names()
     assert "duckduckgo" not in SearchSettings().auto_names()
 
+    # semantic_scholar 无 key 恒 429 → 不进 auto；配了 key 才进
+    assert "semantic_scholar" not in SearchSettings().auto_names()
+    monkeypatch.setenv("S2_API_KEY", "k")
+    assert "semantic_scholar" in SearchSettings().auto_names()
+
     configured = SearchSettings(searxng_base_url="https://searx.mine.org")
-    assert configured.auto_names(key_lookup=lambda _name: None) == ("arxiv", "github", "searxng")
+    assert configured.auto_names(key_lookup=lambda _name: None) == (
+        "arxiv",
+        "openalex",
+        "github",
+        "searxng",
+    )
 
     # google_cse 要 key + cx 两样齐全才进 auto
     monkeypatch.setenv("GOOGLE_CSE_KEY", "k")

@@ -30,8 +30,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-#: 免 key 来源（github 未认证也能用：Search API 10 次/分钟）
-KEYLESS = ("arxiv", "github", "bing", "duckduckgo", "searxng")
+#: 免 key 来源（github 未认证也能用：Search API 10 次/分钟；openalex 免 key 可用）
+KEYLESS = ("arxiv", "openalex", "github", "bing", "duckduckgo", "searxng")
 #: **可选**密钥 → 环境变量：没有也能用，只是额度更低/间隔更长
 OPTIONAL_TOKENS = {"github": "GITHUB_TOKEN"}
 #: 商用来源 → 密钥环境变量名
@@ -40,18 +40,30 @@ COMMERCIAL_KEYS = {
     "serper": "SERPER_API_KEY",
     "brave": "BRAVE_API_KEY",
     "google_cse": "GOOGLE_CSE_KEY",
+    # Semantic Scholar 无 key 恒 429（真机实测）→ 按"需要 key"处理，不进 auto
+    "semantic_scholar": "S2_API_KEY",
 }
 #: 本版真正实现了的来源
-IMPLEMENTED = ("arxiv", "github", "bing", "duckduckgo", "searxng", *COMMERCIAL_KEYS)
-#: 配置里允许写的来源名（含尚未实现的学术索引，便于前向兼容）
-KNOWN = (*IMPLEMENTED, "auto", "openalex", "semantic_scholar")
+IMPLEMENTED = ("arxiv", "openalex", "github", "bing", "duckduckgo", "searxng", *COMMERCIAL_KEYS)
+#: 配置里允许写的来源名（= 已实现 + auto；不再有"配置写了但没实现"的占位）
+KNOWN = (*IMPLEMENTED, "auto")
 
 #: `providers: ["auto"]` 的哨兵值（见模块文档）
 AUTO = "auto"
 #: 默认值：auto（见模块文档）
 DEFAULT_PROVIDERS = ("auto",)
 #: auto 的装配顺序（学术 → 代码/教程 → 通用检索 → 商用；顺序只影响结果展示顺序）
-AUTO_ORDER = ("arxiv", "github", "searxng", "google_cse", "brave", "tavily", "serper")
+AUTO_ORDER = (
+    "arxiv",
+    "openalex",
+    "github",
+    "searxng",
+    "google_cse",
+    "brave",
+    "tavily",
+    "serper",
+    "semantic_scholar",
+)
 
 #: 抓结果页时才需要豁免 robots 的主机（DuckDuckGo 同样如此，但其网络在国内本就不通）
 SEARCHPAGE_HOSTS = ("cn.bing.com", "www.bing.com", "html.duckduckgo.com", "duckduckgo.com")
@@ -66,7 +78,7 @@ DEFAULT_MIN_INTERVAL = {
     "brave": 1.0,
     "google_cse": 0.5,
     "openalex": 0.5,
-    "semantic_scholar": 1.0,
+    "semantic_scholar": 1.5,
     # 注意：**故意不写 github** —— 它的间隔取决于有没有配 token
     # （未认证 Search API 10 次/分钟 → 6s；认证 30 次/分钟 → 2s），
     # 由 providers/github.py 自己算。写进这张表会覆盖它：1s 间隔会把额度打光，
@@ -101,6 +113,8 @@ class SearchSettings:
     per_provider_limit: int = 8
     searxng_base_url: str = ""
     google_cse_cx: str = ""
+    #: OpenAlex 的"礼貌池"联系邮箱（官方按这个给更好的服务；不是密钥，进 config.yaml）
+    openalex_mailto: str = ""
     #: 是否允许抓搜索结果页（默认否：Bing robots 禁止 /search，见模块文档）
     allow_searchpage_scraping: bool = False
     min_interval_s: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_MIN_INTERVAL))
@@ -126,6 +140,7 @@ class SearchSettings:
             per_provider_limit=int(section.get("per_provider_limit", 8)),
             searxng_base_url=str(section.get("searxng_base_url", "") or ""),
             google_cse_cx=str(section.get("google_cse_cx", "") or ""),
+            openalex_mailto=str(section.get("openalex_mailto", "") or ""),
             allow_searchpage_scraping=bool(section.get("allow_searchpage_scraping", False)),
             min_interval_s=intervals,
         )

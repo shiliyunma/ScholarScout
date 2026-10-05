@@ -59,6 +59,7 @@
 | 来源 | 类型 | 要什么 | 怎么开 |
 |---|---|---|---|
 | `arxiv` | 学术预印本 | 免 key | 默认开（≥3s 限速，只索引英文） |
+| `openalex` | 期刊/会议论文与综述（带被引数、DOI） | 免 key | 默认开（实测 1.6s 返回真综述；robots 是 `Allow: /`） |
 | `github` | 代码/官方实现/教程 | 免 key（`.env` 配 `GITHUB_TOKEN` 可提额） | 默认开（Search API 未认证 10 次/分钟 → 间隔 6s） |
 | `searxng` | **通用检索（推荐）** | 免 key，需自建实例 | `cd deploy/searxng && docker compose up -d`，再把 `search.searxng_base_url` 配成 `http://localhost:8080` |
 | `bing` / `duckduckgo` | 通用（抓结果页） | 免 key | **默认关**：需显式开 `search.allow_searchpage_scraping`（Bing robots 禁 `/search`；DDG 国内需梯子） |
