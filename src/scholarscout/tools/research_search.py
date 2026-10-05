@@ -16,10 +16,17 @@ from scholarscout.providers.base import Query, dedupe_cards
 from scholarscout.providers.bing import BingProvider
 from scholarscout.providers.brave import BraveProvider
 from scholarscout.providers.duckduckgo import DuckDuckGoProvider
+from scholarscout.providers.github import GithubProvider
 from scholarscout.providers.google_cse import GoogleCseProvider
 from scholarscout.providers.searxng import SearxngProvider
 from scholarscout.providers.serper import SerperProvider
-from scholarscout.providers.settings import AUTO, COMMERCIAL_KEYS, KNOWN, api_key_for
+from scholarscout.providers.settings import (
+    AUTO,
+    COMMERCIAL_KEYS,
+    KNOWN,
+    api_key_for,
+    optional_token,
+)
 from scholarscout.providers.tavily import TavilyProvider
 from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
@@ -28,8 +35,9 @@ from scholarscout.state.ingest import upsert_source
 DESCRIPTION = (
     "在多个来源里检索资料并入库，返回带 source_id 的结果，"
     "并在 provider_status 里报告每个来源的成败。用于回答“这个方向有哪些资料/该怎么入门”。"
-    "来源：arxiv（学术预印本）；bing / duckduckgo / searxng（通用网页检索，免 key）；"
-    "tavily / serper / brave（商用检索，需在 .env 配 key，未配置时会如实报告 missing_api_key）。"
+    "来源：arxiv（学术预印本）；github（仓库/官方实现/教程，星星多的排前）；"
+    "searxng（自建通用检索）；bing / duckduckgo（抓结果页，默认关）；"
+    "tavily / serper / brave / google_cse（商用检索，需在 .env 配 key，未配置时会如实报告 missing_api_key）。"
 )
 
 PARAMETERS: dict[str, Any] = {
@@ -64,7 +72,11 @@ def available_providers(ctx: ToolContext) -> dict[str, Any]:
     """
     http = ctx.require_http()
     settings = ctx.config.search_cfg
-    providers: dict[str, Any] = {"arxiv": ArxivProvider(http)}
+    # github 免 key 也能用（Search API 10 次/分钟）；配了 .env 的 GITHUB_TOKEN 就提额到 30 次/分钟
+    providers: dict[str, Any] = {
+        "arxiv": ArxivProvider(http),
+        "github": GithubProvider(http, token=optional_token("github")),
+    }
     if settings.allow_searchpage_scraping:
         providers["bing"] = BingProvider(http)
         providers["duckduckgo"] = DuckDuckGoProvider(http)
@@ -106,7 +118,7 @@ def unavailable_providers(ctx: ToolContext) -> dict[str, str]:
         reasons["google_cse"] = (
             "missing_config: search.google_cse_cx（搜索引擎 ID，在 config.yaml）"
         )
-    for name in ("openalex", "semantic_scholar", "github"):
+    for name in ("openalex", "semantic_scholar"):
         reasons[name] = "not_implemented"
     return reasons
 

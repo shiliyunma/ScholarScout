@@ -59,9 +59,18 @@
 | 来源 | 类型 | 要什么 | 怎么开 |
 |---|---|---|---|
 | `arxiv` | 学术预印本 | 免 key | 默认开（≥3s 限速，只索引英文） |
-| `searxng` | **通用（推荐）** | 免 key，需自建实例 | `cd deploy/searxng && docker compose up -d`，再把 `search.searxng_base_url` 配成 `http://localhost:8080` |
+| `github` | 代码/官方实现/教程 | 免 key（`.env` 配 `GITHUB_TOKEN` 可提额） | 默认开（Search API 未认证 10 次/分钟 → 间隔 6s） |
+| `searxng` | **通用检索（推荐）** | 免 key，需自建实例 | `cd deploy/searxng && docker compose up -d`，再把 `search.searxng_base_url` 配成 `http://localhost:8080` |
 | `bing` / `duckduckgo` | 通用（抓结果页） | 免 key | **默认关**：需显式开 `search.allow_searchpage_scraping`（Bing robots 禁 `/search`；DDG 国内需梯子） |
 | `tavily` / `serper` / `brave` / `google_cse` | 商用 API | `.env` 里的 key（`google_cse` 还要 `search.google_cse_cx`） | 填 key 即自动生效（Brave/Google CSE 有免费额度） |
+
+**通用检索挂了怎么办**：它跑在 Docker 里（`deploy/searxng/`），Docker Desktop 关掉后容器不会自己回来 ——
+检索会报连接失败。一条命令修好（会自动拉起 Docker Desktop + 起容器 + 等引擎加载 + 用真 provider 自检）：
+
+```bash
+.venv/Scripts/python.exe scripts/searxng_up.py           # 起服务 + 自检
+.venv/Scripts/python.exe scripts/searxng_up.py --status  # 只看状态
+```
 
 SearxNG 在国内要绕三个坑（全部实测过，详见 `deploy/searxng/settings.yml` 注释）：
 

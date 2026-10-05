@@ -134,15 +134,15 @@ def test_auto_only_includes_usable_providers(monkeypatch) -> None:
     for env in ("TAVILY_API_KEY", "SERPER_API_KEY", "BRAVE_API_KEY", "GOOGLE_CSE_KEY"):
         monkeypatch.delenv(env, raising=False)
 
-    assert SearchSettings().auto_names() == ("arxiv",)
+    assert SearchSettings().auto_names() == ("arxiv", "github")
 
     monkeypatch.setenv("TAVILY_API_KEY", "k")
-    assert SearchSettings().auto_names() == ("arxiv", "tavily")
+    assert SearchSettings().auto_names() == ("arxiv", "github", "tavily")
     assert "bing" not in SearchSettings().auto_names()
     assert "duckduckgo" not in SearchSettings().auto_names()
 
     configured = SearchSettings(searxng_base_url="https://searx.mine.org")
-    assert configured.auto_names(key_lookup=lambda _name: None) == ("arxiv", "searxng")
+    assert configured.auto_names(key_lookup=lambda _name: None) == ("arxiv", "github", "searxng")
 
     # google_cse 要 key + cx 两样齐全才进 auto
     monkeypatch.setenv("GOOGLE_CSE_KEY", "k")

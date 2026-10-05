@@ -49,24 +49,33 @@ def script(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 def test_default_path_resolves_auto_to_real_sources(
     script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """默认配置（providers: ["auto"]）必须真的去查 arxiv，而不是查一个叫 auto 的"来源"。"""
+    """默认配置（providers: ["auto"]）必须真的去查 arxiv/github，而不是查一个叫 auto 的"来源"。"""
     called: list[str] = []
 
     class FakeProvider:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
         def search(self, query: object) -> list[object]:
             from scholarscout.providers.base import SourceCard
 
-            called.append("arxiv")
-            return [SourceCard(url="https://arxiv.org/abs/1", title="真结果", source_type="arxiv")]
+            called.append(self.name)
+            return [
+                SourceCard(
+                    url=f"https://example.org/{self.name}",
+                    title=f"来自 {self.name} 的结果",
+                    source_type="github" if self.name == "github" else "arxiv",
+                )
+            ]
 
-    monkeypatch.setattr(script, "build", lambda name, http, base_url: FakeProvider())
+    monkeypatch.setattr(script, "build", lambda name, http, base_url: FakeProvider(name))
     monkeypatch.setattr(sys, "argv", ["check_search_sources.py"])
 
     code = script.main()
 
     out = capsys.readouterr().out
-    assert "解析后的来源：arxiv" in out
-    assert called == ["arxiv"], "auto 没被展开，脚本在空转"
+    assert "解析后的来源：arxiv, github" in out
+    assert called == ["arxiv", "github"], f"auto 没被完整展开：{called}"
     assert code == 0
     assert "命中 1 条" in out
 

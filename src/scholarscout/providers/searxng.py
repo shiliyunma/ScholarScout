@@ -13,12 +13,17 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlencode
 
-from scholarscout.fetch.http import HttpClient
+from scholarscout.fetch.http import FetchError, HttpClient
 from scholarscout.providers.base import Query, SourceCard
 from scholarscout.providers.websearch import cards_from_pairs
 
 NAME = "searxng"
 MIN_INTERVAL_S = 1.0
+#: 容器没起时给出的可操作提示（用户不该看到裸的连接错误就卡住）
+DOWN_HINT = (
+    "SearxNG 容器不可达 —— 通用检索走的是自建实例（deploy/searxng/）。"
+    "一条命令修好：.venv/Scripts/python.exe scripts/searxng_up.py"
+)
 
 
 def parse_results(payload: dict[str, Any], *, limit: int) -> list[tuple[str, str, str | None]]:
@@ -55,12 +60,21 @@ class SearxngProvider:
 
     def search(self, query: Query) -> list[SourceCard]:
         params = {"q": query.text, "format": "json", "language": "auto"}
-        response = self.http.fetch(
-            f"{self.base_url}/search?{urlencode(params)}",
-            accept="application/json",
-            min_interval_s=self.min_interval_s,
-            cache=False,
-        )
+        try:
+            response = self.http.fetch(
+                f"{self.base_url}/search?{urlencode(params)}",
+                accept="application/json",
+                min_interval_s=self.min_interval_s,
+                cache=False,
+            )
+        except FetchError as exc:
+            # 连不上本地实例是最常见的失效形态（Docker Desktop 没开）。
+            # 把"连接失败"翻译成"下一步该做什么"，否则用户只看到一条 network 报错。
+            if exc.kind in {"network", "timeout"}:
+                raise FetchError(
+                    exc.kind, f"{exc} ｜ {DOWN_HINT}", url=f"{self.base_url}/search"
+                ) from exc
+            raise
         payload = response.json()
         if not isinstance(payload, dict):
             return []

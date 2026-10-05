@@ -27,7 +27,7 @@ from scholarscout.providers.base import Query  # noqa: E402
 from scholarscout.providers.settings import COMMERCIAL_KEYS, IMPLEMENTED, api_key_for  # noqa: E402
 from scholarscout.tools.research_search import resolve_wanted  # noqa: E402
 
-KEYLESS = ("arxiv", "bing", "duckduckgo", "searxng")
+KEYLESS = ("arxiv", "github", "bing", "duckduckgo", "searxng")
 #: 需要梯子/需显式开关的来源：不可用属预期，不算失败
 CONDITIONAL = ("bing", "duckduckgo")
 
@@ -45,6 +45,11 @@ def build(name: str, http: HttpClient, searxng_base_url: str):
         from scholarscout.providers.duckduckgo import DuckDuckGoProvider
 
         return DuckDuckGoProvider(http)
+    if name == "github":
+        from scholarscout.providers.github import GithubProvider
+        from scholarscout.providers.settings import optional_token
+
+        return GithubProvider(http, token=optional_token("github"))
     if name == "searxng":
         from scholarscout.providers.searxng import SearxngProvider
 

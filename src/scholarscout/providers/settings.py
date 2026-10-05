@@ -30,8 +30,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-#: 免 key 来源（bing / duckduckgo 是否真能用取决于爬取开关与网络，见上面说明）
-KEYLESS = ("arxiv", "bing", "duckduckgo", "searxng")
+#: 免 key 来源（github 未认证也能用：Search API 10 次/分钟）
+KEYLESS = ("arxiv", "github", "bing", "duckduckgo", "searxng")
+#: **可选**密钥 → 环境变量：没有也能用，只是额度更低/间隔更长
+OPTIONAL_TOKENS = {"github": "GITHUB_TOKEN"}
 #: 商用来源 → 密钥环境变量名
 COMMERCIAL_KEYS = {
     "tavily": "TAVILY_API_KEY",
@@ -40,16 +42,16 @@ COMMERCIAL_KEYS = {
     "google_cse": "GOOGLE_CSE_KEY",
 }
 #: 本版真正实现了的来源
-IMPLEMENTED = ("arxiv", "bing", "duckduckgo", "searxng", *COMMERCIAL_KEYS)
+IMPLEMENTED = ("arxiv", "github", "bing", "duckduckgo", "searxng", *COMMERCIAL_KEYS)
 #: 配置里允许写的来源名（含尚未实现的学术索引，便于前向兼容）
-KNOWN = (*IMPLEMENTED, "auto", "openalex", "semantic_scholar", "github")
+KNOWN = (*IMPLEMENTED, "auto", "openalex", "semantic_scholar")
 
 #: `providers: ["auto"]` 的哨兵值（见模块文档）
 AUTO = "auto"
 #: 默认值：auto（见模块文档）
 DEFAULT_PROVIDERS = ("auto",)
-#: auto 的装配顺序（先学术、再通用、最后商用；顺序只影响结果展示顺序）
-AUTO_ORDER = ("arxiv", "searxng", "google_cse", "brave", "tavily", "serper")
+#: auto 的装配顺序（学术 → 代码/教程 → 通用检索 → 商用；顺序只影响结果展示顺序）
+AUTO_ORDER = ("arxiv", "github", "searxng", "google_cse", "brave", "tavily", "serper")
 
 #: 抓结果页时才需要豁免 robots 的主机（DuckDuckGo 同样如此，但其网络在国内本就不通）
 SEARCHPAGE_HOSTS = ("cn.bing.com", "www.bing.com", "html.duckduckgo.com", "duckduckgo.com")
@@ -65,13 +67,26 @@ DEFAULT_MIN_INTERVAL = {
     "google_cse": 0.5,
     "openalex": 0.5,
     "semantic_scholar": 1.0,
-    "github": 1.0,
+    # 注意：**故意不写 github** —— 它的间隔取决于有没有配 token
+    # （未认证 Search API 10 次/分钟 → 6s；认证 30 次/分钟 → 2s），
+    # 由 providers/github.py 自己算。写进这张表会覆盖它：1s 间隔会把额度打光，
+    # 表现为间歇 403（与 arXiv 406 同类坑）。interval_for 的 fallback 走的就是 provider。
 }
 
 
 def api_key_for(name: str, env: dict[str, str] | None = None) -> str | None:
     """取某个商用来源的密钥；没配返回 None（调用方据此决定"不启用并如实说明"）。"""
     env_name = COMMERCIAL_KEYS.get(name)
+    if env_name is None:
+        return None
+    source = env if env is not None else os.environ
+    value = (source.get(env_name) or "").strip()
+    return value or None
+
+
+def optional_token(name: str, env: dict[str, str] | None = None) -> str | None:
+    """可选密钥（目前只有 github）：没有也能用，只是额度更低、间隔更长。"""
+    env_name = OPTIONAL_TOKENS.get(name)
     if env_name is None:
         return None
     source = env if env is not None else os.environ
