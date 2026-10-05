@@ -473,6 +473,23 @@ def run_e3(  # pragma: no cover - 需真模型
 # ------------------------------------------------------------------------ 入口
 
 
+def filter_rows(
+    rows: list[dict[str, Any]], *, only: str | None = None, limit: int | None = None
+) -> list[dict[str, Any]]:
+    """按题号/数量裁剪任务集（调提示词时只想跑一题，不必等全套 15 分钟）。
+
+    `only` 支持逗号分隔；匹配不到任何题目时返回空列表 —— 调用方要如实报"没匹配到"，
+    不能悄悄跑全套（那会让人以为改的是那一题）。
+    """
+    picked = rows
+    if only:
+        wanted = {item.strip() for item in only.split(",") if item.strip()}
+        picked = [row for row in picked if str(row.get("id")) in wanted]
+    if limit is not None and limit > 0:
+        picked = picked[:limit]
+    return picked
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="run_eval", description="ScholarScout 评测运行器")
     parser.add_argument("--set", default="all", choices=["e1", "e2", "e3", "all"])
@@ -489,6 +506,12 @@ def main(argv: list[str] | None = None) -> int:
         help="E3：首轮之后再发一条「请生成」，量按需生成成功率",
     )
     parser.add_argument("--out", default=str(ROOT / "eval" / "reports"))
+    parser.add_argument(
+        "--only",
+        default=None,
+        help="只跑这些题号（逗号分隔，例如 e3-01,e3-04）—— 调提示词时省时间",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="最多跑前 N 题")
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out)
@@ -496,6 +519,15 @@ def main(argv: list[str] | None = None) -> int:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
 
     results: dict[str, Any] = {"generated_at": timestamp, "sets": {}}
+    if args.only or args.limit:
+        # 部分跑必须留痕：报告里要能看出"这不是全套"，否则会被当成完整结论引用
+        results["selection"] = {"only": args.only, "limit": args.limit}
+
+    def pick(name: str) -> list[dict[str, Any]]:
+        rows = filter_rows(load_set(name), only=args.only, limit=args.limit)
+        if not rows:
+            print(f"[!] {name} 里没有匹配「{args.only}」的题号 —— 这一组跳过")
+        return rows
 
     with __import__("tempfile").TemporaryDirectory(prefix="scout-eval-") as tmp:
         tmp_path = Path(tmp)
@@ -503,10 +535,10 @@ def main(argv: list[str] | None = None) -> int:
         ctx = build_context(config=cfg, db_path=cfg.db_path)
         try:
             if args.set in {"e1", "all"}:
-                results["sets"]["e1"] = run_e1(ctx, load_set("e1_grade"), ablation=args.ablation)
+                results["sets"]["e1"] = run_e1(ctx, pick("e1_grade"), ablation=args.ablation)
                 print(f"E1 完成：{results['sets']['e1']['n']} 条")
             if args.set in {"e2", "all"}:
-                results["sets"]["e2"] = run_e2(load_set("e2_guard"))
+                results["sets"]["e2"] = run_e2(pick("e2_guard"))
                 print(f"E2 完成：{results['sets']['e2']['n']} 条")
             if args.set == "e3" or (args.set == "all" and args.live):
                 if ctx.llm is None:
@@ -515,7 +547,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     results["sets"]["e3"] = run_e3(
                         ctx,
-                        load_set("e3_tasks"),
+                        pick("e3_tasks"),
                         auto_artifacts=args.auto_artifacts,
                         ask_artifacts=args.ask_artifacts,
                     )
