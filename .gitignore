@@ -9,6 +9,8 @@ run/
 .env
 *.env
 !.env.example
+# 本机配置（照 docs 的 `cp config.example.yaml config.yaml` 用法：仓库只跟踪 example）
+config.yaml
 
 # ===== Python =====
 __pycache__/
