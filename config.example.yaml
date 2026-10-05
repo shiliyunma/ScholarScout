@@ -1,27 +1,48 @@
 # ===== 模型（密钥请放 .env，不要写这里）=====
+# 照 AIHOT 的能力分层：摘要/判权用便宜档，对话用主档
 llm:
-  model: "deepseek-chat"
-  base_url: "https://api.deepseek.com/v1"
-  temperature: 0.2
-  max_tokens: 4096
-  timeout_s: 60
+  chat:
+    model: "deepseek-chat"
+    base_url: "https://api.deepseek.com/v1"
+    temperature: 0.2
+    max_tokens: 4096
+    timeout_s: 60
+  summary:
+    model: "deepseek-chat"
+    base_url: "https://api.deepseek.com/v1"
+    temperature: 0.1
+    max_tokens: 800
+    timeout_s: 60
 
 # ===== 对话循环 =====
 runtime:
   max_tool_calls_per_turn: 12     # 防死循环；超限 stop_reason="tool_limit"
   max_context_chars: 60000        # 超过则压缩历史
   stream: true
+  allow_clarify: true             # 允许模型每轮最多反问一次（决议 3）
 
-# ===== 检索来源（全部免费无 key；web 未实现）=====
+# ===== 摘要流水线（照 AIHOT 的"截断 + 一次调用"，见 docs/04）=====
+summary:
+  prompts_dir: "prompts"
+  truncate_chars: 6000            # 送模型前正文截断阈值（AIHOT 实测用的就是 6000）
+  max_text_chars: 60000           # 本地全文硬上限，超出记 documents.truncated=1
+  summary_min_chars: 80
+  summary_max_chars: 160
+  max_sentences: 3
+  guard_check_numbers: true       # 数字可溯源守卫（摘要里的数字必须在正文里找得到）
+  max_points: 4
+
+# ===== 检索来源（决议 2：先只做免 key 的源）=====
 search:
-  providers: ["arxiv", "openalex", "semantic_scholar"]
+  providers: ["arxiv", "openalex", "semantic_scholar", "github"]
   default_limit: 10
   per_provider_limit: 8
   min_interval_s:                 # 限速：每个 provider 的最小请求间隔
     arxiv: 3.0                    # 踩过的坑：arXiv 连续请求会被 406 限速
     openalex: 0.5
     semantic_scholar: 1.0
-  cache_ttl_hours: 6              # 抓取缓存有效期
+    github: 1.0
+  cache_ttl_hours: 6
 
 # ===== 抓取 =====
 fetch:
@@ -31,11 +52,23 @@ fetch:
   max_bytes: 20000000             # 单文件下载上限 20MB
   respect_robots: true
 
-# ===== 正文分块 =====
-chunk:
-  max_chars: 1200                 # 单块上限（进 FTS 的粒度）
-  overlap_chars: 100
-  max_chunks_per_doc: 400         # 超长文档截断，documents 记 truncated
+# ===== 扫描版 / 复杂版式 PDF：MinerU 官方接口（决议 8，见 docs/04 §7）=====
+mineru:
+  enabled: true
+  token_env: "MINERU_API_TOKEN"   # 免登录轻量接口不需要；精准接口需要
+  prefer_agent_api: true          # 优先走免登录轻量接口
+  agent_max_bytes: 10000000       # 轻量接口限制：10MB
+  agent_max_pages: 20             # 轻量接口限制：20 页
+  precise_max_bytes: 200000000    # 精准接口限制：200MB
+  precise_max_pages: 200          # 精准接口限制：200 页
+  poll_interval_s: 5              # 异步：提交 → 轮询
+  poll_timeout_s: 600
+  daily_page_quota: 1000          # 官方每账号每天最高优先级额度，超出只降优先级
+
+# ===== 检索层（决议 6：trigram + 短查询 LIKE 兜底）=====
+search_index:
+  tokenizer: "trigram"
+  fts_min_query_chars: 3          # 短于 3 字自动走 LIKE（实测：2 字 trigram 命不中）
 
 # ===== 路径 =====
 paths:
@@ -45,5 +78,6 @@ paths:
 # ===== 装配开关（论文消融用）=====
 features:
   enable_kb: false                # kb.search 降级通道，默认关
+  enable_mineru: true
   enable_topic_map: true
   enable_route_plan: true

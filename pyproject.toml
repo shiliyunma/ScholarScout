@@ -7,11 +7,11 @@ dependencies = [
     "httpx>=0.28.1,<1",
     "PyYAML>=6.0.2,<7",
     "pywebview>=5.3,<6",
+    "pymupdf>=1.24,<2",
 ]
 
 [project.optional-dependencies]
-# 待审批（见 docs/03 §6），未进白名单前不要启用
-pdf = ["pymupdf>=1.24,<2"]
+# 扫描版/复杂版式走 MinerU 官方 HTTP API，不是本地依赖，见 docs/04 §7
 dev = [
     "pytest>=8.3,<9",
     "ruff>=0.7,<1",
