@@ -73,6 +73,19 @@ class Features:
 
 
 @dataclass(frozen=True)
+class Generation:
+    """生成策略。
+
+    `auto_artifacts=False`（默认）：**先问用户再生成产物** —— 2026-10-05 用户明确要求
+    "知识地图/学习路线/抽背卡应该给用户选择的空间，不应该第一次会话就生成"。除了省 token，
+    更重要的是别把用户没要的东西塞给他。
+    `True` 是给论文留的对照臂（旧行为：每轮自动产出"主题图 + 路线"）。
+    """
+
+    auto_artifacts: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     chat: LlmProfile
     summary: LlmProfile
@@ -80,6 +93,7 @@ class Config:
     features: Features
     data_dir: Path
     db_path: Path
+    generation: Generation = field(default_factory=Generation)
     raw: dict[str, Any] = field(default_factory=dict)
     summary_cfg: SummarySettings = field(
         default_factory=lambda: SummarySettings.from_raw(None, home=paths.home())
@@ -142,6 +156,9 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
     llm_section = raw.get("llm", {}) if isinstance(raw.get("llm"), dict) else {}
     runtime_section = raw.get("runtime", {}) if isinstance(raw.get("runtime"), dict) else {}
     feature_section = raw.get("features", {}) if isinstance(raw.get("features"), dict) else {}
+    generation_section = (
+        raw.get("generation", {}) if isinstance(raw.get("generation"), dict) else {}
+    )
 
     search_cfg = SearchSettings.from_raw(raw.get("search"))
     fetch_cfg = FetchSettings.from_raw(raw.get("fetch"))
@@ -170,6 +187,9 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         ),
         data_dir=paths.data_dir(),
         db_path=paths.db_path(),
+        generation=Generation(
+            auto_artifacts=bool(generation_section.get("auto_artifacts", False)),
+        ),
         raw=raw,
         summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),
         fetch_cfg=fetch_cfg,

@@ -985,3 +985,28 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   border: 1px solid var(--ui-accent, #0053fd);
 }
 #session-list li.is-pinned { font-weight: 600; }
+
+/* ─────────────────────────────────────────────────── 产物快捷栏（按需生成）
+   放在输入框上方：默认不自动生成，用户点一下才是"我明确要了"。 */
+
+.quickbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 10px 0;
+  border-top: 1px solid var(--ui-border, rgba(128, 128, 128, 0.18));
+}
+.quickbar button {
+  padding: 3px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--ui-border, rgba(128, 128, 128, 0.3));
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.quickbar button:hover {
+  border-color: var(--ui-accent, #0053fd);
+  color: var(--ui-accent, #0053fd);
+}

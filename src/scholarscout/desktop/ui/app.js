@@ -1501,7 +1501,29 @@ async function copyTextModal() {
   }
 }
 
+/** 产物按需生成：点按钮就是"我明确要了"，用一条真实的用户消息把请求发出去 ——
+ *  这样"用户要了什么"在会话记录里看得见，不是偷偷调工具。 */
+var ASK_TEXTS = {
+  map: "请基于本次会话已经取到的资料，把主题整理成知识地图（调用 topic.build_map）。",
+  route: "请基于本次会话已经取到的资料，生成一条 4 周学习路线（调用 route.plan）。",
+  cards: "请把本次会话的关键概念做成抽背卡（调用 note.save，kind 用 card）。",
+};
+
+function askArtifact(kind) {
+  var text = ASK_TEXTS[kind];
+  if (!text) return;
+  if (state.sending) {
+    el("status").textContent = "上一轮还没结束，等它跑完再点";
+    return;
+  }
+  send(text);
+}
+
 function wire() {
+  el("quickbar").addEventListener("click", function (event) {
+    var target = event.target.closest("button[data-ask]");
+    if (target) askArtifact(target.dataset.ask);
+  });
   el("btn-textmodal-close").addEventListener("click", closeTextModal);
   el("btn-textmodal-copy").addEventListener("click", copyTextModal);
   el("textmodal").addEventListener("click", function (event) {

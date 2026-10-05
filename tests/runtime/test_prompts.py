@@ -34,7 +34,7 @@ def test_prompt_requires_both_artifacts_by_default() -> None:
     按旧提示词的"要方向全景才画图"确实不用画）。但产物数一顿一顿地变，度量就没法用，
     而且地图是路线的依据 —— 所以约定：方向型提问默认两件都出，只出一件不算收工。
     """
-    prompt = build_system_prompt(toolsets=["research"])
+    prompt = build_system_prompt(toolsets=["research"], auto_artifacts=True)
     assert "别只出一件就收工" in prompt
     assert "先 topic.build_map" in prompt
     # 地图要排在路线之前（先看清方向再排顺序）
@@ -42,10 +42,14 @@ def test_prompt_requires_both_artifacts_by_default() -> None:
 
 
 def test_prompt_carries_budget_discipline() -> None:
-    prompt = build_system_prompt(toolsets=["research"])
-    assert "最多 2-3 次" in prompt
-    assert "10 次工具调用" in prompt
-    assert "用户要的是路线和地图" in prompt
+    """从默认说 10 次工具调用 → 默认档**不**硬性要求产物，但预算纪律仍然要在。"""
+    on_demand = build_system_prompt(toolsets=["research"])
+    assert "最多 2-3 次" in on_demand
+    assert "等用户点单再花" in on_demand
+
+    auto = build_system_prompt(toolsets=["research"], auto_artifacts=True)
+    assert "10 次工具调用" in auto
+    assert "用户要的是路线和地图" in auto
 
 
 def test_prompt_forbids_inventing_facts() -> None:

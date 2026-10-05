@@ -28,6 +28,7 @@ from scholarscout.app import build_context  # noqa: E402
 from scholarscout.config import load_config  # noqa: E402
 from scholarscout.grading.tiers import classify_source, load_rules  # noqa: E402
 from scholarscout.rpc.methods import dispatch  # noqa: E402
+from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash  # noqa: E402
 from scholarscout.runtime.toolctx import ToolContext  # noqa: E402
 from scholarscout.state.ingest import upsert_source  # noqa: E402
 from scholarscout.tools.route_plan import (  # noqa: E402
@@ -249,11 +250,48 @@ def run_e2(rows: list[dict[str, Any]]) -> dict[str, Any]:
 # ----------------------------------------------------------------------- E3 端到端
 
 
-def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: no cover - 需真模型
+#: 用户"要产物"的措辞（用来判断模型有没有主动把选择权交出去 —— **启发式，不精确**）
+ASK_PATTERNS = ("要不要", "需要我", "要我", "是否要", "需不需要", "要的话", "需要的话")
+ARTIFACT_WORDS = ("地图", "路线", "抽背卡", "卡片", "知识图谱")
+
+#: 按需档下"用户点单"的请求文本（对应界面上的三个按钮）
+FOLLOW_UP_TEXT = (
+    "请基于刚才取到的资料，把知识地图和学习路线都生成出来（topic.build_map + route.plan）。"
+)
+
+
+def _looks_like_asking(text: str) -> bool:
+    """模型有没有在结尾问用户"要不要生成产物"。
+
+    这是**措辞启发式**：既不是语义判断，也不是"用户是否满意"。报告里必须标注这一点，
+    别把它当成用户满意度。确定性口径是 `on_demand_success_rate`（看库里有没有真多出产物）。
+    """
+    body = str(text or "")
+    return any(pattern in body for pattern in ASK_PATTERNS) and any(
+        word in body for word in ARTIFACT_WORDS
+    )
+
+
+def run_e3(  # pragma: no cover - 需真模型
+    ctx: Any,
+    rows: list[dict[str, Any]],
+    *,
+    auto_artifacts: bool = False,
+    ask_artifacts: bool = False,
+) -> dict[str, Any]:
+    """E3 端到端真机跑。
+
+    ``auto_artifacts=True`` = 对照臂（旧行为：提示词要求每轮自动出主题图 + 路线）。
+    默认 False = 按需档：模型只在用户明确要了（或点了界面按钮）时才出产物。
+    ``ask_artifacts=True`` = 首轮后再发一条"请生成"的消息，量**按需生成成功率** ——
+    这个是确定性口径（看库里有没多出产物），不依赖措辞启发式。
+    """
     from scholarscout.state import traces
 
     ctx.config = replace(
-        ctx.config, runtime=replace(ctx.config.runtime, max_tool_calls_per_turn=E3_TOOL_BUDGET)
+        ctx.config,
+        runtime=replace(ctx.config.runtime, max_tool_calls_per_turn=E3_TOOL_BUDGET),
+        generation=replace(ctx.config.generation, auto_artifacts=auto_artifacts),
     )
     tasks: list[dict[str, Any]] = []
 
@@ -261,6 +299,20 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
         started = time.perf_counter()
         session_id = dispatch(ctx, "session.create", {"title": f"E3 {row['id']}"})["session_id"]
         result = dispatch(ctx, "chat.send", {"session_id": session_id, "text": row["request"]})
+        first_text = str(result.get("text") or "")
+        artifact_count_sql = (
+            "SELECT (SELECT count(*) FROM topic_maps WHERE session_id = ?)"
+            " + (SELECT count(*) FROM learning_routes WHERE session_id = ?)"
+            " + (SELECT count(*) FROM notes WHERE session_id = ?)"
+        )
+        first_artifacts = ctx.db.scalar_int(
+            artifact_count_sql, (session_id, session_id, session_id)
+        )
+        addressed = False
+        if ask_artifacts:
+            dispatch(ctx, "chat.send", {"session_id": session_id, "text": FOLLOW_UP_TEXT})
+            after = ctx.db.scalar_int(artifact_count_sql, (session_id, session_id, session_id))
+            addressed = after > first_artifacts
         elapsed_ms = int((time.perf_counter() - started) * 1000)
 
         traces_rows = [
@@ -326,6 +378,9 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
                     [r["latency_ms"] or 0 for r in traces_rows if r["ok"]], 95
                 ),
                 "artifacts": {"topic_maps": len(maps), "routes": len(plans)},
+                "first_turn_artifacts": first_artifacts,
+                "asked": _looks_like_asking(first_text),
+                "addressed_on_demand": addressed,
                 "modes": modes,
                 "degrade_reasons": reasons,
                 "coverage": metrics.float_rate(grounded, total),
@@ -382,6 +437,26 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
             ),
             len(tasks),
         ),
+        # 「自动出产物」比例：按需档下这个数**应该接近 0**；对照臂下接近 1。
+        # 两个档位放在一起才是完整结论：成本差多少、用户是不是真的需要。
+        "auto_artifact_rate": metrics.float_rate(
+            sum(1 for task in tasks if task["first_turn_artifacts"] >= 1), len(tasks)
+        ),
+        # 「模型有没有把选择权交出去」：启发式（措辞匹配），报告里要标注不精确。
+        "asked_rate": metrics.float_rate(sum(1 for task in tasks if task["asked"]), len(tasks)),
+        # 按需生成成功率：用户点单之后真出产物的比例（确定性口径，没跑 ask 就是 None）。
+        "on_demand_success_rate": (
+            metrics.float_rate(sum(1 for task in tasks if task["addressed_on_demand"]), len(tasks))
+            if ask_artifacts
+            else None
+        ),
+        "arm": {
+            "auto_artifacts": auto_artifacts,
+            "asked_followup": ask_artifacts,
+            "system_prompt_hash": system_prompt_hash(
+                build_system_prompt(auto_artifacts=auto_artifacts)
+            ),
+        },
         "counts": {
             "grounded": sum(t["counts"]["grounded"] for t in tasks),
             "total": sum(t["counts"]["total"] for t in tasks),
@@ -403,6 +478,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--set", default="all", choices=["e1", "e2", "e3", "all"])
     parser.add_argument("--live", action="store_true", help="跑 E3（需要模型密钥与网络）")
     parser.add_argument("--ablation", action="store_true", help="跑对照臂")
+    parser.add_argument(
+        "--auto-artifacts",
+        action="store_true",
+        help="E3 对照臂：提示词要求每轮自动出产物（旧行为）；默认是按需档",
+    )
+    parser.add_argument(
+        "--ask-artifacts",
+        action="store_true",
+        help="E3：首轮之后再发一条「请生成」，量按需生成成功率",
+    )
     parser.add_argument("--out", default=str(ROOT / "eval" / "reports"))
     args = parser.parse_args(argv)
 
@@ -428,7 +513,12 @@ def main(argv: list[str] | None = None) -> int:
                     results["sets"]["e3"] = {"skipped": "未配置模型（.env 里的 LLM_API_KEY）"}
                     print("E3 跳过：未配置模型")
                 else:
-                    results["sets"]["e3"] = run_e3(ctx, load_set("e3_tasks"))
+                    results["sets"]["e3"] = run_e3(
+                        ctx,
+                        load_set("e3_tasks"),
+                        auto_artifacts=args.auto_artifacts,
+                        ask_artifacts=args.ask_artifacts,
+                    )
                     print(f"E3 完成：{results['sets']['e3']['n']} 条")
         finally:
             # 必须显式关库：Windows 上 WAL 句柄没释放会让临时目录删不掉（踩过）

@@ -169,6 +169,19 @@ def render(results: dict[str, Any]) -> str:
                             _pct(e3.get("artifact_completeness")),
                             "—",
                         ],
+                        [
+                            "首轮就自动出产物的比例（按需档应≈0）",
+                            _pct(e3.get("auto_artifact_rate")),
+                            "—",
+                        ],
+                        ["结尾主动询问要不要生成（启发式）", _pct(e3.get("asked_rate")), "—"],
+                        [
+                            "按需生成成功率（点单后真出产物）",
+                            _pct(e3.get("on_demand_success_rate"))
+                            if e3.get("on_demand_success_rate") is not None
+                            else "未跑 --ask-artifacts",
+                            "—",
+                        ],
                         ["模型", str(e3["model"]), "—"],
                         ["工具成功率", _pct(e3["tool_success_rate"]), "—"],
                         [

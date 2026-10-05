@@ -115,6 +115,7 @@ def build_messages(
     prompt = build_system_prompt(
         toolsets=list(toolsets or ["research"]),
         allow_clarify=config.runtime.allow_clarify,
+        auto_artifacts=config.generation.auto_artifacts,
     )
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     history, _ = sessions.list_messages(db, session_id, limit=_HISTORY_LIMIT)
@@ -402,6 +403,7 @@ def mark_system_prompt(
     prompt = build_system_prompt(
         toolsets=list(toolsets or ["research"]),
         allow_clarify=config.runtime.allow_clarify,
+        auto_artifacts=config.generation.auto_artifacts,
     )
     value = system_prompt_hash(prompt)
     db.execute("UPDATE sessions SET system_prompt_hash = ? WHERE id = ?", (value, session_id))
