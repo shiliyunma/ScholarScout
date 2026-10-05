@@ -48,6 +48,11 @@ check_untyped_defs = true
 # 目标：逐步收紧到 strict = true（W2 起）
 strict = false
 
+# PyYAML 不带类型标注；不引第三方 stub 包（依赖要审批），直接放过该模块
+[[tool.mypy.overrides]]
+module = ["yaml.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
