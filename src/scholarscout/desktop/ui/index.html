@@ -14,6 +14,7 @@
     <div class="status" id="status">正在连接后端…</div>
     <div class="actions">
       <button id="btn-theme" class="ghost" type="button" title="切换浅色/深色">跟随系统</button>
+      <button id="btn-settings" class="ghost" type="button" title="设置（模型、外观、生成策略、数据）">设置</button>
       <button id="btn-new" type="button">新建会话</button>
       <button id="btn-refresh" type="button">刷新</button>
     </div>
@@ -87,6 +88,21 @@
       </div>
     </section>
   </main>
+
+  <div id="settings" class="overlay" hidden>
+    <div class="sheet">
+      <div class="sheet-head">
+        <strong>设置</strong>
+        <span class="hint" id="settings-note"></span>
+        <button id="btn-settings-close" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="sheet-body" id="settings-body"></div>
+      <div class="sheet-foot">
+        <span class="hint" id="settings-path"></span>
+        <button id="btn-settings-save" type="button">保存</button>
+      </div>
+    </div>
+  </div>
 
   <script src="markdown.js"></script>
   <script src="app.js"></script>

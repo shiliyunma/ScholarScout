@@ -104,3 +104,9 @@ features:
   enable_mineru: true
   enable_topic_map: true
   enable_route_plan: true
+
+# ===== 生成策略 =====
+generation:
+  # 产物（知识地图 / 学习路线 / 抽背卡）是否每轮自动生成。
+  # false = 先问用户（默认）：由用户主动选择时才生成 —— 省 token，也把选择权还给用户。
+  auto_artifacts: false

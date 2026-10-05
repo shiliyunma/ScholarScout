@@ -988,13 +988,381 @@ async function boot() {
     await loadCards();
     await loadSources("");
     await loadNotes();
+    // 深链接 #settings：给排障/截图用，正常使用不受影响
+    if (location.hash === "#settings") await openSettings();
   } catch (error) {
     el("status").textContent = "连接后端失败：" + error.message;
     el("status").classList.add("is-bad");
   }
 }
 
+/* ------------------------------------------------------------------ 设置 */
+
+var UI_SCALE_KEY = "scout:uiScale";
+
+/* 面板是**由这份声明画出来的**，字段名必须与 settings_io.FIELDS 一一对应（后端会拒未知键）。 */
+var SETTINGS_SPEC = [
+  {
+    title: "模型",
+    hint: "写回 config.yaml 并立即生效；API Key 只写进 .env，永不回显",
+    fields: [
+      { key: "llm.chat.model", label: "对话模型", kind: "text" },
+      { key: "llm.chat.base_url", label: "接口地址", kind: "text" },
+      { key: "llm.chat.temperature", label: "temperature", kind: "number", step: "0.1" },
+      { key: "llm.chat.max_tokens", label: "max_tokens", kind: "number" },
+      { key: "llm.chat.timeout_s", label: "超时（秒）", kind: "number" },
+      { key: "llm.summary.model", label: "摘要模型", kind: "text" },
+      { key: "llm.summary.base_url", label: "摘要接口地址", kind: "text" },
+      { key: "llm.summary.max_tokens", label: "摘要 max_tokens", kind: "number" },
+      { key: "llm.api_key", label: "API Key", kind: "secret" },
+    ],
+  },
+  {
+    title: "生成策略",
+    hint: "关掉「自动」之后，知识地图与学习路线只在你点了按钮或明确要求时才生成",
+    fields: [
+      { key: "generation.auto_artifacts", label: "每轮自动生成产物", kind: "bool" },
+      { key: "features.enable_topic_map", label: "允许生成知识地图", kind: "bool" },
+      { key: "features.enable_route_plan", label: "允许生成学习路线", kind: "bool" },
+      { key: "features.enable_mineru", label: "扫描版 PDF 走 MinerU 兜底", kind: "bool" },
+      { key: "runtime.allow_clarify", label: "允许 AI 反问澄清", kind: "bool" },
+    ],
+  },
+  {
+    title: "检索与预算",
+    hint: "对应 config.yaml 里的 search.* 与 runtime.*",
+    fields: [
+      { key: "search.searxng_base_url", label: "自建 SearxNG 地址", kind: "text" },
+      { key: "search.openalex_mailto", label: "OpenAlex 联系邮箱", kind: "text" },
+      { key: "runtime.max_tool_calls_per_turn", label: "单轮工具预算", kind: "number" },
+      { key: "runtime.max_context_chars", label: "单文档正文上限", kind: "number" },
+      { key: "search.tavily_api_key", label: "Tavily Key", kind: "secret" },
+      { key: "search.github_token", label: "GitHub Token", kind: "secret" },
+      { key: "mineru.api_token", label: "MinerU Token", kind: "secret" },
+    ],
+  },
+];
+
+var THEME_CHOICES = [
+  ["auto", "跟随系统"],
+  ["light", "浅色"],
+  ["dark", "深色"],
+];
+
+/*: 「数据」栏的中文名 —— 后端给的是目录键名，界面别直接甩英文。 */
+var USAGE_LABELS = {
+  database: "数据库",
+  fetch_cache: "抓取缓存",
+  raw: "原件",
+  text: "全文",
+  notes: "笔记",
+  run: "临时文件（run/）",
+};
+
+function fmtBytes(bytes) {
+  var n = Number(bytes) || 0;
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
+}
+
+function fieldId(key) {
+  return "set-" + key.replace(/\./g, "-");
+}
+
+/** 界面缩放：用 zoom 让正文与内边距一起缩放；同时把高度换算回来，免得底部输入框被裁掉。 */
+function applyUiScale(scale) {
+  var value = Math.min(1.25, Math.max(0.9, Number(scale) || 1));
+  document.body.style.zoom = String(value);
+  document.body.style.height = (100 / value).toFixed(2) + "vh";
+  try {
+    localStorage.setItem(UI_SCALE_KEY, String(value));
+  } catch (error) {
+    /* 只是不持久化 */
+  }
+  return value;
+}
+
+function loadUiScale() {
+  var saved = null;
+  try {
+    saved = localStorage.getItem(UI_SCALE_KEY);
+  } catch (error) {
+    saved = null;
+  }
+  return applyUiScale(saved === null ? 1 : Number(saved));
+}
+
+function setDeep(target, path, value) {
+  var node = target;
+  for (var index = 0; index < path.length - 1; index += 1) {
+    if (!node[path[index]] || typeof node[path[index]] !== "object") node[path[index]] = {};
+    node = node[path[index]];
+  }
+  node[path[path.length - 1]] = value;
+}
+
+function renderSettingsField(field, values, secrets) {
+  var row = document.createElement("label");
+  row.className = "set-row";
+  var name = document.createElement("span");
+  name.textContent = field.label;
+  row.appendChild(name);
+  var input;
+  if (field.kind === "bool") {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    // 只认明确的 true：值缺失时显示"未勾选"，不要假装它是开的
+    input.checked = values[field.key] === true;
+  } else if (field.kind === "secret") {
+    input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "new-password";
+    input.placeholder = secrets[field.key] ? "已配置（留空则不修改）" : "未配置";
+  } else {
+    input = document.createElement("input");
+    input.type = field.kind === "number" ? "number" : "text";
+    if (field.step) input.step = field.step;
+    input.value = values[field.key] === undefined || values[field.key] === null ? "" : String(values[field.key]);
+  }
+  input.id = fieldId(field.key);
+  if (field.kind === "bool") input.className = "set-check";
+  row.appendChild(input);
+  return row;
+}
+
+function renderAppearance(container) {
+  var group = document.createElement("div");
+  group.className = "set-group";
+  var head = document.createElement("h4");
+  head.textContent = "外观";
+  group.appendChild(head);
+  var note = document.createElement("p");
+  note.className = "hint";
+  note.textContent = "只存在这台机器上（localStorage），不改配置文件";
+  group.appendChild(note);
+
+  var themeRow = document.createElement("div");
+  themeRow.className = "set-row";
+  var themeLabel = document.createElement("span");
+  themeLabel.textContent = "主题";
+  themeRow.appendChild(themeLabel);
+  var seg = document.createElement("div");
+  seg.className = "set-seg";
+  THEME_CHOICES.forEach(function (pair) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = pair[1];
+    button.classList.toggle("is-on", state.theme === pair[0]);
+    button.addEventListener("click", function () {
+      state.theme = pair[0];
+      try {
+        localStorage.setItem(THEME_KEY, pair[0]);
+      } catch (error) {
+        /* 忽略 */
+      }
+      applyTheme(pair[0]);
+      seg.querySelectorAll("button").forEach(function (other) {
+        other.classList.toggle("is-on", other === button);
+      });
+    });
+    seg.appendChild(button);
+  });
+  themeRow.appendChild(seg);
+  group.appendChild(themeRow);
+
+  var scaleRow = document.createElement("div");
+  scaleRow.className = "set-row";
+  var scaleLabel = document.createElement("span");
+  scaleLabel.textContent = "界面缩放";
+  scaleRow.appendChild(scaleLabel);
+  var scaleInput = document.createElement("input");
+  scaleInput.type = "range";
+  scaleInput.min = "0.9";
+  scaleInput.max = "1.25";
+  scaleInput.step = "0.05";
+  scaleInput.id = "set-ui-scale";
+  scaleInput.value = String(loadUiScale());
+  var scaleValue = document.createElement("span");
+  scaleValue.className = "hint";
+  scaleInput.addEventListener("input", function () {
+    scaleValue.textContent = Math.round(applyUiScale(scaleInput.value) * 100) + "%";
+  });
+  scaleValue.textContent = Math.round(Number(scaleInput.value) * 100) + "%";
+  var scaleWrap = document.createElement("div");
+  scaleWrap.style.display = "flex";
+  scaleWrap.style.gap = "8px";
+  scaleWrap.style.alignItems = "center";
+  scaleWrap.appendChild(scaleInput);
+  scaleWrap.appendChild(scaleValue);
+  scaleRow.appendChild(scaleWrap);
+  group.appendChild(scaleRow);
+
+  [["left", "左栏宽度"], ["right", "右栏宽度"]].forEach(function (pair) {
+    var row = document.createElement("div");
+    row.className = "set-row";
+    var label = document.createElement("span");
+    label.textContent = pair[1];
+    row.appendChild(label);
+    var input = document.createElement("input");
+    input.type = "number";
+    input.id = "set-width-" + pair[0];
+    input.min = String(LAYOUT_MIN[pair[0]]);
+    input.value = String(Math.round(state.layout[pair[0]]));
+    row.appendChild(input);
+    group.appendChild(row);
+  });
+
+  container.appendChild(group);
+}
+
+function renderUsage(group, payload) {
+  var body = group.querySelector(".set-usage");
+  body.textContent = "";
+  var usage = (payload && payload.usage) || {};
+  Object.keys(usage).forEach(function (name) {
+    var row = document.createElement("div");
+    row.className = "usage-row";
+    var label = document.createElement("span");
+    label.textContent = USAGE_LABELS[name] || name;
+    label.title = usage[name].path || "";
+    var size = document.createElement("span");
+    size.className = "hint";
+    size.textContent = fmtBytes(usage[name].bytes) + " · " + usage[name].files + " 个文件";
+    row.appendChild(label);
+    row.appendChild(size);
+    body.appendChild(row);
+  });
+}
+
+async function openSettings() {
+  var payload = await scout.call("settings.get", {});
+  var values = payload.values || {};
+  var secrets = payload.secrets_configured || {};
+  var body = el("settings-body");
+  body.textContent = "";
+  SETTINGS_SPEC.forEach(function (group) {
+    var box = document.createElement("div");
+    box.className = "set-group";
+    var head = document.createElement("h4");
+    head.textContent = group.title;
+    box.appendChild(head);
+    var note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = group.hint;
+    box.appendChild(note);
+    group.fields.forEach(function (field) {
+      box.appendChild(renderSettingsField(field, values, secrets));
+    });
+    body.appendChild(box);
+  });
+
+  renderAppearance(body);
+
+  var dataGroup = document.createElement("div");
+  dataGroup.className = "set-group";
+  var dataHead = document.createElement("h4");
+  dataHead.textContent = "数据";
+  dataGroup.appendChild(dataHead);
+  var dataNote = document.createElement("p");
+  dataNote.className = "hint";
+  dataNote.textContent = "资料本体（原件/全文/笔记）不在可清理范围内，只清缓存类目录";
+  dataGroup.appendChild(dataNote);
+  var usageBox = document.createElement("div");
+  usageBox.className = "set-usage";
+  dataGroup.appendChild(usageBox);
+  var cleanRow = document.createElement("div");
+  cleanRow.className = "set-row";
+  var cleanLabel = document.createElement("span");
+  cleanLabel.textContent = "清理";
+  cleanRow.appendChild(cleanLabel);
+  var buttons = document.createElement("div");
+  buttons.className = "set-seg";
+  Object.keys(payload.cleanable || {}).forEach(function (target) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = target === "fetch_cache" ? "清抓取缓存" : "清 run/ 临时文件";
+    button.title = payload.cleanable[target];
+    button.addEventListener("click", async function () {
+      if (!window.confirm("确定清理「" + button.title + "」？")) return;
+      var result = await scout.call("settings.cleanup", { target: target });
+      el("settings-note").textContent =
+        "已清理 " + result.removed.files + " 个文件，释放 " + fmtBytes(result.removed.bytes);
+      renderUsage(dataGroup, await scout.call("settings.usage", {}));
+    });
+    buttons.appendChild(button);
+  });
+  cleanRow.appendChild(buttons);
+  dataGroup.appendChild(cleanRow);
+  body.appendChild(dataGroup);
+
+  el("settings-path").textContent = "配置文件：" + (payload.config_path || "");
+  el("settings-note").textContent = "";
+  renderUsage(dataGroup, await scout.call("settings.usage", {}));
+  body.scrollTop = 0; // 每次打开都从「模型」那一栏开始看，不留在上次滚到的位置
+  el("settings").hidden = false;
+}
+
+function closeSettings() {
+  el("settings").hidden = true;
+}
+
+async function saveSettings() {
+  var updates = {};
+  var note = el("settings-note");
+  SETTINGS_SPEC.forEach(function (group) {
+    group.fields.forEach(function (field) {
+      var input = el(fieldId(field.key));
+      if (!input) return;
+      var text = String(input.value === undefined ? "" : input.value).trim();
+      if (field.kind === "bool") {
+        setDeep(updates, field.key.split("."), input.checked);
+        return;
+      }
+      if (field.kind === "secret" && !text) return; // 留空＝不修改
+      if (!text) return;
+      setDeep(updates, field.key.split("."), field.kind === "number" ? Number(text) : text);
+    });
+  });
+
+  [["left", "left"], ["right", "right"]].forEach(function (pair) {
+    var input = el("set-width-" + pair[0]);
+    if (!input || !input.value) return;
+    var width = Math.max(LAYOUT_MIN[pair[1]], Number(input.value) || 0);
+    state.layout[pair[1]] = width;
+  });
+  applyUiScale(el("set-ui-scale") ? el("set-ui-scale").value : 1);
+  applyLayout(state.layout.left, state.layout.right, true);
+
+  if (!Object.keys(updates).length) {
+    note.textContent = "没有要保存的改动";
+    note.className = "hint set-bad";
+    return;
+  }
+  try {
+    var result = await scout.call("settings.update", { updates });
+    var notes = (result.notes || []).join("；");
+    note.textContent = "已保存并生效" + (notes ? "（" + notes + "）" : "");
+    note.className = "hint set-ok";
+    await openSettings();
+  } catch (error) {
+    note.textContent = "保存失败：" + error.message;
+    note.className = "hint set-bad";
+  }
+}
+
 function wire() {
+  el("btn-settings").addEventListener("click", function () {
+    openSettings().catch(function (error) {
+      el("status").textContent = "打开设置失败：" + error.message;
+    });
+  });
+  el("btn-settings-close").addEventListener("click", closeSettings);
+  el("btn-settings-save").addEventListener("click", saveSettings);
+  el("settings").addEventListener("click", function (event) {
+    if (event.target === el("settings")) closeSettings();
+  });
   el("btn-theme").addEventListener("click", cycleTheme);
   el("btn-history").addEventListener("click", toggleHistory);
   el("btn-note-kind-note").addEventListener("click", function () {
@@ -1062,5 +1430,6 @@ try {
   saved = null;
 }
 applyTheme(saved === "light" || saved === "dark" ? saved : "auto");
+loadUiScale(); /* 布局由 boot 里的 initLayout 负责，这里只管缩放 */
 wire();
 window.addEventListener("pywebviewready", boot);

@@ -9,7 +9,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +32,20 @@ def window_icon() -> str | None:
     return str(ICON_PATH) if ICON_PATH.is_file() else None
 
 
+def _open_settings_later(window: Any, delay_s: float = 2.0) -> None:
+    """页面渲染完再打开设置面板（`evaluate_js` 会自己排到 UI 线程，所以可以在子线程里等）。"""
+    time.sleep(delay_s)
+    # 纯排障用途：窗口已经关了 / JS 报错都不该影响应用
+    with contextlib.suppress(Exception):
+        window.evaluate_js("if (typeof openSettings === 'function') { openSettings(); }")
+
+
 def launch(
     *,
     db_path: str | Path | None = None,
     toolsets: str = "research",
     debug: bool = False,
+    open_settings: bool = False,
 ) -> int:
     """打开窗口并阻塞到用户关闭。返回进程退出码。"""
     try:
@@ -76,6 +88,11 @@ def launch(
             细节见 `desktop/icon.py` 的模块说明。
             """
             apply_window_icon(WINDOW_TITLE, ICON_PATH)
+            if open_settings:
+                # 为什么不在 URL 上加 #settings：pywebview 解析 "index.html#settings" 会加载失败，
+                # 窗口全白（实测）。所以改成页面起来之后再调一次 JS —— 界面里的 openSettings 是全局函数。
+                thread = threading.Thread(target=_open_settings_later, args=(window,), daemon=True)
+                thread.start()
 
         start_kwargs: dict[str, Any] = {"debug": debug, "func": _on_started}
         if sys.platform != "win32":
@@ -93,12 +110,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default=None, help="数据库路径，默认 run/state.db")
     parser.add_argument("--toolsets", default="research", help="逗号分隔的工具集")
     parser.add_argument("--debug", action="store_true", help="开 webview 调试（右键可查元素）")
+    parser.add_argument(
+        "--open-settings",
+        action="store_true",
+        help="启动后直接打开设置面板（排障/截图用）",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return launch(db_path=args.db, toolsets=str(args.toolsets), debug=bool(args.debug))
+    return launch(
+        db_path=args.db,
+        toolsets=str(args.toolsets),
+        debug=bool(args.debug),
+        open_settings=bool(args.open_settings),
+    )
 
 
 if __name__ == "__main__":

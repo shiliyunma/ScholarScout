@@ -801,3 +801,103 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ───────────────────────────────────────────────────────────── 设置面板
+   纯覆盖层：不改变原有三栏布局；配色全部走主题令牌（带兜底，令牌改名也不会变成透明）。*/
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.32);
+}
+.overlay[hidden] { display: none; }
+
+.sheet {
+  width: min(760px, 92vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--ui-bg-elevated, var(--ui-bg-card, var(--ui-bg-chrome, #fff)));
+  color: var(--ui-text-primary, #17171a);
+  border: 1px solid var(--ui-border, rgba(128, 128, 128, 0.28));
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.sheet-head,
+.sheet-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--ui-border, rgba(128, 128, 128, 0.22));
+  background: var(--ui-bg-sidebar, transparent);
+}
+.sheet-foot {
+  border-bottom: 0;
+  border-top: 1px solid var(--ui-border, rgba(128, 128, 128, 0.22));
+  justify-content: space-between;
+}
+.sheet-head strong { flex: 1; }
+.sheet-body {
+  padding: 6px 14px 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.set-group { display: flex; flex-direction: column; gap: 6px; }
+.set-group h4 {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  color: var(--ui-text-secondary, #6b6b73);
+}
+.set-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(180px, 1.4fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.set-row input[type="text"],
+.set-row input[type="number"],
+.set-row input[type="password"],
+.set-row select {
+  padding: 5px 8px;
+  border: 1px solid var(--ui-border, rgba(128, 128, 128, 0.3));
+  border-radius: 7px;
+  background: var(--ui-bg-card, transparent);
+  color: inherit;
+  font: inherit;
+  min-width: 0;
+}
+.set-row input[type="checkbox"] { justify-self: start; }
+.set-seg { display: flex; gap: 6px; }
+.set-seg button {
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--ui-border, rgba(128, 128, 128, 0.3));
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.set-seg button.is-on {
+  border-color: var(--ui-accent, #0053fd);
+  color: var(--ui-accent, #0053fd);
+}
+.usage-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) auto auto;
+  gap: 10px;
+  font-size: 12.5px;
+  align-items: center;
+}
+.set-bad { color: var(--ui-red, #cf2d56); }
+.set-ok { color: var(--ui-green, #1f8a65); }

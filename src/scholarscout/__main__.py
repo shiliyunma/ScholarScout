@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--desktop", action="store_true", help="打开桌面窗口（需要 pywebview）")
     parser.add_argument(
+        "--open-settings",
+        action="store_true",
+        help="配合 --desktop：启动后直接打开设置面板（排障/截图用）",
+    )
+    parser.add_argument(
         "--check-ui",
         action="store_true",
         help="校验桌面 UI 资源（文件/方法名/无外链），门槛脚本用",
@@ -104,7 +109,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.desktop:
         from scholarscout.desktop.app import launch
 
-        return launch(db_path=db_target, toolsets=",".join(toolsets))
+        return launch(
+            db_path=db_target,
+            toolsets=",".join(toolsets),
+            open_settings=bool(getattr(args, "open_settings", False)),
+        )
 
     print(
         "可用：--version / --initdb / --rpc / --chat / --desktop\n"

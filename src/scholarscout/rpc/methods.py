@@ -15,10 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scholarscout import __version__, paths
+from scholarscout import __version__, paths, settings_io
 from scholarscout.config import Config
 from scholarscout.fetch.http import HttpClient
-from scholarscout.providers.llm import LlmClient, LlmError
+from scholarscout.providers.llm import LlmClient, LlmError, create_client
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.runtime import loop, registry
 from scholarscout.state import archive, learning, sessions, traces
@@ -385,6 +385,54 @@ def archive_reveal(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         raise RpcError(Code.NOT_FOUND, f"文件不在磁盘上：{rel}")
     _reveal_in_file_manager(target)
     return {"ok": True, "path": rel, "which": which}
+
+
+# --------------------------------------------------------------------- 设置
+
+
+@method("settings.get")
+def settings_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """当前设置（**密钥只报"是否已配置"，值永不回传**）。"""
+    return settings_io.read_settings(ctx.config)
+
+
+@method("settings.update")
+def settings_update(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """改设置：校验 → 写回 `config.yaml`（密钥写 `.env`）→ **立即生效**（重建模型客户端）。"""
+    params = _params(params)
+    updates = params.get("updates")
+    if not isinstance(updates, dict):
+        raise RpcError(Code.INVALID_PARAMS, "updates 必须是一个对象")
+    try:
+        notes: list[str] = []
+        new_config = settings_io.apply_updates(ctx.config, updates, notes=notes)
+    except settings_io.SettingsError as exc:
+        raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
+    ctx.config = new_config
+    try:
+        ctx.llm = create_client(new_config.chat)
+    except LlmError:
+        # 换了地址/模型但密钥没配好 → 客户端置空，health 会如实显示"未配置模型"
+        ctx.llm = None
+    return {"ok": True, "settings": settings_io.read_settings(new_config), "notes": notes}
+
+
+@method("settings.usage")
+def settings_usage(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """磁盘占用（数据库、抓取缓存、原件、全文、笔记、run/）。"""
+    return {"usage": settings_io.data_usage(), "cleanable": settings_io.CLEANABLE}
+
+
+@method("settings.cleanup")
+def settings_cleanup(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """清理缓存类目录。**资料本体（data/raw、text、notes）不在可清理范围内。**"""
+    params = _params(params)
+    target = str(params.get("target") or "fetch_cache")
+    try:
+        removed = settings_io.cleanup(target=target)
+    except settings_io.SettingsError as exc:
+        raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
+    return {"ok": True, "target": target, "removed": removed}
 
 
 # --------------------------------------------------------------------- 学习产物
