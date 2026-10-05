@@ -11,6 +11,18 @@ DEFAULT_USER_AGENT = "ScholarScout/0.1 (academic research assistant; contact: <y
 #: 与 fetch/http.py 的默认豁免一致（这里再导出一次，方便 config 层引用而不反向依赖 http）
 DEFAULT_ROBOTS_EXEMPT_HOSTS: tuple[str, ...] = ("export.arxiv.org",)
 
+#: MinerU 精准解析接口的 token 环境变量名（未配置时走免 token 的 Agent 轻量接口）
+MINERU_TOKEN_ENV = "MINERU_API_TOKEN"
+
+
+def mineru_token(env: dict[str, str] | None = None) -> str | None:
+    """取 MinerU token；没配返回 None（调用方据此走免 token 的 Agent 接口）。"""
+    import os
+
+    source = env if env is not None else os.environ
+    value = (source.get(MINERU_TOKEN_ENV) or "").strip()
+    return value or None
+
 
 @dataclass(frozen=True)
 class FetchSettings:

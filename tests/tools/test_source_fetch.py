@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -138,24 +139,107 @@ def test_force_bypasses_dedupe(
     assert ctx.db.scalar_int("SELECT count(*) FROM summaries") == 1, "同版本提示词仍是同一行"
 
 
-def test_pdf_without_text_layer_is_reported_honestly(
+def _blank_pdf_bytes() -> bytes:
+    """造一份**合法但没有文字层**的 PDF —— 扫描版的真实形态。
+
+    （别拿 b"%PDF-1.4 not really a pdf" 糊弄：pymupdf 会抛 FileDataError，
+    走到的是"打开失败"分支，测不到"没有文字层 → 交 MinerU"这条主路径。）
+    """
+    import pymupdf
+
+    document = pymupdf.open()
+    document.new_page()
+    payload = document.tobytes()
+    document.close()
+    return payload
+
+
+def test_pdf_without_text_layer_falls_back_to_mineru(
     ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """无文字层的 PDF（多为扫描版）→ 走 MinerU，按结果如实标注。
+
+    这里把 MinerU 逼成"连不上"，验的是**诚实降级**：
+    状态必须是 mineru_failed 且带原因，而不是含糊的 no_text_layer ——
+    两者在论文里是不同的事（"文档没内容" vs "解析服务没干活"）。
+    """
     _redirect_home(monkeypatch, tmp_path)
+    pdf = _blank_pdf_bytes()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, content=b"%PDF-1.4 not really a pdf", headers={"content-type": "application/pdf"}
-        )
+        if "mineru.net" in str(request.url):
+            raise httpx.ConnectError("mineru unreachable", request=request)
+        return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
 
     tool_ctx = _tool_ctx(ctx, handler, llm=StubLlm(reply(SUMMARY_TEXT)))
     result = source_fetch(tool_ctx, url="https://example.com/paper.pdf")
     data = result["data"]
-    assert data["extract_status"] == "no_text_layer"
+    assert data["extract_status"] == "mineru_failed"
+    assert data["extract_engine"] == "mineru"
+    detail = data["extract_detail"] or ""
+    assert "没有文字层" in detail, "要能看出本地是为什么交出去的"
+    assert "network" in detail, "要能看出 MinerU 是为什么没成"
     assert data["chars"] == 0
     assert (tmp_path / data["raw_path"]).is_file(), "抽不出正文也要留下原件"
     assert data["summary"] is not None, "拿不到正文仍要交付（degraded）摘要"
     assert data["summary"]["degraded"] is True
+
+
+def test_pdf_without_text_layer_and_mineru_disabled_stays_honest(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """关掉 MinerU（features.enable_mineru=false）→ 停在 no_text_layer，不硬编也不假装成功。"""
+    _redirect_home(monkeypatch, tmp_path)
+    ctx.config = replace(ctx.config, features=replace(ctx.config.features, enable_mineru=False))
+    pdf = _blank_pdf_bytes()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "mineru.net" in str(request.url):  # pragma: no cover - 不该被调用
+            raise AssertionError("关掉开关后不该访问 MinerU")
+        return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
+
+    tool_ctx = _tool_ctx(ctx, handler, llm=StubLlm(reply(SUMMARY_TEXT)))
+    data = source_fetch(tool_ctx, url="https://example.com/paper.pdf")["data"]
+    assert data["extract_status"] == "no_text_layer"
+    assert data["extract_engine"] == "local"
+    assert "扫描版" in (data["extract_detail"] or "")
+
+
+def test_mineru_success_path_uses_markdown(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MinerU 成功时正文来自 Markdown 链接，engine 记 mineru，detail 记走的是哪条接口。"""
+    _redirect_home(monkeypatch, tmp_path)
+    task_id = "task-123"
+    pdf = _blank_pdf_bytes()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/api/v1/agent/parse/url"):
+            return httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"task_id": task_id}})
+        if f"/api/v1/agent/parse/{task_id}" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {
+                        "task_id": task_id,
+                        "state": "done",
+                        "markdown_url": "https://cdn.example.com/full.md",
+                    },
+                },
+            )
+        if url.endswith("/full.md"):
+            return httpx.Response(200, text="# 扫描版论文\n\n这是 MinerU 抽出来的正文。" * 5)
+        return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
+
+    tool_ctx = _tool_ctx(ctx, handler, llm=StubLlm(reply(SUMMARY_TEXT)))
+    data = source_fetch(tool_ctx, url="https://example.com/scanned.pdf")["data"]
+    assert data["extract_status"] == "ok"
+    assert data["extract_engine"] == "mineru"
+    assert "agent 解析" in (data["extract_detail"] or "")
+    assert data["chars"] > 0
 
 
 def test_fetch_by_source_id(

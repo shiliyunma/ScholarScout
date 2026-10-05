@@ -67,22 +67,40 @@ def _extension(media_type: str, url: str, is_pdf: bool) -> str:
     return "bin"
 
 
-def _pdf_text(content: bytes) -> tuple[str, str, str]:
-    """PDF 抽正文。pymupdf 不可用时如实返回 ``no_text_layer``（MinerU 降级在 M3 末接）。"""
+def _pdf_text(content: bytes) -> tuple[str, str, str, str]:
+    """本地 PDF 抽正文（pymupdf）。抽不到文字时如实返回 ``no_text_layer``，由调用方决定是否走 MinerU。"""
     try:
         import pymupdf
     except ImportError:
-        return "", "no_text_layer", "none"
+        return "", "no_text_layer", "none", "pymupdf 未安装"
     try:
         document = pymupdf.open(stream=content, filetype="pdf")
         try:
             pages = [document.load_page(index).get_text() for index in range(document.page_count)]
         finally:
             document.close()
-    except Exception:
-        return "", "no_text_layer", "local"
+    except Exception as exc:
+        return "", "no_text_layer", "local", f"pymupdf 打开失败：{type(exc).__name__}"
     text = "\n".join(pages).strip()
-    return (text, "ok", "local") if text else ("", "no_text_layer", "local")
+    if text:
+        return text, "ok", "local", ""
+    return "", "no_text_layer", "local", "没有文字层（多为扫描版）→ 交给 MinerU"
+
+
+def _mineru_fallback(ctx: ToolContext, url: str) -> tuple[str, str, str, str]:
+    """落地 MinerU 兜底（决议第 8 题）：本地抽不出文字时，把公开 URL 交给官方 API。
+
+    失败要**如实**记 ``mineru_failed`` + 原因 —— 免 token 的 Agent 服务会间歇性返回
+    ``model service is temporarily unavailable``，这跟"文档确实没有内容"是两件事。
+    """
+    from scholarscout.fetch.mineru import parse_pdf_url
+    from scholarscout.fetch.settings import mineru_token
+
+    http = ctx.require_http()
+    result = parse_pdf_url(http, url, token=mineru_token())
+    if result.ok:
+        return result.text, "ok", "mineru", f"{result.engine} 解析"
+    return "", "mineru_failed", "mineru", f"{result.state}: {result.detail}"
 
 
 def _document_row(ctx: ToolContext, source_id: str, sha256: str) -> dict[str, Any] | None:
@@ -135,6 +153,7 @@ def source_fetch(
                     "text_path": found["text_path"],
                     "extract_status": found["extract_status"],
                     "extract_engine": found["extract_engine"],
+                    "extract_detail": found.get("extract_detail"),
                     "truncated": bool(found["truncated"]),
                     "cached": True,
                     "summary": _summary_payload(summary),
@@ -148,8 +167,15 @@ def source_fetch(
 
     # ---- 抽正文 + 落文件
     doc_id = sessions.new_id("doc")
+    extract_detail = ""
     if is_pdf:
-        text, extract_status, engine = _pdf_text(content)
+        text, extract_status, engine, extract_detail = _pdf_text(content)
+        if not text and ctx.config.features.enable_mineru:
+            # 扫描版/无文字层：走 MinerU 官方 API（契约与实测见 fetch/mineru.py 顶部）
+            text, extract_status, engine, mineru_detail = _mineru_fallback(ctx, url)
+            extract_detail = (
+                f"{extract_detail}；{mineru_detail}" if extract_detail else mineru_detail
+            )
         title = ""
         lang = None
     else:
@@ -200,6 +226,7 @@ def source_fetch(
         text_path=paths.rel_to_home(text_file),
         extract_status=extract_status,
         extract_engine=engine,
+        extract_detail=extract_detail or None,
         truncated=truncated,
         http_status=response.status,
         doc_id=doc_id,
@@ -256,6 +283,7 @@ def source_fetch(
             "text_path": paths.rel_to_home(text_file),
             "extract_status": extract_status,
             "extract_engine": engine,
+            "extract_detail": extract_detail or None,
             "truncated": truncated,
             "cached": False,
             "summary": summary_payload,

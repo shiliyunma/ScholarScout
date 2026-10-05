@@ -86,6 +86,7 @@ def save_document(
     text_path: str | None = None,
     extract_status: str = "ok",
     extract_engine: str | None = None,
+    extract_detail: str | None = None,
     truncated: bool = False,
     http_status: int | None = None,
     ok: bool = True,
@@ -103,9 +104,9 @@ def save_document(
     db.execute(
         """
         INSERT INTO documents (id, source_id, title, abstract, sha256, mime, lang, chars,
-                               raw_path, text_path, extract_status, extract_engine, truncated,
-                               fetched_at, http_status, ok, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               raw_path, text_path, extract_status, extract_engine, extract_detail,
+                               truncated, fetched_at, http_status, ok, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             new,
@@ -120,6 +121,7 @@ def save_document(
             text_path,
             extract_status,
             extract_engine,
+            extract_detail,
             1 if truncated else 0,
             now_iso(),
             http_status,
