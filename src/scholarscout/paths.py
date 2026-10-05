@@ -82,3 +82,17 @@ def rel_to_home(path: Path, root: Path | None = None) -> str:
     """转成相对项目根的 POSIX 形式，用于写进数据库（库 里只存相对路径）。"""
     base = (root or home()).resolve()
     return path.resolve().relative_to(base).as_posix()
+
+
+def resolve_rel(rel: str | Path, root: Path | None = None) -> Path:
+    """把库里存的相对路径（``data/raw/ab/xx.pdf``）解析回绝对路径。
+
+    只允许落在 ``data/`` 或 ``run/`` 之下 —— 前端的"打开原件/定位文件"走这里，
+    否则一个被篡改的库就能让桌面壳打开任意文件。
+    """
+    base = (root or home()).resolve()
+    candidate = (base / rel).resolve()
+    allowed = (data_dir(root).resolve(), run_dir(root).resolve())
+    if not any(candidate == prefix or prefix in candidate.parents for prefix in allowed):
+        raise PathOutsideDataError(f"路径越出 data/ 与 run/：{rel!r} -> {candidate}")
+    return candidate

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>ScholarScout</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <strong>ScholarScout</strong>
+      <span class="sub">开放世界学术调研与学习辅助</span>
+    </div>
+    <div class="status" id="status">正在连接后端…</div>
+    <div class="actions">
+      <button id="btn-new" type="button">新建会话</button>
+      <button id="btn-refresh" type="button">刷新</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="col col-sessions">
+      <h2>会话</h2>
+      <ul class="list" id="session-list"></ul>
+    </aside>
+
+    <section class="col col-chat">
+      <div class="messages" id="messages">
+        <p class="empty">问点什么，例如：「帮我找教育智能体方向的入门资料，判一下权威性，再排一条 4 周学习路线」</p>
+      </div>
+      <form class="composer" id="composer">
+        <textarea id="input" rows="3" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
+        <div class="composer-actions">
+          <span class="hint" id="hint">工具调用与出处都会显示在这里</span>
+          <button id="btn-send" type="submit">发送</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="col col-right">
+      <nav class="tabs">
+        <button class="tab is-active" type="button" data-tab="sources">资料库</button>
+        <button class="tab" type="button" data-tab="routes">学习路线</button>
+        <button class="tab" type="button" data-tab="cards">抽背卡</button>
+      </nav>
+
+      <div class="pane is-active" id="pane-sources">
+        <div class="row">
+          <input id="search" placeholder="搜摘要：≥3 字走 FTS，2 字自动走 LIKE 兜底">
+          <button id="btn-search" type="button">搜索</button>
+        </div>
+        <ul class="list" id="source-list"></ul>
+        <div class="detail" id="source-detail"></div>
+      </div>
+
+      <div class="pane" id="pane-routes">
+        <p class="hint">本会话生成的路线；点开看每周目标与检查点。</p>
+        <ul class="list" id="route-list"></ul>
+        <div class="detail" id="route-detail"></div>
+      </div>
+
+      <div class="pane" id="pane-cards">
+        <p class="hint">抽背卡：正面问、背面答；可定位到本地 Markdown。</p>
+        <ul class="list" id="card-list"></ul>
+        <div class="detail" id="card-detail"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

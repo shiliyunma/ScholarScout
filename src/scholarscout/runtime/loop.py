@@ -68,6 +68,7 @@ class TurnResult:
     stop_reason: str
     tool_calls: list[str] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
+    refs: dict[str, list[str]] = field(default_factory=dict)
     error: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -79,8 +80,23 @@ class TurnResult:
             "stop_reason": self.stop_reason,
             "tool_calls": self.tool_calls,
             "usage": self.usage,
+            "refs": self.refs,
             "error": self.error,
         }
+
+
+def _merge_refs(target: dict[str, list[str]], incoming: Any) -> None:
+    """把各次工具调用返回的 refs 归并去重（前端靠它显示"这一次生成了什么"，docs/01 §4）。"""
+    if not isinstance(incoming, dict):
+        return
+    for key, values in incoming.items():
+        if not isinstance(values, list):
+            continue
+        bucket = target.setdefault(str(key), [])
+        for value in values:
+            text = str(value)
+            if text not in bucket:
+                bucket.append(text)
 
 
 def _emit(emit: Emitter | None, kind: str, payload: dict[str, Any]) -> None:
@@ -133,6 +149,7 @@ def run_turn(
     # 轮次预算 = 工具预算 + 1：**最后那一轮不给工具**，专门留给模型把结果讲成人话。
     # 否则模型刚好用满工具预算时会被判 tool_limit，最终答案直接丢掉（踩过）。
     tool_budget = max(1, ctx.config.runtime.max_tool_calls_per_turn)
+    refs_total: dict[str, list[str]] = {}
     try:
         for _round in range(tool_budget + 1):
             if ctx.is_cancelled(turn_id):
@@ -189,7 +206,10 @@ def run_turn(
                 break
 
             for call in reply.tool_calls:
-                result_text = _execute_tool(ctx, session_id, turn_id, len(executed), call, emit)
+                result_text, tool_refs = _execute_tool(
+                    ctx, session_id, turn_id, len(executed), call, emit
+                )
+                _merge_refs(refs_total, tool_refs)
                 executed.append(call.name)
                 messages.append(
                     {
@@ -237,7 +257,7 @@ def run_turn(
     _emit(
         emit,
         "chat.done",
-        {"turn_id": turn_id, "stop_reason": stop_reason, "usage": usage_total},
+        {"turn_id": turn_id, "stop_reason": stop_reason, "usage": usage_total, "refs": refs_total},
     )
     return TurnResult(
         turn_id=turn_id,
@@ -247,6 +267,7 @@ def run_turn(
         stop_reason=stop_reason,
         tool_calls=executed,
         usage=usage_total,
+        refs=refs_total,
         error=error_message,
     )
 
@@ -263,8 +284,8 @@ def _execute_tool(
     step: int,
     call: ToolCall,
     emit: Emitter | None,
-) -> str:
-    """执行一次工具调用，返回喂回模型的文本。失败也要如实回话并记 trace。"""
+) -> tuple[str, dict[str, Any]]:
+    """执行一次工具调用，返回（喂回模型的文本, 该工具报出的 refs）。失败也要如实回话并记 trace。"""
     spec = registry.get_spec(call.name)
     _emit(
         emit,
@@ -295,7 +316,7 @@ def _execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return message
+        return message, {}
 
     import time
 
@@ -330,7 +351,7 @@ def _execute_tool(
                 "refs": refs,
             },
         )
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(result, ensure_ascii=False), (refs if isinstance(refs, dict) else {})
     except Exception as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
         traces.record_trace(
@@ -349,7 +370,7 @@ def _execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return f"工具 {call.name} 执行失败：{exc}"
+        return f"工具 {call.name} 执行失败：{exc}", {}
 
 
 def mark_system_prompt(

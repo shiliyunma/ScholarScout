@@ -53,6 +53,7 @@ fi
 if have python; then
   step "rules-sync"  python scripts/check_rules_sync.py
   step "deps-approval" python scripts/check_new_deps.py
+  step "ui-assets"   python scripts/scout.py --check-ui
 else
   echo "==> rules / deps"; echo "    [FAIL] 找不到 python"
   FAILED=$((FAILED + 1))

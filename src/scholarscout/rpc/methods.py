@@ -7,6 +7,9 @@ M3 起补：research/search 相关的工具在 runtime/registry 里注册，RPC 
 from __future__ import annotations
 
 import math
+import os
+import platform
+import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +74,7 @@ def method(name: str) -> Callable[[Handler], Handler]:
 
 
 def method_names() -> list[str]:
+    """已注册的方法名（桌面壳的资源校验拿它比对前端调用，见 docs/01 §3）。"""
     return sorted(_METHODS)
 
 
@@ -308,6 +312,67 @@ def archive_paths(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     if payload is None:
         raise RpcError(Code.NOT_FOUND, f"资料不存在：{doc_id}")
     return payload
+
+
+def _launch_with_system(target: Path) -> None:
+    """用系统默认程序打开文件（只在桌面壳拉起的进程里跑）。"""
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(str(target))
+    elif system == "Darwin":
+        subprocess.run(["open", str(target)], check=False)
+    else:
+        subprocess.run(["xdg-open", str(target)], check=False)
+
+
+def _reveal_in_file_manager(target: Path) -> None:
+    """在文件管理器里定位这个文件（Windows 用 explorer /select）。"""
+    system = platform.system()
+    if system == "Windows":
+        subprocess.run(["explorer", "/select,", str(target)], check=False)
+    elif system == "Darwin":
+        subprocess.run(["open", "-R", str(target)], check=False)
+    else:
+        subprocess.run(["xdg-open", str(target.parent)], check=False)
+
+
+@method("archive.open_raw")
+def archive_open_raw(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """用系统默认程序打开资料原件（相对路径必须落在 data/ 下）。"""
+    params = _params(params)
+    doc_id = _require(params, "doc_id")
+    payload = archive.document_paths(ctx.db, doc_id)
+    if payload is None:
+        raise RpcError(Code.NOT_FOUND, f"资料不存在：{doc_id}")
+    rel = str(payload["raw_path"])
+    target = paths.resolve_rel(rel)
+    if not target.is_file():
+        raise RpcError(Code.NOT_FOUND, f"原件不在磁盘上：{rel}")
+    _launch_with_system(target)
+    return {"ok": True, "path": rel}
+
+
+@method("archive.reveal")
+def archive_reveal(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """在文件管理器中定位文件：给 ``doc_id``（原件/全文）或直接给 ``path``（笔记、路线导出）。"""
+    params = _params(params)
+    which = params.get("which") if isinstance(params.get("which"), str) else "raw"
+    rel: str
+    raw_path = params.get("path")
+    if isinstance(raw_path, str) and raw_path.strip():
+        rel = raw_path.strip()
+    else:
+        doc_id = _require(params, "doc_id")
+        payload = archive.document_paths(ctx.db, doc_id)
+        if payload is None:
+            raise RpcError(Code.NOT_FOUND, f"资料不存在：{doc_id}")
+        key = "text_path" if which == "text" else "raw_path"
+        rel = str(payload[key])
+    target = paths.resolve_rel(rel)
+    if not target.exists():
+        raise RpcError(Code.NOT_FOUND, f"文件不在磁盘上：{rel}")
+    _reveal_in_file_manager(target)
+    return {"ok": True, "path": rel, "which": which}
 
 
 # --------------------------------------------------------------------- 学习产物

@@ -39,7 +39,7 @@
 | 桌面壳 | pywebview（Edge WebView2） | 纯 Python，无 Node 工具链 |
 | 前端 | 原生 HTML/CSS/JS，**无构建步骤** | Hermes 桌面端是 57 万行 TS —— 已评估，成本过高，否决 |
 | 存储 | SQLite(WAL) + FTS5 | 照 Hermes `state.db`：FTS 由触发器维护 |
-| 中文检索 | 二元组切分列 + unicode61 | trigram 对 2 字中文查询失效，见 `docs/02 §4.1` |
+| 中文检索 | FTS5 `tokenize='trigram'` + 短查询 LIKE 兜底 | 实测 trigram 对 <3 字的中文查询返回 0 条，必须兜底；见 `docs/02 §4.1` |
 
 ## 决策记录
 
@@ -50,6 +50,7 @@
 | 2026-10-05 | AIhot 只作架构参照，不部署、不跑 | 它是新闻聚合/成刊项目，没有 query 检索能力，当不了检索引擎 |
 | 2026-10-05 | 复用 Hermes 技术栈，废弃旧 1680 行脚手架 | 上层架构值得学，旧代码可弃；教训（arXiv 限速等）继承 |
 | 2026-10-05 | 原件存本地目录 + 纯文本进 SQLite FTS + 元数据进表 | 备份/迁移/可读三种需求分开满足 |
+| 2026-10-05 | 桌面壳不 import 业务模块，改为拉起 `--rpc` 子进程 | 分发只有一份（CLI/桌面/测试同路径）；后端崩了窗口还在；中文路径编码坑挡在子进程里 |
 
 ## 文档
 
@@ -75,15 +76,33 @@ cp .env.example .env            # 填 LLM_API_KEY
 # 3) 建库（幂等，可重复跑）
 .venv/Scripts/python.exe scripts/scout.py --initdb
 
-# 4) 门槛（lint + 类型 + 测试 + 两项校验，一个不过就不合）
+# 4) 门槛（lint + 类型 + 测试 + 三项校验，一个不过就不合）
 bash scripts/check.sh
+
+# 5) 打开桌面窗口（需要 pywebview，已在依赖白名单里）
+.venv/Scripts/python.exe scripts/scout.py --desktop
 ```
 
 > ⚠️ **不要用 `pip install -e .`**：项目路径含中文，editable 安装写的 `.pth` 会让解释器启动失败
 > （`UnicodeDecodeError: 'gbk' codec ...`，连 `print(1)` 都跑不了）。装依赖用 `scripts/install_deps.py`，
 > 跑 CLI 用 `scripts/scout.py`。原因链见 `docs/03 §9`。
 >
-> 当前状态：**M1（骨架与存储）已落地并实测通过**（36 个测试绿）；对话与桌面壳在 M2。
+> 当前状态：**M1–M5 主线已闭环、M7 桌面壳已可用**（`check.sh` 全绿）；剩下的见 `docs/00-总索引.md` 的待办。
+
+## 桌面壳怎么工作
+
+```
+pywebview 窗口（ui/，原生 HTML/CSS/JS，无构建、离线）
+    │  window.pywebview.api.rpc(method, params)   ← 只有这一条通道
+    ▼
+desktop/bridge.py（只转发 + 包错误）  ← 壳里没有业务逻辑
+    │  JSON-RPC 2.0，一行一个 JSON，stdio
+    ▼
+python -m scholarscout --rpc 子进程  ← 与 CLI/测试走同一个分发器
+```
+
+界面能做到的三件事：**问**（流式显示工具调用与出处）、**查**（资料库搜索、看摘要与原件位置）、**收**（学习路线、主题地图、抽背卡的展示与导出）。
+`python scripts/scout.py --check-ui` 会校验界面文件齐全、**只调真实存在的 RPC 方法**、且没有任何外网资源。
 
 ## 本地化与隐私
 

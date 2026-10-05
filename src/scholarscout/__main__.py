@@ -5,6 +5,7 @@
     --initdb           建库/迁移
     --rpc              stdin/stdout 上的 JSON-RPC 服务（桌面壳与测试用）
     --chat             终端里的极简对话（M2 的自验手段）
+    --desktop          pywebview 桌面窗口（M7：壳只转发，逻辑在后端）
 """
 
 from __future__ import annotations
@@ -25,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rpc", action="store_true", help="在 stdin/stdout 上跑 JSON-RPC 服务")
     parser.add_argument(
         "--chat", action="store_true", help="终端极简对话（需要 .env 里的模型密钥）"
+    )
+    parser.add_argument("--desktop", action="store_true", help="打开桌面窗口（需要 pywebview）")
+    parser.add_argument(
+        "--check-ui",
+        action="store_true",
+        help="校验桌面 UI 资源（文件/方法名/无外链），门槛脚本用",
     )
     parser.add_argument("--db", default=None, help="数据库路径，默认 run/state.db")
     parser.add_argument("--toolsets", default="research", help="逗号分隔的工具集，默认 research")
@@ -76,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
         forwarded = ["--db", args.db] if args.db else []
         return initdb.main(forwarded)
 
+    if args.check_ui:
+        from scholarscout.desktop import assets
+
+        return assets.main()
+
     if args.rpc:
         from scholarscout.app import build_context
         from scholarscout.rpc import server
@@ -89,9 +101,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.chat:
         return _chat_repl(db_target, toolsets)
 
+    if args.desktop:
+        from scholarscout.desktop.app import launch
+
+        return launch(db_path=db_target, toolsets=",".join(toolsets))
+
     print(
-        "可用：--version / --initdb / --rpc / --chat\n"
-        "M2 阶段尚无桌面壳；工具尚未注册（M3 起接入）。见 docs/00-总索引.md §5"
+        "可用：--version / --initdb / --rpc / --chat / --desktop\n"
+        "桌面壳：python scripts/scout.py --desktop（需先装 pywebview）；见 docs/00-总索引.md"
     )
     return 0
 
