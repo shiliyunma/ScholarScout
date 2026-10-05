@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 #: UI 目录下必须存在的文件
-REQUIRED_FILES = ("index.html", "app.js", "style.css")
+REQUIRED_FILES = ("index.html", "app.js", "markdown.js", "style.css")
 
 #: 前端调用后端的写法：``scout.call("archive.list", {...})``
 _CALL_RE = re.compile(r"""scout\s*\.\s*call\(\s*['"]([A-Za-z][A-Za-z0-9_.]*)['"]""")
@@ -45,7 +45,13 @@ def verify_ui(ui: Path | None = None) -> list[str]:
     js = (base / "app.js").read_text(encoding="utf-8")
     css = (base / "style.css").read_text(encoding="utf-8")
 
-    for name, text in (("index.html", html), ("app.js", js), ("style.css", css)):
+    md = (base / "markdown.js").read_text(encoding="utf-8")
+    for name, text in (
+        ("index.html", html),
+        ("app.js", js),
+        ("markdown.js", md),
+        ("style.css", css),
+    ):
         if _EXTERNAL_RE.search(text):
             problems.append(f"{name} 引用了外网资源（界面必须离线可用）")
 
@@ -53,6 +59,12 @@ def verify_ui(ui: Path | None = None) -> list[str]:
         problems.append("index.html 没有引入 app.js")
     if "style.css" not in html:
         problems.append("index.html 没有引入 style.css")
+    if "markdown.js" not in html:
+        problems.append("index.html 没有引入 markdown.js")
+    if "markdown.js" in html and html.index("markdown.js") > html.index("app.js"):
+        problems.append("markdown.js 必须在 app.js 之前引入（app.js 会用 ScoutMarkdown）")
+    if "ScoutMarkdown" not in js:
+        problems.append("app.js 没有使用 ScoutMarkdown（回答正文应当是渲染过的 Markdown）")
 
     called = called_methods(js)
     unknown = sorted(called - set(method_names()))

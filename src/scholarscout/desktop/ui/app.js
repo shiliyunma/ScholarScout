@@ -210,7 +210,7 @@ function renderMessage(message) {
   }
   if (message.role === "tool") return; // 工具结果在轨迹里看，不铺在正文
   if (message.role === "assistant" && (message.content || "").trim()) {
-    bubble("assistant", "ScholarScout").body.textContent = message.content;
+    ScoutMarkdown.renderInto(bubble("assistant", "ScholarScout").body, message.content);
   }
 }
 
@@ -220,8 +220,31 @@ function makePending() {
   traceBox.className = "trace";
   node.body.appendChild(traceBox);
   const textBox = document.createElement("div");
-  textBox.style.marginTop = "6px";
+  textBox.className = "reply";
   node.body.appendChild(textBox);
+
+  /* 流式渲染的节流：模型每秒能吐几十个增量，每个都重排一遍 DOM 会卡。
+     120ms 一次肉眼已经"实时"了，末次结果直接落（见 flush）。 */
+  const THROTTLE_MS = 120;
+  let lastPaint = 0;
+  let timer = null;
+  let buffered = "";
+  let finished = false;
+
+  function paint() {
+    lastPaint = Date.now();
+    ScoutMarkdown.renderInto(textBox, buffered);
+    el("messages").scrollTop = el("messages").scrollHeight;
+  }
+
+  function flush() {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    paint();
+  }
+
   return {
     add: function (cls, text) {
       const line = document.createElement("div");
@@ -231,7 +254,21 @@ function makePending() {
       el("messages").scrollTop = el("messages").scrollHeight;
     },
     setText: function (text) {
-      textBox.textContent = text;
+      buffered = text || "";
+      if (finished) {
+        flush();
+        return;
+      }
+      const now = Date.now();
+      if (now - lastPaint >= THROTTLE_MS) {
+        flush();
+        return;
+      }
+      if (!timer) timer = setTimeout(flush, THROTTLE_MS - (now - lastPaint));
+    },
+    finish: function () {
+      finished = true;
+      flush();
     },
     node: node,
   };
@@ -248,11 +285,11 @@ async function send(text) {
     const result = await scout.call("chat.send", { session_id: state.sessionId, text: text });
     state.pending.node.wrap.classList.remove("assistant");
     if (result.text) state.pending.setText(result.text);
+    state.pending.finish();
     state.pending.add(
       result.stop_reason === "completed" ? "ok" : "warn",
       "stop_reason=" + result.stop_reason + "｜工具 " + (result.tool_calls || []).length + " 次"
     );
-    renderRefs(result.refs || {});
     await refreshSide();
     // 首条消息发出后标题才有值 → 刷一次会话列表，让新标题立刻出现
     await loadSessions();
@@ -266,43 +303,9 @@ async function send(text) {
   }
 }
 
-function renderRefs(refs) {
-  const chips = document.createElement("div");
-  chips.className = "chips";
-  let any = false;
-
-  (refs.route_ids || []).forEach(function (id) {
-    any = true;
-    addChip(chips, "路线 " + id, function () {
-      showRoute(id);
-    });
-  });
-  (refs.note_ids || []).forEach(function (id) {
-    any = true;
-    addChip(chips, "卡片 " + id, function () {
-      showCard(id);
-    });
-  });
-  (refs.topic_ids || []).forEach(function (id) {
-    any = true;
-    addChip(chips, "主题图 " + id, async function () {
-      const payload = await scout.call("topic.get", { topic_id: id });
-      showTopic(payload);
-    });
-  });
-  (refs.source_ids || []).forEach(function (id) {
-    any = true;
-    addChip(chips, "资料 " + id, function () {
-      showSourceBySourceId(id);
-    });
-  });
-
-  if (any && state.pending) state.pending.node.body.appendChild(chips);
-  else if (any) {
-    const last = el("messages").lastElementChild;
-    if (last) last.appendChild(chips);
-  }
-}
+/* 说明：原先进回答末尾追加的"路线/卡片/主题图/资料"chip 卡片已按用户反馈去掉 ——
+   这些入口在右侧面板（资料库/学习路线/笔记）与「显示全部历史产物」里都能找到，
+   正文末尾那排 chip 只是重复噪音。`addChip` 仍被笔记页的引用跳转使用，保留。 */
 
 function addChip(parent, label, handler) {
   const chip = document.createElement("span");

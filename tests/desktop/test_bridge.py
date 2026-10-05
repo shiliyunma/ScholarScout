@@ -138,3 +138,45 @@ def test_shutdown_closes_client() -> None:
     bridge = Bridge(client)  # type: ignore[arg-type]
     json.loads(bridge.shutdown())
     assert client.closed is True
+
+
+def test_open_url_opens_in_system_browser(monkeypatch) -> None:
+    """正文里的链接必须交给系统浏览器。
+
+    为什么这是硬需求：pywebview 的窗口本身就是浏览器，直接点 `<a>` 会把**整个界面顶掉**
+    （窗口变成那个网页），用户回不来。所以 markdown 渲染器把点击拦下来调这里。
+    """
+    opened: list[str] = []
+    monkeypatch.setattr("scholarscout.desktop.bridge.webbrowser.open", opened.append)
+    bridge = Bridge(RecordingClient())  # type: ignore[arg-type]
+
+    payload = json.loads(bridge.open_url("https://example.org/a?b=1"))
+    assert payload["ok"] is True
+    assert payload["result"]["opened"] == "https://example.org/a?b=1"
+    assert opened == ["https://example.org/a?b=1"]
+
+
+def test_open_url_rejects_dangerous_schemes(monkeypatch) -> None:
+    """`javascript:` / `file:` / `data:` 一律拒绝（模型输出不可信）。"""
+    opened: list[str] = []
+    monkeypatch.setattr("scholarscout.desktop.bridge.webbrowser.open", opened.append)
+    bridge = Bridge(RecordingClient())  # type: ignore[arg-type]
+
+    for bad in ("javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x", "  ", ""):
+        payload = json.loads(bridge.open_url(bad))
+        assert payload["ok"] is False, f"竟然放行了：{bad}"
+        assert payload["error"]["code"] == -32602
+    assert opened == []
+
+
+def test_open_url_survives_browser_failure(monkeypatch) -> None:
+    """打不开浏览器（没有默认浏览器 / 被安全软件拦）也不能让界面崩。"""
+
+    def boom(_url: str) -> None:
+        raise OSError("没有默认浏览器")
+
+    monkeypatch.setattr("scholarscout.desktop.bridge.webbrowser.open", boom)
+    bridge = Bridge(RecordingClient())  # type: ignore[arg-type]
+    payload = json.loads(bridge.open_url("https://example.org"))
+    assert payload["ok"] is False
+    assert "打开链接失败" in payload["error"]["message"]

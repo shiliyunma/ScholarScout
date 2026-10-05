@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import webbrowser
 from typing import Any
 
 from scholarscout import __version__
@@ -104,6 +105,24 @@ class Bridge:
     def reveal(self, rel_path: str) -> str:
         """在文件管理器中定位一个库内文件（原件、全文、笔记、路线导出）。"""
         return self.rpc("archive.reveal", json.dumps({"path": rel_path}, ensure_ascii=False))
+
+    def open_url(self, url: str) -> str:
+        """用系统默认浏览器打开链接。
+
+        为什么需要绕这一圈：pywebview 的窗口其实就是个浏览器，正文里直接点 ``<a>``
+        会把**整个界面顶掉**（窗口变成那个网页），用户就回不来了。
+        所以前端 markdown 渲染器把链接点击拦下来，交到这里。
+        只放行 http/https —— 挡住 ``javascript:`` 之类的伪协议。
+        """
+        target = str(url or "").strip()
+        lowered = target.lower()
+        if not (lowered.startswith("http://") or lowered.startswith("https://")):
+            return error_payload(-32602, "只允许 http/https 链接")
+        try:
+            opened = webbrowser.open(target)
+        except Exception as exc:
+            return error_payload(-32603, f"打开链接失败：{exc}")
+        return ok_payload({"opened": target, "handled": bool(opened)})
 
     def shutdown(self) -> str:
         """关闭后端进程（关窗口时由壳自己调，JS 也可主动调）。"""

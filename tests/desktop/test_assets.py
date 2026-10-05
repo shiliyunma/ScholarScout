@@ -18,13 +18,16 @@ def _minimal_ui(base: Path, *, js: str | None = None, html: str | None = None) -
         "index.html",
         html
         or '<html><head><link rel="stylesheet" href="style.css"></head>'
-        '<body><script src="app.js"></script></body></html>',
+        '<body><script src="markdown.js"></script><script src="app.js"></script></body></html>',
     )
     _write(
         base,
         "app.js",
-        js if js is not None else 'var s={call:function(m){} };s.call("system.health", {});',
+        js
+        if js is not None
+        else 'var s={call:function(m){} };s.call("system.health", {}); ScoutMarkdown.renderInto(x, y);',
     )
+    _write(base, "markdown.js", "var ScoutMarkdown={renderInto:function(){}};")
     _write(base, "style.css", "body{margin:0}")
 
 
@@ -72,6 +75,37 @@ def test_extra_entry_page_reported(tmp_path: Path) -> None:
     _minimal_ui(tmp_path)
     _write(tmp_path, "debug.html", "<html></html>")
     assert any("多余的入口页：debug.html" in problem for problem in assets.verify_ui(tmp_path))
+
+
+def test_markdown_js_must_be_referenced(tmp_path: Path) -> None:
+    """回答正文靠 markdown.js 渲染 —— 没引进来就等于退回纯文本（静默降级）。"""
+    _minimal_ui(
+        tmp_path,
+        html='<html><link rel="stylesheet" href="style.css"><script src="app.js"></script></html>',
+    )
+    assert any("没有引入 markdown.js" in problem for problem in assets.verify_ui(tmp_path))
+
+
+def test_markdown_js_must_load_before_app_js(tmp_path: Path) -> None:
+    """顺序反了 app.js 拿到的是 undefined —— 而且只在运行时才炸。"""
+    _minimal_ui(
+        tmp_path,
+        html='<html><link rel="stylesheet" href="style.css">'
+        '<script src="app.js"></script><script src="markdown.js"></script></html>',
+    )
+    assert any("必须在 app.js 之前" in problem for problem in assets.verify_ui(tmp_path))
+
+
+def test_app_js_must_actually_use_the_renderer(tmp_path: Path) -> None:
+    """渲染器在、也引了，但正文还在用 textContent —— 用户看到的还是生 markdown。"""
+    _minimal_ui(tmp_path, js='scout.call("system.health", {});')
+    assert any("没有使用 ScoutMarkdown" in problem for problem in assets.verify_ui(tmp_path))
+
+
+def test_markdown_js_without_external_urls() -> None:
+    """渲染器自己也得守离线规矩（本次就在注释里写了个真 URL 被门槛抓到）。"""
+    text = (assets.ui_dir() / "markdown.js").read_text(encoding="utf-8")
+    assert "http://" not in text and "https://" not in text
 
 
 def test_main_prints_ok(capsys) -> None:

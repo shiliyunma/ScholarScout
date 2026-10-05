@@ -180,7 +180,23 @@ python -m scholarscout --rpc 子进程  ← 与 CLI/测试走同一个分发器
 ```
 
 界面能做到的三件事：**问**（流式显示工具调用与出处）、**查**（资料库搜索、看摘要与原件位置）、**收**（学习路线、主题地图、抽背卡的展示与导出）。
-`python scripts/scout.py --check-ui` 会校验界面文件齐全、**只调真实存在的 RPC 方法**、且没有任何外网资源。
+
+### 回答正文按 Markdown 渲染
+
+模型返回的是 Markdown（标题、表格、代码块、列表），界面上由 `ui/markdown.js` 渲染，
+不用 `textContent` 直接铺出来。要点：
+
+- **零依赖、无构建**：Hermes 桌面端用的是 streamdown + shiki + katex + dompurify（React + 打包），
+  我们这套 UI 是无构建的原生 JS，所以只搬它的**设计决策** —— 围栏代码内不做行内转换、
+  裸 URL 自动链接、表格、`> [!NOTE]` 提示块、代码块带语言标签与复制按钮、先剥掉 ` thinking` 推理块。
+- **安全靠构造**：模型文本只经 `textContent` 落地，从不拼 `innerHTML` —— 不引 dompurify 也不会被注入。
+  链接只放行 http/https。
+- **流式渲染有节流**：增量每 120ms 重画一次（末次结果直接落），否则每条增量都重排 DOM 会卡。
+- **链接必须拦截**：pywebview 的窗口就是浏览器，直接点 `<a>` 会把界面顶掉 → 统一交给
+  `bridge.open_url`（系统默认浏览器打开）。
+- 校验：`python scripts/scout.py --check-ui` 会校验界面文件齐全、**只调真实存在的 RPC 方法**、
+  无任何外网资源，并额外检查 markdown.js 存在、在 app.js 之前引入、且 app.js 真的用了 `ScoutMarkdown`；
+  解析层的 22 条用例在 `tests/desktop/markdown_probe.js`（用 node 真跑产品文件，没装 node 时跳过）。
 
 ## 评测（论文第 5 章的数字从这里来）
 
