@@ -172,8 +172,27 @@ def render(results: dict[str, Any]) -> str:
                             "—",
                         ],
                         ["单任务工具调用次数", _num(e3["tool_calls_per_task"], 2), "—"],
-                        ["出处覆盖率", _pct(e3["coverage"]), "—"],
-                        ["ungrounded 比例", _pct(e3["ungrounded_ratio"]), "—"],
+                        [
+                            "出处覆盖率（资料类，只算 paper/doc/video/code）",
+                            _pct(e3["coverage"]),
+                            _ratio(
+                                e3.get("counts", {}).get("grounded"),
+                                e3.get("counts", {}).get("total"),
+                            ),
+                        ],
+                        [
+                            "ungrounded 比例（同分母）",
+                            _pct(e3["ungrounded_ratio"]),
+                            _ratio(
+                                e3.get("counts", {}).get("ungrounded"),
+                                e3.get("counts", {}).get("total"),
+                            ),
+                        ],
+                        [
+                            "行动类条目（exercise，不声称出处，不计入上两行）",
+                            str(e3.get("exercise_items", "—")),
+                            "—",
+                        ],
                         ["降级率（flat/skeleton）", _pct(e3["degraded_rate"]), "—"],
                         [
                             "token（prompt / completion）",

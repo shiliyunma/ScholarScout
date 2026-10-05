@@ -30,8 +30,11 @@ from scholarscout.grading.tiers import classify_source, load_rules  # noqa: E402
 from scholarscout.rpc.methods import dispatch  # noqa: E402
 from scholarscout.runtime.toolctx import ToolContext  # noqa: E402
 from scholarscout.state.ingest import upsert_source  # noqa: E402
+from scholarscout.tools.route_plan import (  # noqa: E402
+    RESOURCE_ITEM_KINDS,
+    parse_plan,
+)
 from scholarscout.tools.route_plan import apply_guards as plan_guards  # noqa: E402
-from scholarscout.tools.route_plan import parse_plan  # noqa: E402
 from scholarscout.tools.source_grade import source_grade  # noqa: E402
 from scholarscout.tools.topic_map import apply_guards as map_guards  # noqa: E402
 from scholarscout.tools.topic_map import parse_map  # noqa: E402
@@ -190,17 +193,30 @@ def run_e2(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "dropped_duplicates": guarded["stats"]["dropped_duplicates"],
             }
             parsed_empty = not raw["weeks"]
-            raw_items = [item for week in raw["weeks"] for item in week["items"]]
-            kept_items = [item for week in guarded["weeks"] for item in week["items"]]
+            # 覆盖率只算资料类条目（exercise 不声称出处，计进去会虚低）—— 与 E3 同一口径
+            raw_items = [
+                item
+                for week in raw["weeks"]
+                for item in week["items"]
+                if item.get("kind") in RESOURCE_ITEM_KINDS
+            ]
+            kept_items = [
+                item
+                for week in guarded["weeks"]
+                for item in week["items"]
+                if item.get("kind") in RESOURCE_ITEM_KINDS
+            ]
+            all_kept = [item for week in guarded["weeks"] for item in week["items"]]
             raw_nodes += len(raw_items)
             raw_grounded += sum(1 for item in raw_items if item.get("source_id"))
             guarded_nodes += len(kept_items)
             guarded_grounded += sum(1 for item in kept_items if item.get("source_id"))
-            for item in kept_items:
+            for item in all_kept:
                 if item.get("source_id") is not None and item["source_id"] not in allowed:
                     invariant_violations += 1
+            got["exercise_items"] = guarded["stats"].get("exercise_items")
             # route 类一律附上分钟数（题面可用它检查边界 clamp，而不必另设键名）
-            got["minutes"] = sorted(item["est_minutes"] for item in kept_items)
+            got["minutes"] = sorted(item["est_minutes"] for item in all_kept)
 
         passed = all(
             got.get(key) == value for key, value in expect.items() if key != "parsed_empty"
@@ -253,7 +269,7 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
         maps = ctx.db.query("SELECT * FROM topic_maps WHERE session_id = ?", (session_id,))
         plans = ctx.db.query("SELECT * FROM learning_routes WHERE session_id = ?", (session_id,))
 
-        grounded = total = ungrounded = 0
+        grounded = total = ungrounded = exercises = 0
         modes: list[str] = []
         reasons: list[str] = []
         for row_map in maps:
@@ -273,9 +289,17 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
                 reasons.append(str(plan["mode_reason"]))
             stats = plan.get("stats") or {}
             ungrounded += int(stats.get("ungrounded_items") or 0)
+            # 分母只算**资料类**条目：行动类（exercise）不声称出处，
+            # 计进去会把"安排了练习"误报成"没有出处"（口径见 docs/05 §4）
             items = [item for week in plan.get("weeks") or [] for item in week.get("items") or []]
-            total += len(items)
-            grounded += sum(1 for item in items if item.get("source_id"))
+            exercises += int(stats.get("exercise_items") or 0)
+            resources = int(stats.get("resource_items") or 0)
+            total += resources if stats.get("resource_items") is not None else len(items)
+            grounded += (
+                int(stats.get("grounded_resource_items") or 0)
+                if stats.get("grounded_resource_items") is not None
+                else sum(1 for item in items if item.get("source_id"))
+            )
 
         usage = ctx.db.query_one(
             "SELECT coalesce(sum(prompt_tokens),0) AS pin, coalesce(sum(completion_tokens),0) AS pout"
@@ -303,6 +327,8 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
                 "degrade_reasons": reasons,
                 "coverage": metrics.float_rate(grounded, total),
                 "ungrounded_ratio": metrics.float_rate(ungrounded, total),
+                "exercise_items": exercises,
+                "counts": {"grounded": grounded, "total": total, "ungrounded": ungrounded},
                 "tokens": {"prompt": int(usage["pin"]), "completion": int(usage["pout"])},
                 "refs": result.get("refs", {}),
             }
@@ -340,6 +366,12 @@ def run_e3(ctx: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:  # pragma: n
             sum(1 for task in tasks if any(mode in {"flat", "skeleton"} for mode in task["modes"])),
             len(tasks),
         ),
+        "exercise_items": sum(t["exercise_items"] for t in tasks),
+        "counts": {
+            "grounded": sum(t["counts"]["grounded"] for t in tasks),
+            "total": sum(t["counts"]["total"] for t in tasks),
+            "ungrounded": sum(t["counts"]["ungrounded"] for t in tasks),
+        },
         "tokens": {
             "prompt": sum(task["tokens"]["prompt"] for task in tasks),
             "completion": sum(task["tokens"]["completion"] for task in tasks),

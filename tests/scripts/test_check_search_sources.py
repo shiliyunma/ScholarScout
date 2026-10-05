@@ -34,6 +34,15 @@ def script(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     monkeypatch.setattr(module, "load_dotenv", lambda *_a, **_k: {})
     for env in ("TAVILY_API_KEY", "SERPER_API_KEY", "BRAVE_API_KEY", "GOOGLE_CSE_KEY"):
         monkeypatch.delenv(env, raising=False)
+    # 也不读本机的 config.yaml：测试不该依赖开发者本地配置（有人配了 SearxNG，
+    # auto 就会多出一个来源，断言"只有 arxiv"会平白失败）→ 指向一个不存在的路径拿默认值
+    from scholarscout.config import load_config as real_load_config
+
+    monkeypatch.setattr(
+        module,
+        "load_config",
+        lambda *_a, **_k: real_load_config(Path("__no_such_config__.yaml"), load_env=False),
+    )
     return module
 
 

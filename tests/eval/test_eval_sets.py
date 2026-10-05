@@ -30,6 +30,10 @@ def test_guard_set_runs_without_duplicates_leaking() -> None:
     by_id = {case["id"]: case for case in result["cases"]}
     assert by_id["e2-10"]["got"]["dropped_duplicates"] == 1
     assert by_id["e2-12"]["got"]["minutes"] == [10, 45, 600]
+    # e2-13：行动类条目（练习/产出）不计入 ungrounded —— 口径修正的锚点
+    assert by_id["e2-13"]["got"]["ungrounded"] == 1
+    assert by_id["e2-13"]["got"]["exercise_items"] == 2
+    assert by_id["e2-13"]["passed"] is True
     assert by_id["e2-04"]["got"]["nodes"] == 0
 
 

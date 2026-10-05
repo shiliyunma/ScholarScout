@@ -1,7 +1,10 @@
 """``route.plan`` —— 生成带出处的学习路线（docs/01 §5.5）。
 
 守则：
-- 每个 item 要么挂**库里真实的 source_id**，要么显式写 `-` 表示"无对应资料"（计入 ``ungrounded``）
+- **资料类条目**（paper/doc/video/code）必须挂**库里真实的 source_id**；
+  挂不上（写了 `-` 或写了个不存在的 id）就计入 ``ungrounded``，如实反映"这条我拿不出资料"。
+- **行动类条目**（exercise）是"你要动手做的事/产出"，**本身不声称出处** → 不计入 ``ungrounded``。
+  把它算作"无出处"是度量的错，而且会反向逼模型给练习硬挂一个来源（那才是真幻觉）。
 - 检查点必须是"能做到什么"；不达标就照实记，不做二次修复调用
 - 没有模型时退化成"骨架路线"：按判权层级与年份把已有资料排进各周，``mode="skeleton"``
 """
@@ -23,8 +26,10 @@ from scholarscout.tools.source_context import (
 )
 
 DESCRIPTION = (
-    "为某个方向排一条 N 周学习路线：每周有目标和检查点，每个条目挂真实资料 id 或标明无出处。"
-    "顺序按先能跑起来再深入；返回 route_id，条目里带 why（为什么读它）与预计分钟数。"
+    "为某个方向排一条 N 周学习路线：每周有目标和检查点。条目分两类 ——"
+    "资料类（paper/doc/video/code）必须挂库里真实的 source_id；"
+    "行动类（exercise）是你动手做的事/产出，来源列写 `-`，不算无出处。"
+    "顺序按先能跑起来再深入；返回 route_id，条目里带 why（为什么读它/做它）与预计分钟数。"
 )
 
 PARAMETERS: dict[str, Any] = {
@@ -51,6 +56,10 @@ PARAMETERS: dict[str, Any] = {
 }
 
 ALLOWED_ITEM_KINDS = ("paper", "doc", "video", "code", "exercise")
+#: 资料类条目：它们声称"这里有一份资料"，因此**必须**有真实出处
+RESOURCE_ITEM_KINDS = ("paper", "doc", "video", "code")
+#: 行动类条目：你要动手做的事/产出，本身不声称出处（不计入 ungrounded）
+ACTION_ITEM_KINDS = ("exercise",)
 DASH = "-"
 MIN_ITEM_MINUTES = 10
 MAX_ITEM_MINUTES = 600
@@ -106,11 +115,18 @@ def apply_guards(
     allowed_ids: set[str],
     weeks: int,
 ) -> dict[str, Any]:
-    """事实校验：来源白名单、周数上限、去重同一来源的重复条目。"""
+    """事实校验：来源白名单、周数上限、去重同一来源的重复条目。
+
+    ``ungrounded`` 只统计**资料类**条目（paper/doc/video/code）挂不上真实来源的情况；
+    行动类（exercise）不声称出处，单独计数（``exercise_items``）而不计入 ungrounded。
+    """
     kept_weeks: list[dict[str, Any]] = []
     ungrounded: list[str] = []
     seen_sources: set[str] = set()
     dropped = 0
+    exercise_items = 0
+    resource_items = 0
+    grounded_resources = 0
 
     for week in (plan.get("weeks") or [])[:weeks]:
         items: list[dict[str, Any]] = []
@@ -118,13 +134,21 @@ def apply_guards(
             source_id = item.get("source_id")
             if source_id is not None and source_id not in allowed_ids:
                 source_id = None
+            kind = str(item.get("kind") or "doc")
             if source_id is not None:
                 if source_id in seen_sources:
                     dropped += 1  # 同一份资料在同一路线里排两次没有意义
                     continue
                 seen_sources.add(source_id)
-            else:
+            elif kind in RESOURCE_ITEM_KINDS:
+                # 只有"声称自己是一份资料"的条目才谈得上有没有出处
                 ungrounded.append(str(item.get("title") or ""))
+            if kind in ACTION_ITEM_KINDS:
+                exercise_items += 1
+            else:
+                resource_items += 1
+                if source_id is not None:
+                    grounded_resources += 1
             items.append({**item, "source_id": source_id})
         kept_weeks.append(
             {
@@ -142,6 +166,9 @@ def apply_guards(
             "items": sum(len(week["items"]) for week in kept_weeks),
             "ungrounded_items": len(ungrounded),
             "ungrounded_titles": ungrounded,
+            "resource_items": resource_items,
+            "grounded_resource_items": grounded_resources,
+            "exercise_items": exercise_items,
             "dropped_duplicates": dropped,
             "sources_used": len(seen_sources),
         },
@@ -188,6 +215,9 @@ def build_skeleton(rows: list[dict[str, Any]], *, weeks: int) -> dict[str, Any]:
             "items": sum(len(week["items"]) for week in result_weeks),
             "ungrounded_items": 0,
             "ungrounded_titles": [],
+            "resource_items": sum(len(week["items"]) for week in result_weeks),
+            "grounded_resource_items": sum(len(week["items"]) for week in result_weeks),
+            "exercise_items": 0,
             "dropped_duplicates": 0,
             "sources_used": len(ordered),
         },

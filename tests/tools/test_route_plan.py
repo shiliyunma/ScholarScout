@@ -117,6 +117,43 @@ def test_apply_guards_nulls_unknown_source() -> None:
     assert plan["stats"]["ungrounded_items"] == 1
 
 
+def test_exercise_items_do_not_count_as_ungrounded() -> None:
+    """行动类条目（练习/产出）不声称出处 → 不计入 ungrounded，单独计数。
+
+    这是口径修正：旧的实现把"安排了练习"也算成"没有出处"，既误报，又会反向逼模型
+    给练习硬挂一个来源（那才是真幻觉）。真机 e3-04 上 11/18 条"无出处"里 7 条是练习。
+    """
+    raw = parse_plan(
+        "week: 1 | 读一篇再动手 | 能跑通一次训练\n"
+        "item: paper | 有出处的综述 | src_a | 先读 | 60\n"
+        "item: doc | 清单里没有的教程 | - | 自己去找 | 45\n"
+        "item: exercise | 自己跑通一次训练 | - | 动手 | 90\n"
+        "item: exercise | 写一份复现报告 | - | 产出 | 60\n"
+    )
+    plan = apply_guards(raw, allowed_ids={"src_a"}, weeks=4)
+    stats = plan["stats"]
+    assert stats["ungrounded_items"] == 1, "只有那条无出处的资料类条目该计入"
+    assert stats["ungrounded_titles"] == ["清单里没有的教程"]
+    assert stats["exercise_items"] == 2
+    assert stats["resource_items"] == 2
+    assert stats["grounded_resource_items"] == 1
+    assert stats["items"] == 4
+
+
+def test_exercise_with_real_source_still_counts_as_grounded_resource() -> None:
+    """练习若真挂了来源（照着某篇做），那条来源也要算进 sources_used，但不进资料类分母。"""
+    raw = parse_plan(
+        "week: 1 | g | c\n"
+        "item: exercise | 按官方教程跑通 | src_a | 照着做 | 60\n"
+        "item: paper | 综述 | src_b | 读 | 60\n"
+    )
+    plan = apply_guards(raw, allowed_ids={"src_a", "src_b"}, weeks=4)
+    assert plan["stats"]["ungrounded_items"] == 0
+    assert plan["stats"]["exercise_items"] == 1
+    assert plan["stats"]["resource_items"] == 1
+    assert plan["stats"]["sources_used"] == 2
+
+
 def test_build_skeleton_orders_by_tier_and_covers_sources() -> None:
     rows = [
         {"id": "src_low", "tier": 4, "year": 2026, "title": "低质", "source_type": "web"},
