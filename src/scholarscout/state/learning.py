@@ -62,6 +62,40 @@ def latest_topic_map(db: Database, topic: str) -> dict[str, Any] | None:
     return payload
 
 
+def list_topic_maps(db: Database, *, limit: int = 50) -> list[dict[str, Any]]:
+    """列出历史主题图（**轻量**：不带 graph 正文，只给条目信息，供列表与点击加载）。
+
+    为什么要这个：前端原先只能看"本会话刚生成的那一份"，进程一退、会话一换，
+    库里攒下的产物就再也点不开了。列表只回摘要信息，正文仍走 `get_topic_map`。
+    """
+    rows = db.query(
+        """
+        SELECT id, session_id, topic, graph_json, created_at
+        FROM topic_maps ORDER BY created_at DESC, rowid DESC LIMIT ?
+        """,
+        (int(limit),),
+    )
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            graph = json.loads(str(row["graph_json"]))
+        except (TypeError, ValueError):
+            graph = {}
+        nodes = graph.get("nodes") if isinstance(graph, dict) else None
+        items.append(
+            {
+                "topic_id": row["id"],
+                "session_id": row["session_id"],
+                "topic": row["topic"],
+                "created_at": row["created_at"],
+                "nodes": len(nodes) if isinstance(nodes, list) else 0,
+                "mode": graph.get("mode") if isinstance(graph, dict) else None,
+                "mode_reason": graph.get("mode_reason") if isinstance(graph, dict) else None,
+            }
+        )
+    return items
+
+
 # --------------------------------------------------------------------- 学习路线
 
 
@@ -118,6 +152,44 @@ def latest_route(db: Database, topic: str) -> dict[str, Any] | None:
     payload = dict(row)
     payload["plan"] = json.loads(str(payload.pop("plan_json")))
     return payload
+
+
+def list_routes(db: Database, *, limit: int = 50) -> list[dict[str, Any]]:
+    """列出历史学习路线（轻量版，正文仍走 `get_route`）。"""
+    rows = db.query(
+        """
+        SELECT id, session_id, topic_map_id, topic, level, weeks, plan_json, created_at
+        FROM learning_routes ORDER BY created_at DESC, rowid DESC LIMIT ?
+        """,
+        (int(limit),),
+    )
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            plan = json.loads(str(row["plan_json"]))
+        except (TypeError, ValueError):
+            plan = {}
+        week_items = plan.get("weeks") if isinstance(plan, dict) else None
+        entries = 0
+        if isinstance(week_items, list):
+            for week in week_items:
+                if isinstance(week, dict) and isinstance(week.get("items"), list):
+                    entries += len(week["items"])
+        items.append(
+            {
+                "route_id": row["id"],
+                "session_id": row["session_id"],
+                "topic_map_id": row["topic_map_id"],
+                "topic": row["topic"],
+                "level": row["level"],
+                "weeks": row["weeks"],
+                "created_at": row["created_at"],
+                "entries": entries,
+                "mode": plan.get("mode") if isinstance(plan, dict) else None,
+                "mode_reason": plan.get("mode_reason") if isinstance(plan, dict) else None,
+            }
+        )
+    return items
 
 
 # --------------------------------------------------------------------- 笔记与卡片

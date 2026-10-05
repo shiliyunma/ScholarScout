@@ -42,6 +42,7 @@
       <nav class="tabs">
         <button class="tab is-active" type="button" data-tab="sources">资料库</button>
         <button class="tab" type="button" data-tab="routes">学习路线</button>
+        <button class="tab" type="button" data-tab="notes">笔记</button>
         <button class="tab" type="button" data-tab="cards">抽背卡</button>
       </nav>
 
@@ -56,8 +57,21 @@
 
       <div class="pane" id="pane-routes">
         <p class="hint">本会话生成的路线；点开看每周目标与检查点。</p>
+        <div class="row">
+          <button id="btn-history" class="ghost" type="button">显示全部历史产物</button>
+        </div>
         <ul class="list" id="route-list"></ul>
         <div class="detail" id="route-detail"></div>
+      </div>
+
+      <div class="pane" id="pane-notes">
+        <p class="hint">学习笔记与资料摘要；点开直接在应用内读，也能定位到本地 Markdown。</p>
+        <div class="row">
+          <button class="ghost" type="button" id="btn-note-kind-note">学习笔记</button>
+          <button class="ghost" type="button" id="btn-note-kind-summary">资料摘要</button>
+        </div>
+        <ul class="list" id="note-list"></ul>
+        <div class="detail" id="note-detail"></div>
       </div>
 
       <div class="pane" id="pane-cards">

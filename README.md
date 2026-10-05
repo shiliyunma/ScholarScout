@@ -100,7 +100,7 @@ SearxNG 在国内要绕三个坑（全部实测过，详见 `deploy/searxng/sett
 | `docs/02-数据模型.md` | 全部 DDL 的唯一权威来源 | v0.1 待冻结 |
 | `docs/03-目录结构与规则文件.md` | 目录树、模块边界、门槛、依赖登记 | v0.1 |
 | `docs/项目规则.md` | 开发规则正文（AI 协作 8 条铁律） | v0.1 |
-| `docs/04-评测方案.md` | 评测集与指标 | 待写（W3） |
+| `docs/04-摘要提取方案.md` | 摘要口径 + MinerU 接入（含真机契约） | v0.1 |
 
 ## 快速开始
 
@@ -130,7 +130,8 @@ bash scripts/check.sh
 > （`UnicodeDecodeError: 'gbk' codec ...`，连 `print(1)` 都跑不了）。装依赖用 `scripts/install_deps.py`，
 > 跑 CLI 用 `scripts/scout.py`。原因链见 `docs/03 §9`。
 >
-> 当前状态：**M1–M5 主线已闭环、M7 桌面壳已可用**（`check.sh` 全绿）；剩下的见 `docs/00-总索引.md` 的待办。
+> 当前状态：**M1–M8 主线已闭环**（含通用/商用搜索、GitHub、OpenAlex 两路学术索引、MinerU 兜底接入）；
+> `check.sh` 全绿；剩下的见 `docs/00-总索引.md` 的待办。
 
 ## 桌面壳怎么工作
 

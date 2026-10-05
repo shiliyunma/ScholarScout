@@ -378,6 +378,25 @@ def archive_reveal(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------- 学习产物
 
 
+@method("topic.list")
+def topic_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """列出历史主题图（轻量条目，正文走 `topic.get`）。
+
+    前端原先只能看本会话刚生成的产物，进程一退就再也点不开 —— 这个方法让
+    库里攒下的产物都能翻出来看。
+    """
+    params = _params(params)
+    limit = int(params.get("limit") or 50)
+    return {"items": learning.list_topic_maps(ctx.db, limit=limit)}
+
+
+@method("route.list")
+def route_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    params = _params(params)
+    limit = int(params.get("limit") or 50)
+    return {"items": learning.list_routes(ctx.db, limit=limit)}
+
+
 @method("topic.get")
 def topic_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     params = _params(params)

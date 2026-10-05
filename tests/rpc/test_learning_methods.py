@@ -128,3 +128,59 @@ def test_note_get_unknown_id_is_not_found(ctx: AppContext) -> None:
     with pytest.raises(RpcError) as exc:
         dispatch(ctx, "note.get", {"note_id": "not_nope"})
     assert exc.value.code == -32002
+
+
+def test_topic_list_is_lightweight_and_newest_first(ctx: AppContext) -> None:
+    save_topic_map(ctx.db, topic="RAG", graph=GRAPH)
+    save_topic_map(
+        ctx.db,
+        topic="知识追踪",
+        graph={**GRAPH, "mode": "flat", "mode_reason": "模型输出空"},
+        session_id="ses_x",
+    )
+
+    items = dispatch(ctx, "topic.list", {})["items"]
+    assert [row["topic"] for row in items] == ["知识追踪", "RAG"], "最新在前"
+    first = items[0]
+    assert first["nodes"] == 1
+    assert first["mode"] == "flat" and first["mode_reason"] == "模型输出空"
+    assert first["session_id"] == "ses_x"
+    assert "graph" not in first and "graph_json" not in first, "列表要轻量，正文走 topic.get"
+
+
+def test_route_list_counts_entries_and_respects_limit(ctx: AppContext) -> None:
+    for topic in ("A", "B", "C"):
+        save_route(ctx.db, topic=topic, plan=PLAN, level="入门", weeks=1)
+
+    items = dispatch(ctx, "route.list", {})["items"]
+    assert [row["topic"] for row in items] == ["C", "B", "A"], "最新在前"
+    assert items[0]["entries"] == 2, "计划里 2 个 item 要数出来"
+    assert items[0]["mode"] == "model"
+    assert items[0]["level"] == "入门"
+    assert "plan" not in items[0], "列表要轻量"
+
+    limited = dispatch(ctx, "route.list", {"limit": 2})["items"]
+    assert [row["topic"] for row in limited] == ["C", "B"]
+
+
+def test_lists_survive_corrupt_json(ctx: AppContext) -> None:
+    """库里出现坏 JSON（手工改过、写一半崩过）时，列表**不能整体炸**。"""
+    save_topic_map(ctx.db, topic="正常", graph=GRAPH)
+    ctx.db.execute(
+        "INSERT INTO topic_maps (id, session_id, topic, graph_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("tpm_bad", None, "坏数据", "{不是 json", "2026-10-05T00:00:00.000000+08:00"),
+    )
+    save_route(ctx.db, topic="正常路线", plan=PLAN)
+    ctx.db.execute(
+        "INSERT INTO learning_routes (id, session_id, topic_map_id, topic, level, weeks, "
+        "plan_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("rte_bad", None, None, "坏路线", None, None, "[[[", "2026-10-05T00:00:00.000000+08:00"),
+    )
+
+    topics = dispatch(ctx, "topic.list", {})["items"]
+    assert len(topics) == 2, "坏的那份也要列出来（只是计数为 0），不能整表读不出来"
+    assert all(row["nodes"] >= 0 for row in topics)
+    routes = dispatch(ctx, "route.list", {})["items"]
+    assert len(routes) == 2
+    assert all(row["entries"] >= 0 for row in routes)

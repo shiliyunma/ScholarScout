@@ -94,13 +94,7 @@ def note_save(
     if kind == "card" and not normalized_cards:
         if not (title and content):
             raise ValueError("kind=card 需要 cards，或同时给 title（问题）与 content（答案）")
-        normalized_cards.append(
-            {"front": title.strip(), "content_placeholder": ""}
-            and {
-                "front": title.strip(),
-                "back": content.strip(),
-            }
-        )
+        normalized_cards.append({"front": title.strip(), "back": content.strip()})
 
     if kind == "card":
         body = render_cards(normalized_cards)

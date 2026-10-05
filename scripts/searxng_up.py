@@ -38,10 +38,38 @@ from scholarscout.providers.searxng import SearxngProvider  # noqa: E402
 
 COMPOSE_DIR = ROOT / "deploy" / "searxng"
 BASE_URL = "http://localhost:8080"
+#: 官方镜像名（docker-compose.yml 引用的就是它）
+IMAGE = "searxng/searxng:latest"
+#: 国内可用的镜像源（真机验证过 DAOCLOUD 能拉；拉完重打成官方标签，compose 才认得）
+MIRROR_IMAGE = "docker.m.daocloud.io/searxng/searxng:latest"
 DOCKER_DESKTOP_CANDIDATES = (
     Path(r"C:\Program Files\Docker\Docker\Docker Desktop.exe"),
     Path(r"C:\Program Files (x86)\Docker\Docker\Docker Desktop.exe"),
 )
+
+#: Docker Hub 不可达时命令行里会出现的特征串（compose/pull 两种写法都覆盖）
+REGISTRY_FAIL_MARKERS = (
+    "failed to resolve reference",
+    "registry-1.docker.io",
+    "no such host",
+    "connection attempt failed",
+    "TLS handshake timeout",
+    "i/o timeout",
+)
+
+
+def _looks_like_registry_unreachable(output: str) -> bool:
+    """判断失败是不是"拉不到镜像"（而不是别的问题，比如端口被占）。"""
+    text = (output or "").lower()
+    return any(marker.lower() in text for marker in REGISTRY_FAIL_MARKERS)
+
+
+def _pull_via_mirror() -> tuple[int, str]:
+    """换镜像源拉取，再重打成官方标签（两层都失败就如实返回错误）。"""
+    code, output = run(["docker", "pull", MIRROR_IMAGE], timeout=900)
+    if code != 0:
+        return code, output
+    return run(["docker", "tag", MIRROR_IMAGE, IMAGE], timeout=60)
 
 
 def run(cmd: list[str], *, timeout: int = 120) -> tuple[int, str]:
@@ -138,6 +166,19 @@ def main() -> int:
         print("[2/4] 起容器（docker compose up -d）…")
         code, output = run(["docker", "compose", "up", "-d"], timeout=300)
         print("     " + (output.splitlines()[-1] if output else "（无输出）"))
+        if code != 0 and _looks_like_registry_unreachable(output):
+            # 国内常见：镜像不在本地 + registry-1.docker.io 不可达。
+            # 手动救法是换镜像源拉取再重打官方标签 —— 这个别人踩过、我们踩过的坑，
+            # 脚本里替用户做完，别让"新机器第一次跑"卡在这。
+            print("[2/4] Docker Hub 不可达 → 换镜像源（docker.m.daocloud.io）重试")
+            code, output = _pull_via_mirror()
+            if code != 0:
+                print("[FAIL] 换镜像源也没拉下来，原始输出：")
+                print(output)
+                return 1
+            print("     " + (output.splitlines()[-1] if output else "（无输出）"))
+            code, output = run(["docker", "compose", "up", "-d"], timeout=300)
+            print("     " + (output.splitlines()[-1] if output else "（无输出）"))
         if code != 0:
             print("[FAIL] 容器没起来，原始输出：")
             print(output)

@@ -12,6 +12,8 @@ var state = {
   cards: [],
   pending: null,
   theme: "auto",
+  history: false,
+  noteKind: "note",
 };
 
 /* ------------------------------------------------------------------ 主题 */
@@ -630,9 +632,172 @@ async function showCard(noteId) {
   box.appendChild(actions);
 }
 
+async function loadNotes(kind) {
+  /* 笔记页：kind=note 的学习笔记 / kind=summary 的资料摘要。
+     之前 `note.list` 只在卡片那栏传了 kind=card，其余两类写进库就再也读不到。 */
+  state.noteKind = kind || state.noteKind;
+  const payload = await scout.call("note.list", { kind: state.noteKind, limit: 50 });
+  const items = payload.items || [];
+  const list = el("note-list");
+  list.innerHTML = "";
+  if (!items.length) {
+    list.innerHTML =
+      '<li class="hint">还没有内容。让它「把这个方向写成学习笔记」或「给这篇资料做摘要」。</li>';
+    return;
+  }
+  items.forEach(function (item) {
+    const li = document.createElement("li");
+    li.innerHTML =
+      esc(short(item.title || "（无标题）", 22)) +
+      '<span class="meta">' + esc(short(item.created_at || "", 16)) + "</span>";
+    li.addEventListener("click", function () {
+      showNote(item.id);
+    });
+    list.appendChild(li);
+  });
+}
+
+async function showNote(noteId) {
+  const note = await scout.call("note.get", { note_id: noteId });
+  const box = el("note-detail");
+  box.innerHTML = "";
+
+  const title = document.createElement("h3");
+  title.textContent = note.title || "（无标题）";
+  box.appendChild(title);
+
+  const meta = document.createElement("div");
+  meta.className = "kv";
+  meta.textContent =
+    "类型 " + (note.kind || "-") + "｜创建 " + (note.created_at || "-");
+  box.appendChild(meta);
+
+  const body = document.createElement("div");
+  body.className = "note-body";
+  String(note.content || "").split("\n").forEach(function (line) {
+    const div = document.createElement("div");
+    if (line.indexOf("#") === 0) div.className = "q";
+    div.textContent = line;
+    body.appendChild(div);
+  });
+  box.appendChild(body);
+
+  const refs = note.refs && note.refs.source_ids ? note.refs.source_ids : [];
+  if (refs.length) {
+    const chips = document.createElement("div");
+    chips.className = "actions";
+    refs.forEach(function (sourceId) {
+      addChip(chips, short(sourceId, 12), function () {
+        showSourceBySourceId(sourceId);
+      });
+    });
+    box.appendChild(chips);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  if (note.path) {
+    addButton(actions, "定位 Markdown", async function () {
+      await scout.call("archive.reveal", { path: note.path });
+    });
+  }
+  box.appendChild(actions);
+}
+
+async function renderHistory() {
+  /* 全部会话的历史产物（后端 topic.list / route.list）。
+     之前只能看本会话 refs 里带的产物，进程一退就再也点不开。 */
+  const list = el("route-list");
+  list.innerHTML = '<li class="hint">加载历史产物…</li>';
+  let topics = [];
+  let routes = [];
+  try {
+    const [topicPayload, routePayload] = await Promise.all([
+      scout.call("topic.list", { limit: 30 }),
+      scout.call("route.list", { limit: 30 }),
+    ]);
+    topics = topicPayload.items || [];
+    routes = routePayload.items || [];
+  } catch (error) {
+    list.innerHTML = '<li class="hint is-bad">读历史产物失败：' + esc(error.message) + "</li>";
+    return;
+  }
+  list.innerHTML = "";
+  if (!topics.length && !routes.length) {
+    list.innerHTML = '<li class="hint">库里还没有产物。让它「给我画一张主题地图」。</li>';
+    return;
+  }
+  if (topics.length) {
+    const head = document.createElement("li");
+    head.className = "hint";
+    head.textContent = "主题地图（" + topics.length + "）";
+    list.appendChild(head);
+  }
+  topics.forEach(function (item) {
+    const li = document.createElement("li");
+    li.innerHTML =
+      esc(short(item.topic, 18)) +
+      '<span class="meta">' +
+      item.nodes +
+      " 节点｜" +
+      esc(item.mode || "") +
+      "｜" +
+      esc(short(item.created_at, 16)) +
+      "</span>";
+    li.addEventListener("click", async function () {
+      try {
+        showTopic(await scout.call("topic.get", { topic_id: item.topic_id }));
+      } catch (error) {
+        /* 失败就保持原样，不静默换成别的产物 */
+      }
+    });
+    list.appendChild(li);
+  });
+  if (routes.length) {
+    const head = document.createElement("li");
+    head.className = "hint";
+    head.textContent = "学习路线（" + routes.length + "）";
+    list.appendChild(head);
+  }
+  routes.forEach(function (item) {
+    const li = document.createElement("li");
+    li.innerHTML =
+      esc(short(item.topic, 18)) +
+      '<span class="meta">' +
+      esc(item.level || "") +
+      "｜" +
+      (item.weeks || 0) +
+      " 周｜" +
+      item.entries +
+      " 条｜" +
+      esc(short(item.created_at, 16)) +
+      "</span>";
+    li.addEventListener("click", function () {
+      showRoute(item.route_id);
+    });
+    list.appendChild(li);
+  });
+}
+
+async function toggleHistory() {
+  state.history = !state.history;
+  const button = el("btn-history");
+  button.textContent = state.history ? "只看本会话" : "显示全部历史产物";
+  if (state.history) {
+    await renderHistory();
+  } else {
+    await refreshSide();
+  }
+}
+
 async function refreshSide() {
   await loadSources(el("search").value.trim());
   await loadCards();
+  await loadNotes();
+  if (state.history) {
+    await renderHistory();
+    return;
+  }
   const payload = await scout.call("session.messages", {
     session_id: state.sessionId,
     limit: 200,
@@ -651,6 +816,7 @@ async function boot() {
     else await newSession();
     await loadCards();
     await loadSources("");
+    await loadNotes();
   } catch (error) {
     el("status").textContent = "连接后端失败：" + error.message;
     el("status").classList.add("is-bad");
@@ -659,6 +825,13 @@ async function boot() {
 
 function wire() {
   el("btn-theme").addEventListener("click", cycleTheme);
+  el("btn-history").addEventListener("click", toggleHistory);
+  el("btn-note-kind-note").addEventListener("click", function () {
+    loadNotes("note");
+  });
+  el("btn-note-kind-summary").addEventListener("click", function () {
+    loadNotes("summary");
+  });
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
       if (state.theme === "auto") applyTheme("auto");
