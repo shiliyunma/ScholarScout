@@ -27,6 +27,11 @@ build/
 dist/
 *.spec
 
+# ===== 启动器（构建产物 + 本机绝对路径，不入库；默认输出在项目根）=====
+/ScholarScout.exe
+/ScholarScout.launcher.ini
+/launcher-diagnose.txt
+
 # ===== 编辑器 / 系统 =====
 .vscode/
 .idea/

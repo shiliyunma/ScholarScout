@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from scholarscout.desktop.bridge import Bridge
+from scholarscout.desktop.icon import apply_window_icon, set_app_user_model_id
 from scholarscout.desktop.rpc_client import RpcClient, default_command
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
@@ -63,10 +64,24 @@ def launch(
     )
     bridge.attach(window)
     try:
-        start_kwargs: dict[str, Any] = {"debug": debug}
-        icon = window_icon()
-        if icon:
-            start_kwargs["icon"] = icon
+        # 任务栏身份：不设的话任务栏按钮会按 python.exe 归组，图标跟着变 Python
+        set_app_user_model_id()
+
+        def _on_started() -> None:
+            """窗口起来之后再把图标打上去。
+
+            为什么不用 `webview.start(icon=...)`：那个参数**在 Windows 上被忽略**
+            （pywebview 文档："Supported only on GTK/QT"），而它的 winforms 后端会
+            从 `sys.executable`（python.exe）取图标 —— 所以默认是 Python 的图标。
+            细节见 `desktop/icon.py` 的模块说明。
+            """
+            apply_window_icon(WINDOW_TITLE, ICON_PATH)
+
+        start_kwargs: dict[str, Any] = {"debug": debug, "func": _on_started}
+        if sys.platform != "win32":
+            icon = window_icon()
+            if icon:
+                start_kwargs["icon"] = icon  # GTK/QT 才认这个参数
         webview.start(**start_kwargs)
     finally:
         client.close()

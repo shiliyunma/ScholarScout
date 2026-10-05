@@ -124,6 +124,11 @@ def test_csc_command_without_icon_still_compiles(exe_builder: ModuleType) -> Non
     assert not any(str(part).startswith("/win32icon:") for part in cmd)
 
 
+def test_default_output_is_the_project_root(exe_builder: ModuleType) -> None:
+    """启动器是"入口"，默认输出在项目根 —— 放最外层双击最顺手。"""
+    assert Path(exe_builder.OUT_DIR) == ROOT
+
+
 def test_config_file_points_at_project_root(exe_builder: ModuleType, tmp_path: Path) -> None:
     target = tmp_path / exe_builder.CONFIG_NAME
     exe_builder.write_config(ROOT, target)

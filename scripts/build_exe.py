@@ -12,8 +12,9 @@ Windows 自带 .NET Framework 的 `csc.exe`（v4.0.30319）就够编一个纯 Wi
 小程序；不需要 MSVC / MinGW / pip install pyinstaller（规则：新增依赖要审批）。
 
 用法：
-    python scripts/build_exe.py            # → dist/ScholarScout.exe + 同目录的 launcher.ini
-    python scripts/build_exe.py --diagnose # 顺便跑一次启动器自检
+    python scripts/build_exe.py                # → 项目根/ScholarScout.exe + 同名 .ini
+    python scripts/build_exe.py --out-dir dist # 想收进子目录也行
+    python scripts/build_exe.py --diagnose     # 编完跑一次启动器自检
 """
 
 from __future__ import annotations
@@ -26,7 +27,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "packaging" / "launcher" / "ScholarScoutLauncher.cs"
 ICON = ROOT / "assets" / "icon.ico"
-DIST = ROOT / "dist"
+#: 默认输出到**项目根**：它是个"入口"，放最外层双击最顺手（不是构建中间产物）
+OUT_DIR = ROOT
 EXE_NAME = "ScholarScout.exe"
 CONFIG_NAME = "ScholarScout.launcher.ini"
 
@@ -80,6 +82,9 @@ def write_config(project_root: Path, target: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="编译 ScholarScout 启动器 .exe")
     parser.add_argument("--diagnose", action="store_true", help="编完跑一次 --diagnose 自检")
+    parser.add_argument(
+        "--out-dir", default=str(OUT_DIR), help=f"输出目录（默认 {OUT_DIR}，即项目根）"
+    )
     args = parser.parse_args(argv)
 
     csc = find_csc()
@@ -90,11 +95,12 @@ def main(argv: list[str] | None = None) -> int:
     if not SOURCE.is_file():
         print(f"[FAIL] 找不到源码：{SOURCE}")
         return 1
+    out_dir = Path(args.out_dir).resolve()
     if not ICON.is_file():
         print(f"[提示] 没有 {ICON}，先跑 python scripts/make_icon.py（这次不带图标编译）")
 
-    DIST.mkdir(parents=True, exist_ok=True)
-    output = DIST / EXE_NAME
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output = out_dir / EXE_NAME
     cmd = csc_command(csc, source=SOURCE, output=output, icon=ICON)
     print("执行：" + " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -103,9 +109,9 @@ def main(argv: list[str] | None = None) -> int:
         print((result.stdout + result.stderr).strip())
         return 1
 
-    write_config(ROOT, DIST / CONFIG_NAME)
+    write_config(ROOT, out_dir / CONFIG_NAME)
     print(f"[OK] 写出 {output}（{output.stat().st_size // 1024} KB）")
-    print(f"[OK] 写出 {DIST / CONFIG_NAME}（指向 {ROOT}）")
+    print(f"[OK] 写出 {out_dir / CONFIG_NAME}（指向 {ROOT}）")
     print("     双击 exe 即可；排查用：ScholarScout.exe --diagnose")
 
     if args.diagnose:

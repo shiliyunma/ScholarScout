@@ -123,15 +123,18 @@ bash scripts/check.sh
 
 # 5b) 想要"双击即用"？编译一个启动器 exe（用 Windows 自带 csc，不装新依赖）
 .venv/Scripts/python.exe scripts/build_exe.py
-#   → dist/ScholarScout.exe（带图标）+ dist/ScholarScout.launcher.ini（指向项目根）
-#   双击即可；排查用 dist/ScholarScout.exe --diagnose
+#   → ScholarScout.exe（项目根，带图标）+ ScholarScout.launcher.ini（指向项目根）
+#   双击即可；排查用 ScholarScout.exe --diagnose
 
 # 6) 跑评测（离线集秒级，报告落 eval/reports/）
 .venv/Scripts/python.exe eval/run_eval.py --set all --ablation
 .venv/Scripts/python.exe eval/run_eval.py --set e3 --live   # 端到端，需要 .env 里的密钥与网络
 ```
 
-### 双击启动（`dist/ScholarScout.exe`）
+### 双击启动（项目根的 `ScholarScout.exe`）
+
+exe 就放在**项目根**（跟 `README.md` 同级），双击最顺手 —— 它是个"入口"，不是构建中间产物
+（想收进子目录：`python scripts/build_exe.py --out-dir dist`）。
 
 这个 exe **不是**把应用打包进去的成品，而是一个**启动器**：找项目根 → 找 `.venv` 的解释器 →
 拉起 `scripts/scout.py --desktop`。所以**改了代码也不用重编它** —— 这正是"不会因版本更替失效"的做法
@@ -139,14 +142,23 @@ bash scripts/check.sh
 
 | 场景 | 它怎么做 |
 |---|---|
-| 项目就在默认位置 | 直接跑（`dist/` 也算项目内，会往上找到根） |
+| 项目就在默认位置 | 直接跑（exe 在项目根，或放进任意子目录都会往上找到根） |
 | 项目移动了 | 改同目录的 `ScholarScout.launcher.ini`（一行 `project=...`），或把 exe 放进项目里 |
 | 想指到别处 | `ScholarScout.exe --project D:\别的\ScholarScout` |
 | 双击没反应 | `ScholarScout.exe --diagnose` 打印它找的项目/解释器/pywebview 状态，并存一份 `launcher-diagnose.txt` |
 | 缺依赖 / 缺 pywebview | 弹窗给出要跑的命令（`scripts/install_deps.py`），不是静默失败 |
 
+> exe / `.ini` / `launcher-diagnose.txt` 都不入库（构建产物 + 本机绝对路径，见 `.gitignore`）；
+> 换机器 clone 后跑一次 `scripts/build_exe.py` 就有。
+
 图标：`assets/icon-source.png` 是设计源图，`scripts/make_icon.py` 生成多尺寸 `assets/icon.ico`；
-exe 图标（`/win32icon`）与窗口/任务栏图标（`webview.start(icon=...)`）用的是同一份。
+exe 图标（csc `/win32icon:`）与窗口标题栏/任务栏图标（见下）用的是同一份。
+
+> ⚠️ **`webview.start(icon=...)` 在 Windows 上无效**（pywebview 文档写明 `Supported only on GTK/QT`），
+> 它的 winforms 后端是从 `sys.executable`（也就是 python.exe）取图标的 —— 所以默认会显示 **Python 的图标**。
+> 正确做法见 `src/scholarscout/desktop/icon.py`：窗口出现后对 HWND 发 `WM_SETICON`
+> （ICON_BIG 给任务栏、ICON_SMALL 给标题栏左上角），再 `SetCurrentProcessExplicitAppUserModelID`
+> 给进程一个自己的任务栏身份，否则任务栏按钮会按 python.exe 归组。
 
 > ⚠️ **不要用 `pip install -e .`**：项目路径含中文，editable 安装写的 `.pth` 会让解释器启动失败
 > （`UnicodeDecodeError: 'gbk' codec ...`，连 `print(1)` 都跑不了）。装依赖用 `scripts/install_deps.py`，
