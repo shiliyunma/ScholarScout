@@ -31,7 +31,8 @@ def _clean_registry() -> Iterator[None]:
 
 
 def _register_echo(handler=None) -> ToolSpec:
-    def default_handler(query: str) -> dict[str, Any]:
+    def default_handler(ctx: object, query: str) -> dict[str, Any]:
+        del ctx
         return {"ok": True, "data": {"query": query}, "refs": {"source_ids": ["src_1"]}}
 
     return registry.register(
@@ -99,7 +100,8 @@ def test_registered_tool_executes_and_is_traced(ctx: AppContext) -> None:
 
 
 def test_tool_exception_is_reported_not_raised(ctx: AppContext) -> None:
-    def boom(query: str) -> dict[str, Any]:
+    def boom(ctx_arg: object, query: str) -> dict[str, Any]:
+        del ctx_arg, query
         raise RuntimeError("抓取失败")
 
     _register_echo(boom)

@@ -13,6 +13,7 @@ from typing import Any
 
 from scholarscout import __version__, paths
 from scholarscout.config import Config
+from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient, LlmError
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.runtime import loop, registry
@@ -24,11 +25,12 @@ Handler = Callable[["AppContext", dict[str, Any]], Any]
 
 @dataclass
 class AppContext:
-    """一次进程运行期的全部依赖。测试里可以塞桩模型。"""
+    """一次进程运行期的全部依赖。测试里可以塞桩模型与桩出网。"""
 
     config: Config
     db: Database
     llm: LlmClient | None = None
+    http: HttpClient | None = None
     toolsets: Sequence[str] = ("research",)
     emit: Callable[[str, dict[str, Any]], None] | None = None
     cancelled: set[str] = field(default_factory=set)
@@ -43,8 +45,15 @@ class AppContext:
             db=self.db,
             config=self.config,
             llm=self.require_llm(),
+            http=self.http,
             cancelled=self.cancelled,
         )
+
+    def close(self) -> None:
+        """关掉出网客户端与数据库（HTTP 连接池不关会留句柄）。"""
+        if self.http is not None:
+            self.http.close()
+        self.db.close()
 
 
 _METHODS: dict[str, Handler] = {}

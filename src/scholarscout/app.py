@@ -9,7 +9,9 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+from scholarscout import paths
 from scholarscout.config import Config, load_config
+from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient, LlmError, create_client
 from scholarscout.rpc.methods import AppContext
 from scholarscout.state.db import Database
@@ -21,17 +23,23 @@ def build_context(
     config: Config | None = None,
     db_path: Path | None = None,
     llm: LlmClient | None = None,
+    http: HttpClient | None = None,
     toolsets: Sequence[str] = ("research",),
     auto_migrate: bool = True,
 ) -> AppContext:
-    """装配上下文。**没有密钥也不报错**（客户端置空，system.health 会如实显示未配置）。
+    """装配上下文：配置、库、模型客户端、出网客户端、已注册工具。
 
-    显式传入 ``db_path`` 时会**同步写回配置**，否则 ``system.health`` / ``config.get``
-    报告的路径会与实际使用的库不一致（冒烟测试踩到过）。
+    - **没有密钥也不报错**（客户端置空，system.health 会如实显示未配置）
+    - 显式传 ``db_path`` 时会同步写回配置，否则 health/config.get 报的路径与实际库不一致
+    - 出网客户端只在这里造一份，供所有工具共用（限速与缓存才能生效）
     """
+    from scholarscout.tools import register_tools
+
     cfg = config or load_config()
     if db_path is not None:
         cfg = replace(cfg, db_path=Path(db_path))
+
+    paths.ensure_dirs(cfg.data_dir.parent)
     db = Database(cfg.db_path)
     if auto_migrate:
         apply_migrations(db)
@@ -42,4 +50,24 @@ def build_context(
             client = create_client(cfg.chat)
         except LlmError:
             client = None
-    return AppContext(config=cfg, db=db, llm=client, toolsets=tuple(toolsets))
+
+    http_client = http
+    if http_client is None:
+        http_client = HttpClient(
+            user_agent=cfg.fetch_cfg.user_agent,
+            timeout_s=cfg.fetch_cfg.timeout_s,
+            retries=cfg.fetch_cfg.retries,
+            max_bytes=cfg.fetch_cfg.max_bytes,
+            cache_dir=cfg.fetch_cfg.cache_dir(cfg.data_dir.parent),
+            cache_ttl_hours=cfg.fetch_cfg.cache_ttl_hours,
+            respect_robots=cfg.fetch_cfg.respect_robots,
+        )
+
+    register_tools()
+    return AppContext(
+        config=cfg,
+        db=db,
+        llm=client,
+        http=http_client,
+        toolsets=tuple(toolsets),
+    )

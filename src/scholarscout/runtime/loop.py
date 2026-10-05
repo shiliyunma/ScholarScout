@@ -18,9 +18,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from scholarscout.config import Config
+from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import ChatReply, LlmClient, LlmError, ToolCall
 from scholarscout.runtime import registry
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
+from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import sessions, traces
 from scholarscout.state.db import Database
 
@@ -35,6 +37,7 @@ class TurnContext:
     db: Database
     config: Config
     llm: LlmClient
+    http: HttpClient | None = None
     cancelled: set[str] = field(default_factory=set)
 
     def tools(self, toolsets: Sequence[str] | None) -> list[registry.ToolSpec]:
@@ -42,6 +45,17 @@ class TurnContext:
 
     def is_cancelled(self, turn_id: str) -> bool:
         return turn_id in self.cancelled
+
+    def tool_context(self, *, session_id: str, turn_id: str) -> ToolContext:
+        """给工具用的上下文（注入库、配置、出网、模型与本次会话/轮次标识）。"""
+        return ToolContext(
+            db=self.db,
+            config=self.config,
+            http=self.http,
+            llm=self.llm,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
 
 
 @dataclass
@@ -280,10 +294,11 @@ def _execute_tool(
 
     import time
 
+    tool_ctx = ctx.tool_context(session_id=session_id, turn_id=turn_id)
     started = time.perf_counter()
     try:
         arguments = call.parsed_arguments()
-        result = spec.handler(**arguments)
+        result = registry.invoke(spec, tool_ctx, arguments)
         latency_ms = int((time.perf_counter() - started) * 1000)
         traces.record_trace(
             ctx.db,

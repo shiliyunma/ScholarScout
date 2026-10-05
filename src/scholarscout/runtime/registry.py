@@ -21,6 +21,7 @@ class ToolSpec:
     name: str
     description: str
     parameters: dict[str, Any]
+    #: 签名必须是 ``handler(ctx: ToolContext, **arguments)`` —— 由 runtime/registry.invoke 强制
     handler: Callable[..., Any]
     toolset: str = "research"
 
@@ -103,6 +104,15 @@ def get_tools(
 
 def openai_tools(specs: Iterable[ToolSpec] | None) -> list[dict[str, Any]]:
     return [spec.to_openai() for spec in (specs or [])]
+
+
+def invoke(spec: ToolSpec, ctx: Any, arguments: dict[str, Any]) -> Any:
+    """统一的工具调用入口：注入 ctx，校验参数签名。
+
+    工具 handler 的第一位参数必须是 ctx（:class:`~scholarscout.runtime.toolctx.ToolContext`）。
+    签名不对会在这里就报成 ``TypeError``，而不是等到线上某个模型恰好调到它。
+    """
+    return spec.handler(ctx, **arguments)
 
 
 def clear_registry() -> None:

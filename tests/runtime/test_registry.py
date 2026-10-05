@@ -27,7 +27,11 @@ def _clean_registry() -> Iterator[None]:
 
 def _spec(name: str = "research.search", toolset: str = "research") -> ToolSpec:
     return ToolSpec(
-        name=name, description="d", parameters=SCHEMA, handler=lambda **_: None, toolset=toolset
+        name=name,
+        description="d",
+        parameters=SCHEMA,
+        handler=lambda *_a, **_k: None,
+        toolset=toolset,
     )
 
 
@@ -86,12 +90,26 @@ def test_openai_tools_helper() -> None:
 
 def test_tool_decorator_registers_handler() -> None:
     @tool(name="research.echo", description="回显", parameters=SCHEMA)
-    def research_echo(query: str) -> dict[str, object]:
+    def research_echo(ctx: object, query: str) -> dict[str, object]:
+        del ctx
         return {"ok": True, "data": {"query": query}}
 
     spec = registry.get_spec("research.echo")
     assert spec is not None
-    assert spec.handler(query="hi") == {"ok": True, "data": {"query": "hi"}}
+    assert registry.invoke(spec, object(), {"query": "hi"}) == {"ok": True, "data": {"query": "hi"}}
+
+
+def test_invoke_requires_ctx_first_argument() -> None:
+    """工具 handler 必须把 ctx 放第一位 —— 忘了就会在这里炸，而不是等线上模型恰好调到它。"""
+
+    @tool(name="research.bad", description="忘了 ctx", parameters=SCHEMA)
+    def research_bad(query: str) -> dict[str, object]:
+        return {"ok": True, "data": {"query": query}}
+
+    spec = registry.get_spec("research.bad")
+    assert spec is not None
+    with pytest.raises(TypeError):
+        registry.invoke(spec, object(), {"query": "x"})
 
 
 def test_decorator_double_registration_raises() -> None:
