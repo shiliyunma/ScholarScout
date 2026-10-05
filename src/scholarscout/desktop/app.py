@@ -11,13 +11,21 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from scholarscout.desktop.bridge import Bridge
 from scholarscout.desktop.rpc_client import RpcClient, default_command
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
+#: 窗口/任务栏图标（跟 exe 图标同一份，见 scripts/make_icon.py）；缺了也不影响启动
+ICON_PATH = Path(__file__).resolve().parents[3] / "assets" / "icon.ico"
 WINDOW_TITLE = "ScholarScout —— 开放世界学术调研与学习辅助"
 MIN_SIZE = (960, 640)
+
+
+def window_icon() -> str | None:
+    """有就用，没有返回 None（别因为少个图标起不来）。"""
+    return str(ICON_PATH) if ICON_PATH.is_file() else None
 
 
 def launch(
@@ -55,7 +63,11 @@ def launch(
     )
     bridge.attach(window)
     try:
-        webview.start(debug=debug)
+        start_kwargs: dict[str, Any] = {"debug": debug}
+        icon = window_icon()
+        if icon:
+            start_kwargs["icon"] = icon
+        webview.start(**start_kwargs)
     finally:
         client.close()
     return 0
