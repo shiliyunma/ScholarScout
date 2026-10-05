@@ -16,6 +16,51 @@ from scholarscout.state.migrate import now_iso
 _ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # 去掉易混的 i l o 0 1
 _TITLE_MAX = 32
 
+#: 标题里要剥掉的**祈使/客套前缀**（用户不会希望标题是"帮我…""请…"）
+_TITLE_PREFIXES = (
+    "帮我",
+    "帮忙",
+    "请你",
+    "请",
+    "麻烦",
+    "我想",
+    "我要",
+    "我需要",
+    "我想让你",
+    "能不能",
+    "可以",
+    "帮忙看看",
+    "给我",
+    "我要你",
+    "你来",
+    "开始",
+)
+#: 这些是"占位标题"，不算用户起的名字 —— 见到就允许自动改名
+#: （前端曾硬编码 title="新调研"，导致自动命名永远不触发；占位符集合让老会话也能被救回来）
+PLACEHOLDER_TITLES = frozenset({"新调研", "新会话", "未命名", "未命名会话", "新的话题"})
+
+
+def auto_title(content: str, *, max_chars: int = _TITLE_MAX) -> str:
+    """从首条用户消息压出一个标题。
+
+    做的是"总结"而不是原样截断：剥掉祈使/客套前缀（帮我/请/我想…）与首尾标点，
+    再把空白压平。所以「帮我调研一下知识追踪方向该从哪里入门」→「调研一下知识追踪方向该从哪里入门…」。
+    纯本地、零 token（标题每次新会话都要生成，不该花一次模型调用）。
+    """
+    text = " ".join(str(content or "").split())
+    text = text.strip(" 　\t\r\n，。！？、：；,.!?:;…—-·")
+    changed = True
+    while changed and text:
+        changed = False
+        for prefix in sorted(_TITLE_PREFIXES, key=len, reverse=True):
+            if text.startswith(prefix):
+                text = text[len(prefix) :].lstrip(" 　，,。.、：:！!？?")
+                changed = True
+                break
+    if not text:
+        return "新会话"
+    return text[:max_chars] if len(text) > max_chars else text
+
 
 def new_id(prefix: str) -> str:
     """前缀 + 8 位随机串，例如 ``ses_7fk2m9qa``。"""
@@ -114,10 +159,7 @@ def append_message(
         )
         conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (stamp, session_id))
         if role == "user":
-            conn.execute(
-                "UPDATE sessions SET title = ? WHERE id = ? AND (title IS NULL OR title = '')",
-                (_title_from(content), session_id),
-            )
+            retitle_if_unnamed(db, session_id, content)
     return message_id
 
 
@@ -159,5 +201,39 @@ def count_messages(db: Database, session_id: str) -> int:
 
 
 def _title_from(content: str) -> str:
-    text = " ".join(content.split())
-    return text[:_TITLE_MAX] if text else "新会话"
+    """兼容旧调用点：等价于 `auto_title`。"""
+    return auto_title(content)
+
+
+def retitle_if_unnamed(db: Database, session_id: str, content: str) -> str | None:
+    """会话还没有**真标题**时，用这条消息给它起名；返回新标题（没改则 None）。
+
+    "没有真标题" = NULL / 空白 / 占位符（`PLACEHOLDER_TITLES`）——
+    占位符也算未命名，否则前端一旦传了 `title: "新调研"`，自动命名就永远轮不到
+    （这是真发生过的：所有会话都叫"新调研"）。
+    用户手动改过名的会话**不会被覆盖**。
+    """
+    title = auto_title(content)
+    placeholders = ",".join("?" for _ in PLACEHOLDER_TITLES)
+    params: tuple[Any, ...] = (title, session_id, *sorted(PLACEHOLDER_TITLES))
+    cursor = db.execute(
+        f"""
+        UPDATE sessions SET title = ?, updated_at = ?
+        WHERE id = ?
+          AND (title IS NULL OR trim(title) = '' OR title IN ({placeholders}))
+        """,
+        (title, now_iso(), *params[1:]),
+    )
+    return title if cursor.rowcount else None
+
+
+def rename_session(db: Database, session_id: str, title: str) -> str | None:
+    """用户手动改名（改过一次就不再自动命名）。返回存进去的标题；会话不存在返回 None。"""
+    cleaned = " ".join(str(title or "").split())[:_TITLE_MAX]
+    if not cleaned:
+        raise ValueError("标题不能为空")
+    cursor = db.execute(
+        "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
+        (cleaned, now_iso(), session_id),
+    )
+    return cleaned if cursor.rowcount else None

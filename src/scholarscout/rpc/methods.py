@@ -163,6 +163,18 @@ def session_create(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return {"session_id": session_id, "created_at": row.get("created_at")}
 
 
+@method("session.rename")
+def session_rename(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """改会话标题（改过之后就不再被自动命名覆盖）。"""
+    params = _params(params)
+    session_id = _require(params, "session_id")
+    title = _require(params, "title")
+    stored = sessions.rename_session(ctx.db, session_id, str(title))
+    if stored is None:
+        raise RpcError(Code.NOT_FOUND, f"会话不存在：{session_id}")
+    return {"ok": True, "session_id": session_id, "title": stored}
+
+
 @method("session.list")
 def session_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     params = _params(params)

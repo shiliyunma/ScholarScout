@@ -14,6 +14,7 @@ var state = {
   theme: "auto",
   history: false,
   noteKind: "note",
+  layout: { left: 216, right: 380 },
 };
 
 /* ------------------------------------------------------------------ 主题 */
@@ -131,7 +132,57 @@ function renderSessions(items) {
     li.addEventListener("click", function () {
       openSession(item.session_id);
     });
+    li.title = (item.title || "未命名会话") + "（双击可改名）";
+    li.addEventListener("dblclick", function (event) {
+      event.stopPropagation();
+      startRename(item, li);
+    });
     list.appendChild(li);
+  });
+}
+
+function startRename(item, li) {
+  /* 双击改名：标题是自动生成的，用户总有想改的时候。
+     用内联输入而不是 window.prompt —— pywebview 里 prompt 不保证可用。 */
+  const input = document.createElement("input");
+  input.className = "rename-input";
+  input.value = item.title || "";
+  li.innerHTML = "";
+  li.appendChild(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  async function commit(save) {
+    if (done) return;
+    done = true;
+    if (save) {
+      const name = input.value.trim();
+      if (name && name !== item.title) {
+        try {
+          await scout.call("session.rename", { session_id: item.session_id, title: name });
+        } catch (error) {
+          /* 改名失败就按原样刷新，别把界面留在半截状态 */
+        }
+      }
+    }
+    await loadSessions();
+  }
+
+  input.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      commit(false);
+    }
+  });
+  input.addEventListener("blur", function () {
+    commit(true);
+  });
+  input.addEventListener("click", function (event) {
+    event.stopPropagation();
   });
 }
 
@@ -203,6 +254,8 @@ async function send(text) {
     );
     renderRefs(result.refs || {});
     await refreshSide();
+    // 首条消息发出后标题才有值 → 刷一次会话列表，让新标题立刻出现
+    await loadSessions();
   } catch (error) {
     state.pending.add("bad", "调用失败：" + error.message);
     state.pending.node.wrap.classList.add("error");
@@ -263,6 +316,102 @@ function addChip(parent, label, handler) {
   parent.appendChild(chip);
 }
 
+/* ------------------------------------------------------------------ 布局 */
+
+var LAYOUT_KEY = "scout:layout";
+/*: 三栏最小宽度（与 style.css 的默认值一起改；拖到再小也停在这里）。
+    中间栏别小于 360：聊天气泡与工具卡片在更窄的宽度下会挤成一条线。 */
+var LAYOUT_MIN = { left: 180, center: 360, right: 280 };
+var LAYOUT_DEFAULT = { left: 216, right: 380 };
+var SPLITTER_WIDTH = 6;
+
+function layoutEl() {
+  return document.querySelector(".layout");
+}
+
+function clampLayout(left, right) {
+  const total = layoutEl().clientWidth || window.innerWidth;
+  const usable = total - 2 * SPLITTER_WIDTH;
+  left = Math.max(LAYOUT_MIN.left, Math.round(left));
+  right = Math.max(LAYOUT_MIN.right, Math.round(right));
+  // 先保证右边，再让左边吃剩下的空间；两头都不够时中间栏优先保底
+  if (left + right > usable - LAYOUT_MIN.center) {
+    right = Math.max(LAYOUT_MIN.right, usable - LAYOUT_MIN.center - left);
+    if (left + right > usable - LAYOUT_MIN.center) {
+      left = Math.max(LAYOUT_MIN.left, usable - LAYOUT_MIN.center - right);
+    }
+  }
+  return { left: left, right: right };
+}
+
+function applyLayout(left, right, persist) {
+  const next = clampLayout(left, right);
+  const style = layoutEl().style;
+  style.setProperty("--col-left", next.left + "px");
+  style.setProperty("--col-right", next.right + "px");
+  state.layout = next;
+  if (persist !== false) {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(next));
+    } catch (error) {
+      /* 存储被禁用就算了，不影响本次会话内拖动 */
+    }
+  }
+}
+
+function initLayout() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null");
+  } catch (error) {
+    saved = null;
+  }
+  const left = saved && saved.left ? saved.left : LAYOUT_DEFAULT.left;
+  const right = saved && saved.right ? saved.right : LAYOUT_DEFAULT.right;
+  applyLayout(left, right, false);
+
+  wireSplitter("split-left", "left");
+  wireSplitter("split-right", "right");
+  window.addEventListener("resize", function () {
+    applyLayout(state.layout.left, state.layout.right, false);
+  });
+}
+
+function wireSplitter(id, side) {
+  const handle = el(id);
+  if (!handle) return;
+
+  handle.addEventListener("dblclick", function () {
+    applyLayout(LAYOUT_DEFAULT.left, LAYOUT_DEFAULT.right);
+  });
+
+  handle.addEventListener("pointerdown", function (event) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const start = { left: state.layout.left, right: state.layout.right };
+    handle.classList.add("is-dragging");
+    handle.setPointerCapture(event.pointerId);
+
+    function move(moveEvent) {
+      const delta = moveEvent.clientX - startX;
+      if (side === "left") {
+        applyLayout(start.left + delta, start.right);
+      } else {
+        applyLayout(start.left, start.right - delta);
+      }
+    }
+    function up() {
+      handle.classList.remove("is-dragging");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+    }
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  });
+}
+
 /* ------------------------------------------------------------ 会话与轨迹 */
 
 async function loadSessions() {
@@ -272,10 +421,11 @@ async function loadSessions() {
 }
 
 async function newSession() {
-  const created = await scout.call("session.create", { title: "新调研" });
+  // 不要传 title：让后端在首条用户消息到来时自动命名（传了占位标题就永远轮不到自动命名）
+  const created = await scout.call("session.create", {});
   state.sessionId = created.session_id;
   el("messages").innerHTML =
-    '<p class="empty">新会话已建好。试试：「帮我找教育智能体方向的入门资料」</p>';
+    '<p class="empty">新会话已建好（标题会在你发出第一句后自动生成）。试试：「帮我找教育智能体方向的入门资料」</p>';
   await loadSessions();
 }
 
@@ -810,6 +960,7 @@ async function refreshSide() {
 
 async function boot() {
   try {
+    initLayout();
     renderHealth(await scout.call("system.health", {}));
     const items = await loadSessions();
     if (items.length) await openSession(items[0].session_id);

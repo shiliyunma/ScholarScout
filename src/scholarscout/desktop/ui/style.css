@@ -247,12 +247,46 @@ button.ghost:hover {
 }
 
 /* ───────────────────────────────────────────────────────────── 三栏 */
+/* 列宽是变量 —— 拖动分隔条改的就是这两个值（JS 里 clamp 到最小宽度，见 app.js LAYOUT_MIN） */
 
 .layout {
+  --col-left: 216px;
+  --col-right: 380px;
+  --splitter-width: 6px;
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: 216px minmax(360px, 1fr) minmax(330px, 440px);
+  /* 中间那栏用 minmax(0, 1fr)：不加 minmax(0…)，长内容会把列撑破而不是出滚动条 */
+  grid-template-columns:
+    var(--col-left) var(--splitter-width) minmax(0, 1fr) var(--splitter-width)
+    var(--col-right);
   min-height: 0;
+}
+
+/* ────────────────────────────────────────────────────────── 拖动分隔条 */
+
+.splitter {
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  /* 拖动时别让浏览器做文本选择/手势 */
+  touch-action: none;
+  user-select: none;
+}
+.splitter::after {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.splitter:hover::after,
+.splitter.is-dragging::after {
+  background: var(--ui-accent);
+  opacity: 0.35;
+}
+.splitter.is-dragging {
+  background: var(--ui-control-hover-background);
 }
 
 .col {
@@ -301,6 +335,19 @@ button.ghost:hover {
   background: var(--ui-row-active-background);
   border-color: var(--ui-stroke-primary);
   color: var(--ui-text-primary);
+}
+
+/* 会话改名用的内联输入（双击会话名触发） */
+.rename-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 2px 4px;
+  font: inherit;
+  color: var(--ui-text-primary);
+  background: var(--ui-bg-card, transparent);
+  border: 0.0625rem solid var(--ui-stroke-primary);
+  border-radius: var(--radius-sm, var(--radius-md));
+  outline: none;
 }
 .list li .meta {
   display: block;
