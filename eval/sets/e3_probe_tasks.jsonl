@@ -1,0 +1,3 @@
+{"id": "e3p-01", "topic": "transformer attention", "level": "beginner", "weeks": 0, "weekly_hours": 0, "query": "transformer self attention mechanism", "request": "注意力机制到底是怎么算的？用你查到的资料讲清楚，我只要看懂这一步。"}
+{"id": "e3p-02", "topic": "retrieval augmented generation", "level": "beginner", "weeks": 0, "weekly_hours": 0, "query": "RAG rerank vs embedding retrieval", "request": "RAG 里 rerank 和向量检索各解决什么问题？先查资料，再用几句话说清区别。"}
+{"id": "e3p-03", "topic": "educational data mining", "level": "beginner", "weeks": 0, "weekly_hours": 0, "query": "educational data mining public datasets", "request": "教育数据挖掘常用的公开数据集有哪些？各自能干什么，简单说一下就行。"}

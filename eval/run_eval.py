@@ -250,9 +250,27 @@ def run_e2(rows: list[dict[str, Any]]) -> dict[str, Any]:
 # ----------------------------------------------------------------------- E3 端到端
 
 
-#: 用户"要产物"的措辞（用来判断模型有没有主动把选择权交出去 —— **启发式，不精确**）
+#: 用户"要产物"的措辞（判断模型有没有主动把选择权交出去 —— **启发式，不精确**）
 ASK_PATTERNS = ("要不要", "需要我", "要我", "是否要", "需不需要", "要的话", "需要的话")
 ARTIFACT_WORDS = ("地图", "路线", "抽背卡", "卡片", "知识图谱")
+
+#: **题面**里"点名要产物"的措辞。用来分清楚两件完全不同的事：
+#: "用户要了 → 模型照做"（正确）与"用户没要 → 模型擅自生成"（这才是要测的）。
+#: 这是启发式，词表就在这儿，报告里要标注；分母只算"题面没要产物"的题。
+REQUEST_ARTIFACT_WORDS = (
+    "路线",
+    "地图",
+    "图谱",
+    "抽背",
+    "卡片",
+    "清单",
+    "计划",
+    "顺序",
+    "怎么安排",
+    "怎么学",
+    "从哪开始",
+    "入门路径",
+)
 
 #: 按需档下"用户点单"的请求文本（对应界面上的三个按钮）
 FOLLOW_UP_TEXT = (
@@ -300,6 +318,8 @@ def run_e3(  # pragma: no cover - 需真模型
         session_id = dispatch(ctx, "session.create", {"title": f"E3 {row['id']}"})["session_id"]
         result = dispatch(ctx, "chat.send", {"session_id": session_id, "text": row["request"]})
         first_text = str(result.get("text") or "")
+        # 题面是不是"点名要了产物"？—— 这个判断决定后面那个指标的分母
+        request_asks_artifact = any(word in str(row["request"]) for word in REQUEST_ARTIFACT_WORDS)
         artifact_count_sql = (
             "SELECT (SELECT count(*) FROM topic_maps WHERE session_id = ?)"
             " + (SELECT count(*) FROM learning_routes WHERE session_id = ?)"
@@ -379,6 +399,8 @@ def run_e3(  # pragma: no cover - 需真模型
                 ),
                 "artifacts": {"topic_maps": len(maps), "routes": len(plans)},
                 "first_turn_artifacts": first_artifacts,
+                "request_asked_artifact": request_asks_artifact,
+                "unrequested_artifacts": bool((not request_asks_artifact) and first_artifacts >= 1),
                 "asked": _looks_like_asking(first_text),
                 "addressed_on_demand": addressed,
                 "modes": modes,
@@ -437,11 +459,18 @@ def run_e3(  # pragma: no cover - 需真模型
             ),
             len(tasks),
         ),
-        # 「自动出产物」比例：按需档下这个数**应该接近 0**；对照臂下接近 1。
-        # 两个档位放在一起才是完整结论：成本差多少、用户是不是真的需要。
+        # 「首轮就出产物」比例：**含题面明确要求的情形**，所以它只说明"工作流跑通了"，
+        # 不能拿它证明"模型擅自生成"。擅自生成看下面那条。
         "auto_artifact_rate": metrics.float_rate(
             sum(1 for task in tasks if task["first_turn_artifacts"] >= 1), len(tasks)
         ),
+        # **「题面没要、模型却出了产物」的比例** —— 这才是"擅自生成"。
+        # 分母只算"题面没点名要产物"的题：拿要了产物的题当分母会把正确行为算成违规（踩过）。
+        "unrequested_artifact_rate": metrics.float_rate(
+            sum(1 for task in tasks if task["unrequested_artifacts"]),
+            sum(1 for task in tasks if not task["request_asked_artifact"]),
+        ),
+        "unrequested_denominator": sum(1 for task in tasks if not task["request_asked_artifact"]),
         # 「模型有没有把选择权交出去」：启发式（措辞匹配），报告里要标注不精确。
         "asked_rate": metrics.float_rate(sum(1 for task in tasks if task["asked"]), len(tasks)),
         # 按需生成成功率：用户点单之后真出产物的比例（确定性口径，没跑 ask 就是 None）。
@@ -492,7 +521,7 @@ def filter_rows(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="run_eval", description="ScholarScout 评测运行器")
-    parser.add_argument("--set", default="all", choices=["e1", "e2", "e3", "all"])
+    parser.add_argument("--set", default="all", choices=["e1", "e2", "e3", "e3probe", "all"])
     parser.add_argument("--live", action="store_true", help="跑 E3（需要模型密钥与网络）")
     parser.add_argument("--ablation", action="store_true", help="跑对照臂")
     parser.add_argument(
@@ -540,14 +569,16 @@ def main(argv: list[str] | None = None) -> int:
             if args.set in {"e2", "all"}:
                 results["sets"]["e2"] = run_e2(pick("e2_guard"))
                 print(f"E2 完成：{results['sets']['e2']['n']} 条")
-            if args.set == "e3" or (args.set == "all" and args.live):
+            if args.set in {"e3", "e3probe"} or (args.set == "all" and args.live):
                 if ctx.llm is None:
                     results["sets"]["e3"] = {"skipped": "未配置模型（.env 里的 LLM_API_KEY）"}
                     print("E3 跳过：未配置模型")
                 else:
+                    # e3probe = 题面**不点名要产物**的探针题：量"模型会不会擅自生成"
+                    rows = pick("e3_probe_tasks" if args.set == "e3probe" else "e3_tasks")
                     results["sets"]["e3"] = run_e3(
                         ctx,
-                        pick("e3_tasks"),
+                        rows,
                         auto_artifacts=args.auto_artifacts,
                         ask_artifacts=args.ask_artifacts,
                     )

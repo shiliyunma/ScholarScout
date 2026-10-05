@@ -170,9 +170,18 @@ def render(results: dict[str, Any]) -> str:
                             "—",
                         ],
                         [
-                            "首轮就自动出产物的比例（按需档应≈0）",
+                            "首轮就出产物的比例（含题面点名要产物的情形）",
                             _pct(e3.get("auto_artifact_rate")),
                             "—",
+                        ],
+                        [
+                            "**题面没要却仍出产物**的比例（按需档应≈0）",
+                            (
+                                _pct(e3.get("unrequested_artifact_rate"))
+                                if e3.get("unrequested_denominator")
+                                else "—（本题集题面都点名要了产物）"
+                            ),
+                            f"分母 {e3.get('unrequested_denominator', '—')} 题",
                         ],
                         ["结尾主动询问要不要生成（启发式）", _pct(e3.get("asked_rate")), "—"],
                         [
