@@ -11,7 +11,41 @@ var state = {
   routes: [],
   cards: [],
   pending: null,
+  theme: "auto",
 };
+
+/* ------------------------------------------------------------------ 主题 */
+
+var THEME_KEY = "scout:theme";
+
+function systemPrefersDark() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function resolveTheme(mode) {
+  if (mode === "light" || mode === "dark") return mode;
+  return systemPrefersDark() ? "dark" : "light";
+}
+
+function applyTheme(mode) {
+  state.theme = mode;
+  document.documentElement.classList.toggle("dark", resolveTheme(mode) === "dark");
+  var button = el("btn-theme");
+  if (button) {
+    button.textContent = mode === "auto" ? "跟随系统" : mode === "dark" ? "深色" : "浅色";
+    button.title = "主题：" + button.textContent + "（点一下切换浅/深，再次回到跟随系统）";
+  }
+}
+
+function cycleTheme() {
+  var next = state.theme === "auto" ? (systemPrefersDark() ? "light" : "dark") : state.theme === "dark" ? "light" : "dark";
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch (error) {
+    /* 隐私模式下 localStorage 可能不可用，只是不持久化而已 */
+  }
+  applyTheme(next);
+}
 
 /* ------------------------------------------------------------------ 通道 */
 
@@ -624,6 +658,13 @@ async function boot() {
 }
 
 function wire() {
+  el("btn-theme").addEventListener("click", cycleTheme);
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+      if (state.theme === "auto") applyTheme("auto");
+    });
+  }
+
   el("composer").addEventListener("submit", function (event) {
     event.preventDefault();
     const input = el("input");
@@ -670,5 +711,12 @@ function wire() {
   });
 }
 
+var saved = null;
+try {
+  saved = localStorage.getItem(THEME_KEY);
+} catch (error) {
+  saved = null;
+}
+applyTheme(saved === "light" || saved === "dark" ? saved : "auto");
 wire();
 window.addEventListener("pywebviewready", boot);

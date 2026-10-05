@@ -1,188 +1,575 @@
-/* ScholarScout 桌面壳样式：离线可用（系统字体、无外链），只做界面，不含业务。 */
+/* ScholarScout 桌面壳样式
+ *
+ * 颜色体系**照抄 Hermes 桌面端的令牌框架**（apps/desktop/src/styles.css）：
+ * 同一套 --theme-* 种子 + color-mix 派生、同一套文字透明度阶梯、同一套 hairline 描边、
+ * 同一个圆角系数（0.2）与阴影配方。目标是两个窗口并排放着像同一个家族，而不是"另一个界面"。
+ *
+ * 浅色是默认（与 Hermes 默认皮肤的种子一致），深色走 :root.dark（中性色而非任何蓝调）。
+ * 离线可用：字体只用系统栈，全部颜色由令牌算出，无外链、无构建。
+ */
 
 :root {
-  --bg: #14161a;
-  --panel: #1b1e24;
-  --panel-2: #21252c;
-  --line: #2c313a;
-  --fg: #e6e8ec;
-  --fg-dim: #9aa3b0;
-  --accent: #5b9cf8;
-  --ok: #4cc38a;
-  --warn: #e0a44a;
-  --bad: #e0685f;
-  --radius: 8px;
+  color-scheme: light;
+
+  /* ───────── 主题种子（Hermes 默认皮肤的原值）───────── */
+  --theme-foreground: #17171a;
+  --theme-primary: #0053fd;
+  --theme-midground: #0053fd;
+  --theme-warm: #cf806d;
+  --theme-background-seed: #f8faff;
+  --theme-sidebar-seed: #f3f7ff;
+  --theme-card-seed: #ffffff;
+  --theme-elevated-seed: #ffffff;
+  --theme-neutral-chrome: #f3f3f3;
+  --theme-neutral-sidebar: #f3f3f3;
+  --theme-neutral-card: #fcfcfc;
+  --theme-mix-chrome: 92%;
+  --theme-mix-sidebar: 100%;
+  --theme-mix-card: 22%;
+  --theme-mix-elevated: 28%;
+
+  --ui-base: var(--theme-foreground);
+  --ui-accent: var(--theme-midground);
+  --ui-warm: var(--theme-warm);
+  --ui-red: #cf2d56;
+  --ui-green: #1f8a65;
+  --ui-yellow: #c08532;
+  --ui-orange: #db704b;
+  --ui-purple: #9e94d5;
+
+  /* ───────── 表面（chrome / sidebar / card / elevated）───────── */
+  --ui-bg-chrome: color-mix(
+    in srgb,
+    var(--theme-background-seed) var(--theme-mix-chrome),
+    var(--theme-neutral-chrome)
+  );
+  --ui-bg-sidebar: color-mix(
+    in srgb,
+    var(--theme-sidebar-seed) var(--theme-mix-sidebar),
+    var(--theme-neutral-sidebar)
+  );
+  --ui-bg-elevated: color-mix(
+    in srgb,
+    var(--theme-elevated-seed) var(--theme-mix-elevated),
+    var(--theme-neutral-card)
+  );
+  --ui-bg-card: color-mix(in srgb, var(--ui-accent) 4%, color-mix(in srgb, var(--ui-base) 4%, transparent));
+  --ui-bg-input: color-mix(in srgb, var(--ui-base) 3%, transparent);
+
+  /* 行态：Hermes 用强调色极低比例混合，而不是另调一个灰 */
+  --ui-row-hover-background: color-mix(
+    in srgb,
+    var(--ui-accent) 4%,
+    color-mix(in srgb, var(--ui-base) 3%, transparent)
+  );
+  --ui-row-active-background: color-mix(
+    in srgb,
+    var(--ui-accent) 8%,
+    color-mix(in srgb, var(--ui-base) 5%, transparent)
+  );
+  --ui-control-hover-background: color-mix(
+    in srgb,
+    var(--ui-accent) 6%,
+    color-mix(in srgb, var(--ui-base) 4%, transparent)
+  );
+
+  /* ───────── 文字阶梯（透明混合，随表面走）───────── */
+  --ui-text-primary: color-mix(in srgb, var(--ui-base) 94%, transparent);
+  --ui-text-secondary: color-mix(in srgb, var(--ui-base) 74%, transparent);
+  --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 54%, transparent);
+  --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 36%, transparent);
+
+  /* ───────── 描边（hairline，由文字色/强调色派生）───────── */
+  --ui-stroke-primary: color-mix(
+    in srgb,
+    var(--ui-accent) 24%,
+    color-mix(in srgb, var(--ui-base) 10%, transparent)
+  );
+  --ui-stroke-secondary: color-mix(
+    in srgb,
+    var(--ui-accent) 16%,
+    color-mix(in srgb, var(--ui-base) 7%, transparent)
+  );
+  --ui-stroke-tertiary: color-mix(
+    in srgb,
+    var(--ui-accent) 10%,
+    color-mix(in srgb, var(--ui-base) 5%, transparent)
+  );
+
+  /* ───────── 圆角与阴影（系数 0.2，同 Hermes）───────── */
+  --radius-scalar: 0.2;
+  --radius-xs: calc(var(--radius-scalar) * 0.125rem);
+  --radius-sm: calc(var(--radius-scalar) * 0.5rem);
+  --radius-md: calc(var(--radius-scalar) * 0.625rem);
+  --radius-lg: calc(var(--radius-scalar) * 0.75rem);
+  --radius-xl: calc(var(--radius-scalar) * 1rem);
+
+  --shadow-sm:
+    0 0 0 0.0625rem color-mix(in srgb, var(--ui-base) 6%, transparent),
+    0 0.125rem 0.5rem color-mix(in srgb, #000 4%, transparent);
+  --shadow-md:
+    0 0 0 0.0625rem color-mix(in srgb, var(--ui-base) 8%, transparent),
+    0 0.25rem 1rem color-mix(in srgb, #000 8%, transparent),
+    0 1rem 2rem -1.5rem color-mix(in srgb, #000 18%, transparent);
+
+  /* ───────── 字体（Hermes 的 SYSTEM_SANS 栈）───────── */
+  --font-sans: "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Microsoft YaHei", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: Menlo, Monaco, "SF Mono", Consolas, "Courier Prime", monospace;
 }
 
-* { box-sizing: border-box; }
+/* 深色：只换中性色与语义色，种子/公式不动 —— 与 Hermes 的 :root.dark 同构 */
+:root.dark {
+  color-scheme: dark;
+
+  --theme-neutral-chrome: #0d0d0e;
+  --theme-neutral-sidebar: #0a0a0b;
+  --theme-neutral-card: #161618;
+  --theme-background-seed: #000000;
+  --theme-sidebar-seed: #000000;
+  --theme-card-seed: #161618;
+  --theme-elevated-seed: #1a1a1d;
+  --theme-mix-chrome: 74%;
+  --theme-mix-card: 38%;
+  --theme-mix-elevated: 46%;
+  --theme-foreground: #f2f2f3;
+  --theme-midground: #4d8dff;
+
+  --ui-red: #e75e78;
+  --ui-green: #55a583;
+
+  --shadow-sm:
+    0 0 0 0.0625rem color-mix(in srgb, var(--ui-base) 10%, transparent),
+    0 0.125rem 0.5rem color-mix(in srgb, #000 30%, transparent);
+  --shadow-md:
+    0 0 0 0.0625rem color-mix(in srgb, var(--ui-base) 12%, transparent),
+    0 0.25rem 1rem color-mix(in srgb, #000 40%, transparent),
+    0 1rem 2rem -1.5rem color-mix(in srgb, #000 60%, transparent);
+}
+
+* {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
-  color: var(--fg);
-  font: 14px/1.55 "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  background: var(--ui-bg-chrome);
+  color: var(--ui-text-primary);
+  font: 13.5px/1.55 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
 
-/* ------------------------------------------------------------------ 顶栏 */
+/* ───────────────────────────────────────────────────────────── 顶栏 */
 
 .topbar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  gap: 14px;
+  padding: 9px 14px;
+  background: var(--ui-bg-chrome);
+  border-bottom: 0.0625rem solid var(--ui-stroke-tertiary);
   flex: 0 0 auto;
 }
 
-.brand { display: flex; align-items: baseline; gap: 10px; }
-.brand strong { font-size: 16px; letter-spacing: 0.3px; }
-.brand .sub { color: var(--fg-dim); font-size: 12px; }
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+.brand strong {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ui-text-primary);
+}
+.brand .sub {
+  color: var(--ui-text-tertiary);
+  font-size: 11.5px;
+}
 
 .status {
   flex: 1 1 auto;
-  color: var(--fg-dim);
-  font-size: 12px;
+  color: var(--ui-text-tertiary);
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.status.is-bad { color: var(--bad); }
+.status.is-bad {
+  color: var(--ui-red);
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+}
 
 button {
-  background: var(--panel-2);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 6px 12px;
+  background: var(--ui-bg-elevated);
+  color: var(--ui-text-secondary);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
   cursor: pointer;
   font: inherit;
+  font-size: 12.5px;
 }
-button:hover { border-color: var(--accent); color: #fff; }
-button:disabled { opacity: 0.5; cursor: default; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #08101c; font-weight: 600; }
+button:hover {
+  background: var(--ui-control-hover-background);
+  color: var(--ui-text-primary);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.primary {
+  background: color-mix(in srgb, var(--ui-accent) 92%, transparent);
+  border-color: color-mix(in srgb, var(--ui-accent) 70%, transparent);
+  color: #fff;
+  font-weight: 600;
+}
+button.primary:hover {
+  background: var(--ui-accent);
+}
+button.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-text-tertiary);
+}
+button.ghost:hover {
+  border-color: var(--ui-stroke-secondary);
+  background: var(--ui-control-hover-background);
+}
 
-/* ------------------------------------------------------------------ 三栏 */
+/* ───────────────────────────────────────────────────────────── 三栏 */
 
 .layout {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: 220px minmax(360px, 1fr) minmax(340px, 460px);
+  grid-template-columns: 216px minmax(360px, 1fr) minmax(330px, 440px);
   min-height: 0;
 }
 
-.col { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
-.col:last-child { border-right: none; }
-.col h2 { margin: 12px 14px 6px; font-size: 12px; color: var(--fg-dim); font-weight: 600; }
+.col {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 0.0625rem solid var(--ui-stroke-tertiary);
+}
+.col:last-child {
+  border-right: none;
+}
+.col-sessions {
+  background: var(--ui-bg-sidebar);
+}
+.col h2 {
+  margin: 11px 12px 5px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ui-text-quaternary);
+  font-weight: 600;
+}
 
-/* ------------------------------------------------------------- 会话列表 */
+/* ─────────────────────────────────────────────────────── 列表（会话等） */
 
-.list { list-style: none; margin: 0; padding: 0 8px 12px; overflow-y: auto; flex: 1 1 auto; }
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 10px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
 
 .list li {
-  padding: 8px 10px;
-  border-radius: var(--radius);
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  border: 1px solid transparent;
+  color: var(--ui-text-secondary);
+  border: 0.0625rem solid transparent;
 }
-.list li:hover { background: var(--panel-2); }
-.list li.is-active { background: var(--panel-2); border-color: var(--accent); }
-.list li .meta { display: block; color: var(--fg-dim); font-size: 12px; margin-top: 2px; }
+.list li:hover {
+  background: var(--ui-row-hover-background);
+  color: var(--ui-text-primary);
+}
+.list li.is-active {
+  background: var(--ui-row-active-background);
+  border-color: var(--ui-stroke-primary);
+  color: var(--ui-text-primary);
+}
+.list li .meta {
+  display: block;
+  color: var(--ui-text-quaternary);
+  font-size: 11px;
+  margin-top: 1px;
+}
+.list li.hint {
+  cursor: default;
+  color: var(--ui-text-tertiary);
+  font-size: 12px;
+  padding: 8px;
+}
+.list li.hint:hover {
+  background: transparent;
+}
 
-/* ---------------------------------------------------------------- 聊天区 */
+/* ─────────────────────────────────────────────────────────── 聊天区 */
 
-.messages { flex: 1 1 auto; overflow-y: auto; padding: 16px; min-height: 0; }
+.messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 14px 16px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 
-.msg { margin-bottom: 14px; display: flex; flex-direction: column; gap: 4px; }
-.msg .who { font-size: 12px; color: var(--fg-dim); }
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 68ch;
+}
+.msg .who {
+  font-size: 11px;
+  color: var(--ui-text-quaternary);
+  letter-spacing: 0.02em;
+}
 .msg .body {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  padding: 8px 11px;
   white-space: pre-wrap;
   word-break: break-word;
+  color: var(--ui-text-primary);
+  background: var(--ui-bg-elevated);
+  border: 0.0625rem solid var(--ui-stroke-tertiary);
 }
-.msg.user .body { background: #232a3a; border-color: #2f3b52; }
-.msg.error .body { border-color: var(--bad); color: #ffd7d3; }
+/* 用户消息靠右、用强调色的极低比例填充（不刷成深蓝块） */
+.msg.user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.msg.user .body {
+  background: color-mix(in srgb, var(--ui-accent) 7%, transparent);
+  border-color: color-mix(in srgb, var(--ui-accent) 18%, transparent);
+}
+.msg.error .body {
+  border-color: color-mix(in srgb, var(--ui-red) 55%, transparent);
+  color: var(--ui-red);
+}
 
-.trace { font-size: 12px; color: var(--fg-dim); display: flex; flex-direction: column; gap: 2px; }
-.trace .call { color: var(--accent); }
-.trace .ok { color: var(--ok); }
-.trace .bad { color: var(--bad); }
-.trace .warn { color: var(--warn); }
+/* 工具轨迹：细行 + 语义色，不抢正文 */
+.trace {
+  font-size: 11.5px;
+  color: var(--ui-text-tertiary);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--font-mono);
+}
+.trace .call {
+  color: color-mix(in srgb, var(--ui-accent) 82%, var(--ui-text-primary));
+}
+.trace .ok {
+  color: var(--ui-green);
+}
+.trace .bad {
+  color: var(--ui-red);
+}
+.trace .warn {
+  color: var(--ui-yellow);
+}
 
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* 出处小标签 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
 .chip {
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--panel-2);
-  color: var(--fg-dim);
+  font-size: 11.5px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  background: var(--ui-bg-card);
+  color: var(--ui-text-tertiary);
   cursor: pointer;
+  font-family: var(--font-mono);
 }
-.chip:hover { border-color: var(--accent); color: var(--fg); }
+.chip:hover {
+  border-color: var(--ui-stroke-primary);
+  color: var(--ui-text-primary);
+}
 
-.empty, .hint { color: var(--fg-dim); font-size: 12px; }
-.hint { padding: 0 14px; }
+.empty,
+.hint {
+  color: var(--ui-text-tertiary);
+  font-size: 12px;
+}
+.hint {
+  padding: 0 12px;
+  margin: 8px 0;
+}
 
-/* ---------------------------------------------------------------- 输入区 */
+/* ─────────────────────────────────────────────────────────── 输入区 */
 
-.composer { border-top: 1px solid var(--line); padding: 10px 16px; background: var(--panel); flex: 0 0 auto; }
+.composer {
+  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
+  padding: 9px 14px 11px;
+  background: var(--ui-bg-chrome);
+  flex: 0 0 auto;
+}
 .composer textarea {
   width: 100%;
   resize: vertical;
-  background: var(--panel-2);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 8px 10px;
+  background: var(--ui-bg-elevated);
+  color: var(--ui-text-primary);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-lg);
+  padding: 7px 10px;
   font: inherit;
+  box-shadow: var(--shadow-sm);
 }
-.composer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.composer textarea:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ui-accent) 55%, transparent);
+}
+.composer textarea::placeholder {
+  color: var(--ui-text-quaternary);
+}
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 7px;
+}
 
-/* ---------------------------------------------------------------- 右栏 */
+/* ─────────────────────────────────────────────────────────── 右栏 */
 
-.tabs { display: flex; gap: 6px; padding: 12px 14px 0; }
-.tab { padding: 5px 10px; font-size: 13px; }
-.tab.is-active { border-color: var(--accent); color: #fff; }
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px 0;
+}
+.tab {
+  padding: 3px 9px;
+  font-size: 12.5px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-text-tertiary);
+}
+.tab:hover {
+  background: var(--ui-control-hover-background);
+  color: var(--ui-text-primary);
+}
+.tab.is-active {
+  background: var(--ui-row-active-background);
+  border-color: var(--ui-stroke-primary);
+  color: var(--ui-text-primary);
+}
 
-.pane { display: none; flex-direction: column; min-height: 0; flex: 1 1 auto; padding-bottom: 12px; }
-.pane.is-active { display: flex; }
+.pane {
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding-bottom: 10px;
+}
+.pane.is-active {
+  display: flex;
+}
 
-.row { display: flex; gap: 8px; padding: 10px 14px 6px; }
+.row {
+  display: flex;
+  gap: 6px;
+  padding: 9px 12px 4px;
+}
 .row input {
   flex: 1 1 auto;
-  background: var(--panel-2);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 6px 10px;
+  background: var(--ui-bg-elevated);
+  color: var(--ui-text-primary);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  padding: 5px 9px;
   font: inherit;
+}
+.row input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ui-accent) 55%, transparent);
+}
+.row input::placeholder {
+  color: var(--ui-text-quaternary);
 }
 
 .detail {
-  margin: 6px 14px 0;
-  padding: 10px 12px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  margin: 5px 12px 0;
+  padding: 9px 11px;
+  background: var(--ui-bg-elevated);
+  border: 0.0625rem solid var(--ui-stroke-tertiary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   overflow-y: auto;
-  max-height: 42%;
+  max-height: 46%;
   white-space: pre-wrap;
   word-break: break-word;
+  color: var(--ui-text-secondary);
+  font-size: 12.5px;
 }
-.detail:empty { display: none; }
-.detail h3 { margin: 0 0 6px; font-size: 14px; }
-.detail .kv { color: var(--fg-dim); font-size: 12px; }
-.detail .week { margin-top: 10px; }
-.detail .checkpoint { color: var(--warn); font-size: 12px; margin-top: 4px; }
-.detail .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.detail .qa { margin-top: 10px; }
-.detail .qa .q { color: var(--accent); }
+.detail:empty {
+  display: none;
+}
+.detail h3 {
+  margin: 0 0 5px;
+  font-size: 13px;
+  color: var(--ui-text-primary);
+  font-weight: 600;
+}
+.detail .kv {
+  color: var(--ui-text-tertiary);
+  font-size: 11.5px;
+}
+.detail .week {
+  margin-top: 9px;
+}
+.detail .checkpoint {
+  color: color-mix(in srgb, var(--ui-yellow) 88%, var(--ui-text-primary));
+  font-size: 11.5px;
+  margin-top: 3px;
+}
+.detail .actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 9px;
+  flex-wrap: wrap;
+}
+.detail .qa {
+  margin-top: 9px;
+}
+.detail .qa .q,
+.detail .q {
+  color: color-mix(in srgb, var(--ui-accent) 86%, var(--ui-text-primary));
+}
+
+/* ─────────────────────────────────────────────────────── 滚动条（细） */
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ui-base) 16%, transparent);
+  border-radius: var(--radius-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ui-base) 26%, transparent);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

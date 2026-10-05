@@ -84,6 +84,7 @@ def test_ui_references_every_panel_target() -> None:
     html = (assets.ui_dir() / "index.html").read_text(encoding="utf-8")
     for anchor in (
         'id="status"',
+        'id="btn-theme"',
         'id="session-list"',
         'id="messages"',
         'id="composer"',
