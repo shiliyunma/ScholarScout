@@ -73,7 +73,7 @@ class GoogleCseProvider:
         }
         url = f"{self.endpoint}?{urlencode(params)}"
         response = self.http.fetch(
-            url, accept="application/json", min_interval_s=self.min_interval_s
+            url, accept="application/json", min_interval_s=self.min_interval_s, cache=False
         )
         body = response.json()
         if not isinstance(body, dict):

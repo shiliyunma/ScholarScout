@@ -80,6 +80,7 @@ class BraveProvider:
             accept="application/json",
             headers={"X-Subscription-Token": self.api_key},
             min_interval_s=self.min_interval_s,
+            cache=False,
         )
         body = response.json()
         if not isinstance(body, dict):

@@ -59,6 +59,7 @@ class SearxngProvider:
             f"{self.base_url}/search?{urlencode(params)}",
             accept="application/json",
             min_interval_s=self.min_interval_s,
+            cache=False,
         )
         payload = response.json()
         if not isinstance(payload, dict):

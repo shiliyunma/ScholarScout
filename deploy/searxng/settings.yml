@@ -1,15 +1,43 @@
-# SearxNG 最小配置：只改两处 —— 开启 JSON 输出、收紧到可自用
+# SearxNG 最小配置（国内网络可用版）
 #
-# JSON 输出是**必须**的：我们的 provider 走 `format=json`（比抓 HTML 稳）；
-# SearxNG 默认只给 html，必须在这里显式打开，否则接口恒 400/403。
-use_default_settings: true
+# 三个必须处理的地方，缺一个都跑不通 —— 全部是 2026-10-05 在本机实测出来的：
+#
+#  1) **开启 JSON 输出**：默认只给 html，我们走 format=json，不开则接口恒 400/403
+#  2) **只留可达引擎**：默认引擎表里 google / duckduckgo / brave / wikipedia / wikidata
+#     在境内全部 timeout → 结果是 results: [] 加一串 unresponsive_engines
+#  3) **镜像要用国内源**：registry-1.docker.io 在本机不可达（拉不动镜像），
+#     改用 docker.m.daocloud.io 拉取后重新打标即可（见 docker-compose.yml 顶部注释）
+#
+# 逐引擎实测（同一次冒烟，查询 "educational agent"）：
+#   360search -> 5-6 条 ✅   sogou -> 10-11 条 ✅
+#   mwmbl     -> 4 条但**时好时坏**（复测 timeout，会拖慢整次查询）→ 不留
+#   baidu     -> CAPTCHA ✗   bing -> 0 条 ✗   quark -> crash ✗
+#   chinaso   -> 0 条 ✗      mojeek -> 0 条 ✗
+# 所以 keep_only 只留这两个（合计一次查询 16-17 条）—— **配置里不留"看起来能用"的引擎**。
+#
+# 注意：容器刚 restart 完别立刻查，SearxNG 加载引擎要十几秒，
+# 太早查会得到 results: [] 且 unresponsive_engines 为空（看着像"引擎全挂"，其实还没就绪）。
+use_default_settings:
+  engines:
+    keep_only:
+      - 360search
+      - sogou
+
+# keep_only 只是"从默认表里保留"，**不等于启用**：这两个引擎在默认 settings.yml 里
+# 本来就是 disabled（SearxNG 把不常用的引擎默认关着）。结果就是 /config 报
+# "启用引擎数: 0"，聚合查询恒 0 条 —— 而在查询里显式写 engines=360search 又会强制运行，
+# 于是出现"单引擎有结果、聚合没结果"的怪象。必须显式打开：
+engines:
+  - name: 360search
+    disabled: false
+  - name: sogou
+    disabled: false
 
 server:
   secret_key: "scholarscout-local-only-change-me"
   limiter: false # 本地自用：关掉防滥用限流，否则同一秒多次查询会被拒
 
 search:
-  # 关键：开启 json（默认只有 html）
   formats:
     - html
     - json

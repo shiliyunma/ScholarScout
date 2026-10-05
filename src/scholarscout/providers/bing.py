@@ -80,6 +80,7 @@ class BingProvider:
             url,
             accept="text/html,application/xhtml+xml",
             min_interval_s=self.min_interval_s,
+            cache=False,
         )
         return cards_from_pairs(parse_results(response.text, limit=query.limit))[: query.limit]
 

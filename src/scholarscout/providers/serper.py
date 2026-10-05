@@ -81,6 +81,7 @@ class SerperProvider:
             payload,
             headers={"X-API-KEY": self.api_key},
             min_interval_s=self.min_interval_s,
+            cache=False,
         )
         body = response.json()
         if not isinstance(body, dict):

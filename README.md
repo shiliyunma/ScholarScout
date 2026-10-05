@@ -63,9 +63,22 @@
 | `bing` / `duckduckgo` | 通用（抓结果页） | 免 key | **默认关**：需显式开 `search.allow_searchpage_scraping`（Bing robots 禁 `/search`；DDG 国内需梯子） |
 | `tavily` / `serper` / `brave` / `google_cse` | 商用 API | `.env` 里的 key（`google_cse` 还要 `search.google_cse_cx`） | 填 key 即自动生效（Brave/Google CSE 有免费额度） |
 
+SearxNG 在国内要绕三个坑（全部实测过，详见 `deploy/searxng/settings.yml` 注释）：
+
+1. **Docker Hub 不可达** → `docker pull docker.m.daocloud.io/searxng/searxng:latest` 再 `docker tag` 回官方名
+2. **默认引擎表在境内全 timeout**（google/ddg/brave/wikipedia）→ `keep_only` 收窄
+3. **`keep_only` 只是"保留"，不等于"启用"** —— 保留的引擎默认仍是 `disabled`，
+   `/config` 会报"启用引擎数: 0"、聚合查询恒 0 条 → 必须再写 `engines: [{name: ..., disabled: false}]`
+
+实测可用的引擎：`360search`、`sogou`（英文查询 16 条、中文查询 14 条）；
+`baidu` 要验证码、`bing` 返回空、`quark` 崩溃、`chinaso`/`mojeek` 空 —— 都不进配置。
+容器 restart 后**别立刻查**（加载引擎要十几秒，太早查会得到 `results: []`）。
+
 ```bash
 # 真机自检：逐个来源打一次真请求，缺 key / 被拦 / 解析失效都会当场说出来
 .venv/Scripts/python.exe scripts/check_search_sources.py --all
+# 走真工具路径（注册表 → 工具 → 来源 → 入库），端到端验一次
+.venv/Scripts/python.exe scripts/check_search_sources.py --via-tool --searxng-base-url http://localhost:8080
 ```
 
 ## 文档

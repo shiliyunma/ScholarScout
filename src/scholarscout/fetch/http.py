@@ -194,6 +194,12 @@ class HttpClient:
         )
 
     def _write_cache(self, url: str, accept: str, result: FetchResult) -> None:
+        # 只缓存"成功且有内容"的响应：
+        # 把 4xx/5xx 或空响应缓存下来，等于把一次瞬时故障钉死成 6 小时的"事实"。
+        # 真机上就吃过这个：SearxNG 容器刚起还没加载完引擎 → 200 + results: [] 被缓存
+        # → 之后每次检索都读缓存，看着像"这个来源永远搜不到东西"。
+        if result.status != 200 or not result.content:
+            return
         paths = self._cache_paths(url, accept)
         if paths is None:
             return

@@ -114,5 +114,7 @@ class ArxivProvider:
 
     def search(self, query: Query) -> list[SourceCard]:
         url = build_url(query)
-        result = self.http.fetch(url, accept=ACCEPT, min_interval_s=self.min_interval_s)
+        result = self.http.fetch(
+            url, accept=ACCEPT, min_interval_s=self.min_interval_s, cache=False
+        )
         return parse_feed(result.text)

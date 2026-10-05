@@ -70,7 +70,9 @@ class TavilyProvider:
         if query.year_from is not None:
             # Tavily 不做年份过滤，交给上层 year_from 过滤（research_search 会再筛一次）
             payload["topic"] = "general"
-        response = self.http.post_json(self.endpoint, payload, min_interval_s=self.min_interval_s)
+        response = self.http.post_json(
+            self.endpoint, payload, min_interval_s=self.min_interval_s, cache=False
+        )
         body = response.json()
         if not isinstance(body, dict):
             return []
