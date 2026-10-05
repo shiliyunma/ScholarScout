@@ -1,0 +1,11 @@
+# 本地配置（不入库，.gitignore 已挡）。缺失的键一律用 config.example.yaml 里的默认值。
+#
+# 完整可选项见 config.example.yaml；这里只写"与本机实际情况不同"的部分。
+
+search:
+  # auto = 只带"现在真能用的"来源：arxiv + 下面配了实例的 searxng + 已配 key 的商用来源
+  providers: ["auto"]
+  # 本机自建 SearxNG（deploy/searxng/，实测可用引擎：360search + sogou）
+  searxng_base_url: "http://localhost:8080"
+  # 抓搜索结果页默认关：Bing robots.txt 明确 Disable /search，要抓就自己打开
+  allow_searchpage_scraping: false
