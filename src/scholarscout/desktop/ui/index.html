@@ -43,6 +43,8 @@
         <textarea id="input" rows="3" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
         <div class="composer-actions">
           <span class="hint" id="hint">工具调用与出处都会显示在这里</span>
+          <span class="hint" id="session-usage" title="本次会话累计（token 与模型调用次数）"></span>
+          <button id="btn-stop" class="ghost" type="button" hidden>停止</button>
           <button id="btn-send" type="submit">发送</button>
         </div>
       </form>

@@ -291,6 +291,8 @@ async function send(text) {
   if (state.sending || !state.sessionId) return;
   state.sending = true;
   el("btn-send").disabled = true;
+  // 一轮 3–12 分钟，必须能停：后端按下一次「步间检查」生效
+  el("btn-stop").hidden = false;
   bubble("user", "你").body.textContent = text;
   state.pending = makePending();
 
@@ -315,13 +317,54 @@ async function send(text) {
     await refreshSide();
     // 首条消息发出后标题才有值 → 刷一次会话列表，让新标题立刻出现
     await loadSessions();
+    await refreshSessionUsage();
   } catch (error) {
     state.pending.add("bad", "调用失败：" + error.message);
     state.pending.node.wrap.classList.add("error");
+    await refreshSessionUsage();
   } finally {
     state.pending = null;
     state.sending = false;
     el("btn-send").disabled = false;
+    el("btn-stop").hidden = true;
+  }
+}
+
+// 「这次会话一共花了多少」—— 用户在意账单，就把可核对的数字摆在手边。
+// 只报 token 与调用次数；单价未配置时**不折算金额**（报 0 会让人以为免费）。
+async function refreshSessionUsage() {
+  const node = el("session-usage");
+  if (!node || !state.sessionId) return;
+  try {
+    const usage = await scout.call("session.usage", { session_id: state.sessionId });
+    const tokens = usage.tokens || {};
+    if (!usage.calls) {
+      node.textContent = "";
+      return;
+    }
+    node.textContent =
+      "本会话累计 输入 " + fmtTokens(tokens.prompt) + " ／ 输出 " + fmtTokens(tokens.completion) +
+      " ／ 模型调用 " + usage.calls + " 次" + (usage.est_cost ? " ／ 约 " + usage.est_cost : "");
+    node.title = "数据来自 usage_records；未配置单价故不折算金额";
+  } catch (error) {
+    node.textContent = "";
+  }
+}
+
+// 「停止」：按会话取消（整轮结束前拿不到 turn_id），并如实说明生效时机
+async function stopTurn() {
+  if (!state.sessionId) return;
+  const button = el("btn-stop");
+  button.disabled = true;
+  try {
+    const result = await scout.call("chat.cancel", { session_id: state.sessionId });
+    const note = result && result.note ? result.note : "已请求取消";
+    if (state.pending) state.pending.add(result && result.ok ? "warn" : "bad", note);
+    else el("hint").textContent = note;
+  } catch (error) {
+    if (state.pending) state.pending.add("bad", "取消失败：" + error.message);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -497,6 +540,7 @@ async function openSession(sessionId) {
   const refs = collectRefs(items);
   await renderRoutes(refs.route_ids || []);
   await loadSessions();
+  await refreshSessionUsage();  // 累计用量跟着会话走，不是全局
 }
 
 /* -------------------------------------------------------------- 资料库 */
@@ -1565,12 +1609,15 @@ function wire() {
 
   el("composer").addEventListener("submit", function (event) {
     event.preventDefault();
+    if (state.sending) return;  // 上一轮没跑完别叠加（后端也会拦，但界面该先拦住）
     const input = el("input");
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
     send(text);
   });
+
+  el("btn-stop").addEventListener("click", stopTurn);
 
   el("input").addEventListener("keydown", function (event) {
     if (event.key === "Enter" && !event.shiftKey) {

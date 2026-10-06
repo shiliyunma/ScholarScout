@@ -82,6 +82,10 @@ class TurnContext:
     llm: LlmClient
     http: HttpClient | None = None
     cancelled: set[str] = field(default_factory=set)
+    #: `session_id -> turn_id`：这个会话此刻正在跑哪一轮。
+    #: 为什么需要它：界面在整轮结束前**拿不到 turn_id**（它随 `chat.done` 才回来），
+    #: 所以"停止"必须能按会话取消，而不是按 turn_id（否则这个 RPC 从设计上就没法被界面调用）。
+    running: dict[str, str] = field(default_factory=dict)
 
     def tools(self, toolsets: Sequence[str] | None) -> list[registry.ToolSpec]:
         return registry.get_tools(toolsets, features=self.config.features)
@@ -198,6 +202,8 @@ def run_turn(
     tool_budget = max(1, ctx.config.runtime.max_tool_calls_per_turn)
     refs_total: dict[str, list[str]] = {}
     try:
+        # 先把"这个会话正在跑哪一轮"记下来：界面点「停止」时按会话找到它（整轮结束前拿不到 turn_id）
+        ctx.running[session_id] = turn_id
         for _round in range(tool_budget + 1):
             if ctx.is_cancelled(turn_id):
                 stop_reason = "cancelled"
@@ -290,6 +296,9 @@ def run_turn(
     except Exception as exc:
         stop_reason = "error"
         error_message = f"{type(exc).__name__}: {exc}"
+    finally:
+        # 无论怎么结束都要摘掉：留着会让"下一次取消"打到一轮已经结束的轮次上
+        ctx.running.pop(session_id, None)
 
     message_id = sessions.append_message(
         ctx.db,

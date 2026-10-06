@@ -38,6 +38,8 @@ class AppContext:
     toolsets: Sequence[str] = ("research",)
     emit: Callable[[str, dict[str, Any]], None] | None = None
     cancelled: set[str] = field(default_factory=set)
+    #: `session_id -> turn_id`：正在跑的轮次（界面按会话取消时用）
+    running: dict[str, str] = field(default_factory=dict)
 
     def require_llm(self) -> LlmClient:
         if self.llm is None:
@@ -51,6 +53,7 @@ class AppContext:
             llm=self.require_llm(),
             http=self.http,
             cancelled=self.cancelled,
+            running=self.running,
         )
 
     def close(self) -> None:
@@ -270,10 +273,32 @@ def chat_send(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 
 @method("chat.cancel")
 def chat_cancel(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """请求取消一轮对话。
+
+    **可以按 `session_id` 取消**（界面用这个）：整轮结束前前端拿不到 `turn_id`，
+    只按 turn_id 取消的话，这个 RPC 从设计上就无法被界面调用。
+    `turn_id` 仍然接受（脚本/测试用）。
+
+    执行时机是**步间检查**：正在跑的那一步（模型调用或工具调用）结束后才生效 ——
+    界面上必须如实这么提示，别让用户以为点了就立刻停。
+    """
     params = _params(params)
-    turn_id = _require(params, "turn_id")
+    turn_id = str(params.get("turn_id") or "").strip()
+    session_id = str(params.get("session_id") or "").strip()
+    if not turn_id and session_id:
+        turn_id = ctx.running.get(session_id, "")
+    if not turn_id:
+        return {
+            "ok": False,
+            "reason": "no_running_turn",
+            "note": "这个会话当前没有正在跑的轮次（可能已经结束）",
+        }
     ctx.cancelled.add(turn_id)
-    return {"ok": True, "note": "取消在下一步生效（当前实现为步间检查）"}
+    return {
+        "ok": True,
+        "turn_id": turn_id,
+        "note": "已请求取消：当前这一步结束后生效（步间检查）",
+    }
 
 
 # --------------------------------------------------------------------- 轨迹
@@ -429,6 +454,44 @@ def archive_reveal(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         raise RpcError(Code.NOT_FOUND, f"文件不在磁盘上：{rel}")
     _reveal_in_file_manager(target)
     return {"ok": True, "path": rel, "which": which}
+
+
+@method("session.usage")
+def session_usage(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """这个会话一共花了多少（token 与调用次数）。
+
+    为什么值得单列：一轮 3–12 分钟、多次模型调用，用户只看得到"这一轮的 token"，
+    看不到"这次会话累计"。口径：直接来自 `usage_records`（唯一取数入口），
+    单价未配置时 `est_cost` 回 None —— **不猜价格**，只报可核对的 token。
+    """
+    params = _params(params)
+    session_id = _require(params, "session_id")
+    total = ctx.db.query_one(
+        "SELECT count(*) AS calls, coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
+        " coalesce(sum(completion_tokens),0) AS completion_tokens,"
+        " coalesce(sum(est_cost),0.0) AS est_cost FROM usage_records WHERE session_id = ?",
+        (session_id,),
+    )
+    by_purpose = ctx.db.query(
+        "SELECT coalesce(purpose,'?') AS purpose, count(*) AS calls,"
+        " coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
+        " coalesce(sum(completion_tokens),0) AS completion_tokens"
+        " FROM usage_records WHERE session_id = ? GROUP BY 1 ORDER BY calls DESC",
+        (session_id,),
+    )
+    row = dict(total) if total is not None else {}
+    cost = float(row.get("est_cost") or 0.0)
+    return {
+        "session_id": session_id,
+        "calls": int(row.get("calls") or 0),
+        "tokens": {
+            "prompt": int(row.get("prompt_tokens") or 0),
+            "completion": int(row.get("completion_tokens") or 0),
+        },
+        # 单价没配就不报金额（报 0 会让人以为"免费"）
+        "est_cost": cost if cost > 0 else None,
+        "by_purpose": [dict(item) for item in by_purpose],
+    }
 
 
 # --------------------------------------------------------------------- 设置
