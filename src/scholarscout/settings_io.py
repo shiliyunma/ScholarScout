@@ -100,7 +100,7 @@ FIELDS: dict[str, Field] = dict(
             "chat",
             "thinking",
             kind="bool",
-            label="深度思考（关掉更省 token）",
+            label="深度思考（关掉省 ~26% token，但实测质量下降，不建议日常关）",
             default=True,
         ),
         _f(

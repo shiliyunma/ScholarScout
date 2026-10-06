@@ -1016,7 +1016,7 @@ var SETTINGS_SPEC = [
       { key: "llm.chat.temperature", label: "temperature", kind: "number", step: "0.1" },
       { key: "llm.chat.max_tokens", label: "max_tokens", kind: "number" },
       { key: "llm.chat.timeout_s", label: "超时（秒）", kind: "number" },
-      { key: "llm.chat.thinking", label: "深度思考（关掉更省 token）", kind: "bool" },
+      { key: "llm.chat.thinking", label: "深度思考（关掉省 ~26% token，但质量会掉）", kind: "bool" },
       { key: "llm.chat.llm_cache", label: "回复缓存（评测复跑用）", kind: "bool" },
       { key: "llm.summary.model", label: "摘要模型", kind: "text" },
       { key: "llm.summary.base_url", label: "摘要接口地址", kind: "text" },

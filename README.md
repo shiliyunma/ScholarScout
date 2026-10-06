@@ -228,7 +228,7 @@ python -m scholarscout --rpc 子进程  ← 与 CLI/测试走同一个分发器
 
 | 杠杆 | 结论 | 开关 |
 |---|---|---|
-| **深度思考** | 真 API 同题对照：`thinking={"type":"disabled"}` 让 completion **162 → 36（−78%）**、`reasoning_content` 归零，答案长度不变；而 `reasoning_effort=low/minimal` **这个模型不认**（无差别） | `llm.chat.thinking`（默认开，关掉更省） |
+| **深度思考** | **A/B 实测（3 题、同提示词，唯一变量）：token 合计 −26%（118,816 → 87,562），但质量下降** —— 降级率 0%→33.3%、产物完整率 100%→66.7%、主动询问 100%→33.3%、一次任务打满工具预算。**结论：不建议日常关**。另有探针：`thinking={"type":"disabled"}` 使 completion 162→36（−78%）；而 `reasoning_effort=low/minimal` **这个模型不认** | `llm.chat.thinking`（默认开） |
 | 工具声明精简 | **量完不做**：4,675 字符/轮里绝大部分是 JSON-Schema 必需结构，描述文字只有 ~500 字符，顶多省 10%（<3% 总成本），改描述会伤工具选择 | — |
 | 历史重发 | 加了**保头保尾**的字符预算（默认 12,000 ≈ 4,000 tokens）；实测当前会话（12 条 ≈ 1,000 tokens）碰不到它 —— 它是**防长会话失控**，不是日常手段 | `runtime.max_history_chars` |
 | 回复缓存 | **默认关**：交互每轮内容都新 → 命中率≈0；只对评测复跑/调试重放有价值 | `llm.chat.llm_cache` |
