@@ -385,6 +385,12 @@ function applyLayout(left, right, persist) {
 }
 
 function initLayout() {
+  /* 窗口尺寸变化时重新夹一次：左右栏是用户定的固定宽度，窗口缩小后必须让出空间，
+     否则中间栏会被挤到最小宽度以下（表现就是"字挤成一列"）。 */
+  window.addEventListener("resize", function () {
+    if (!layoutEl()) return;
+    applyLayout(state.layout.left, state.layout.right, false);
+  });
   let saved = null;
   try {
     saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null");

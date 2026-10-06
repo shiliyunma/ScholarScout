@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from scholarscout import paths
+from scholarscout.desktop import window_state
 from scholarscout.desktop.bridge import Bridge
 from scholarscout.desktop.icon import apply_window_icon, set_app_user_model_id
 from scholarscout.desktop.rpc_client import RpcClient, default_command
@@ -49,6 +51,74 @@ def _open_settings_later(window: Any, delay_s: float = 2.0) -> None:
         window.evaluate_js(snippet)
 
 
+def _screen_rects() -> list[tuple[int, int, int, int]] | None:
+    """当前所有屏幕的 (x, y, w, h)。拿不到就返回 None（由系统决定窗口位置）。
+
+    `webview` 在函数里局部导入：本模块刻意不在顶层导入它（没装 pywebview 的机器仍要能跑测试与 CLI）。
+    """
+    try:
+        import webview
+
+        return [(int(s.x), int(s.y), int(s.width), int(s.height)) for s in webview.screens]
+    except Exception:
+        return None
+
+
+def _looks_maximized(width: int, height: int) -> bool:  # pragma: no cover - 见调用说明
+    """**当前未使用**：单位不可靠（screens 是逻辑像素、window 尺寸是物理像素），
+    误判会把"记住大小"整个搞失效，所以 `_remember_geometry` 一律存几何（见其文档串）。
+    保留这个函数是为了将来某个后端给出可靠的最大化标志时能接上。"""
+    return any(width >= sw - 8 and height >= sh - 8 for _x, _y, sw, sh in _screen_rects() or [])
+
+
+def _dpi_scale() -> float:
+    """系统 DPI 缩放（96 → 1.0，149% → 1.49）。
+
+    **为什么必须换算**：`window.width/height/x/y` 报的是**物理像素**，而
+    `create_window(width=…)` 收的是**逻辑像素**（pywebview 内部按缩放再乘一次）。
+    不换算的后果实测过：存下 1700x1050，下次打开变成 2539x1547（本机 149% 缩放）。
+    """
+    try:
+        import ctypes
+
+        dpi = int(ctypes.windll.user32.GetDpiForSystem())
+        return dpi / 96.0 if dpi > 0 else 1.0
+    except Exception:
+        return 1.0
+
+
+def _remember_geometry(window: Any) -> None:
+    """记住窗口大小/位置（下次打开同尺寸）。纯辅助，失败也不该影响退出。
+
+    **为什么一律存几何、不判断"是否最大化"**：pywebview 的 `window.width/height` 报的是
+    物理像素，而 `screens` / `create_window(width=…)` 用的是逻辑像素 —— 单位对不上时
+    "很大的窗口"会被误判成最大化，于是尺寸就不写了，用户要的"记住大小"直接失效（实测踩过：
+    拉到 2400x1400 被误判，存出来的只有 `{"maximized": true}`）。
+    误判另一头的代价只是"最大化的窗口下次以同尺寸非最大化打开"，比前者小得多，所以不猜。
+    """
+    try:
+        width = int(getattr(window, "width", 0) or 0)
+        height = int(getattr(window, "height", 0) or 0)
+        if width <= 0 or height <= 0:
+            return
+        scale = _dpi_scale()
+        # 物理 → 逻辑（存逻辑值，读出来直接交给 create_window 即可）
+        logical_w = max(1, round(width / scale))
+        logical_h = max(1, round(height / scale))
+        x = getattr(window, "x", None)
+        y = getattr(window, "y", None)
+        window_state.save(
+            paths.run_dir(),
+            width=logical_w,
+            height=logical_h,
+            x=round(int(x) / scale) if isinstance(x, int | float) else None,
+            y=round(int(y) / scale) if isinstance(y, int | float) else None,
+            maximized=False,
+        )
+    except Exception:
+        return
+
+
 def launch(
     *,
     db_path: str | Path | None = None,
@@ -75,15 +145,27 @@ def launch(
     holder["bridge"] = bridge
     client.start()
 
+    # 上次的窗口几何（大小/位置/是否最大化）。没有记录就用默认值。
+    geometry = window_state.load(paths.run_dir(), screens=_screen_rects())
     window = webview.create_window(
         WINDOW_TITLE,
         str(UI_DIR / "index.html"),
         js_api=bridge,
-        width=1180,
-        height=800,
+        width=int(geometry.get("width") or 1180),
+        height=int(geometry.get("height") or 800),
+        x=geometry.get("x"),
+        y=geometry.get("y"),
         min_size=MIN_SIZE,
+        maximized=bool(geometry.get("maximized", False)),
     )
     bridge.attach(window)
+    # 关闭前把几何记下来；`closing` 在销毁之前触发，属性还能读到。
+    # 另挂 `closed` 与 start() 之后的兜底：不同后端的事件可用性不完全一致。
+    for event_name in ("closing", "closed"):
+        event = getattr(window.events, event_name, None)
+        if event is not None:
+            with contextlib.suppress(Exception):
+                event += _remember_geometry
     try:
         # 任务栏身份：不设的话任务栏按钮会按 python.exe 归组，图标跟着变 Python
         set_app_user_model_id()
@@ -109,6 +191,7 @@ def launch(
                 start_kwargs["icon"] = icon  # GTK/QT 才认这个参数
         webview.start(**start_kwargs)
     finally:
+        _remember_geometry(window)  # 兜底：万一上面的事件没触发
         client.close()
     return 0
 

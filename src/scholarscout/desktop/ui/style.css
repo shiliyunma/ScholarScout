@@ -381,7 +381,9 @@ button.ghost:hover {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  max-width: 68ch;
+  /* 跟随栏宽（原来是 68ch 固定值 —— 窗口拉大它也不动，看着像"对话框被钉死了"）。
+     在超宽屏上才在 120 字符处收住：再宽下去一行字太长反而难读。 */
+  max-width: min(100%, 120ch);
 }
 .msg .who {
   font-size: 11px;
