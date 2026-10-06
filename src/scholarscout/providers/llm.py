@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
@@ -52,6 +54,8 @@ class ChatReply:
     finish_reason: str = "stop"
     model: str = ""
     usage: dict[str, int] = field(default_factory=dict)
+    #: 这条回复是不是从本地缓存读出来的（评测/调试要看得出"这次没花 token"）
+    cached: bool = False
 
     @property
     def truncated(self) -> bool:
@@ -85,6 +89,8 @@ class OpenAIChatClient:
         temperature: float = 0.2,
         max_tokens: int = 4096,
         timeout_s: float = 60.0,
+        thinking: bool = True,
+        cache_dir: Path | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -93,6 +99,10 @@ class OpenAIChatClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout_s = timeout_s
+        #: 关掉思考＝请求体带 `thinking: {"type": "disabled"}`（实测 completion −78%）
+        self.thinking = thinking
+        #: 响应缓存目录（None＝不缓存）。交互命中率≈0，主要为**评测复跑**准备。
+        self.cache_dir = cache_dir
         self._transport = transport
         self._client: httpx.Client | None = None
 
@@ -128,6 +138,10 @@ class OpenAIChatClient:
             "max_tokens": self.max_tokens,
             "stream": False,
         }
+        if not self.thinking:
+            # 关掉推理模型的思考：实测 completion 162 → 36（−78%），reasoning_content 归零。
+            # 注意这是**质量与成本的取舍**，所以默认开着，由用户在设置栏里决定（见 config.LlmProfile.thinking）。
+            payload["thinking"] = {"type": "disabled"}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -142,8 +156,14 @@ class OpenAIChatClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> ChatReply:
         url = self.base_url + "/chat/completions"
+        payload = self._payload(messages, tools)
+        # 可选缓存：**只对"同一请求原样重放"有效**（评测复跑、调试重跑）。
+        # 交互场景几乎不可能命中（每轮内容都是新的），所以默认关着 —— 别把它当万能省钱药。
+        hit = self._cache_read(payload)
+        if hit is not None:
+            return self._parse(hit, cached=True)
         try:
-            response = self._http().post(url, json=self._payload(messages, tools))
+            response = self._http().post(url, json=payload)
         except httpx.TimeoutException as exc:
             raise LlmError("timeout", f"模型请求超时（{self.timeout_s}s）：{exc}") from exc
         except httpx.HTTPError as exc:
@@ -172,11 +192,42 @@ class OpenAIChatClient:
             body = response.json()
         except json.JSONDecodeError as exc:
             raise LlmError("bad_response", "模型返回的不是 JSON") from exc
+        self._cache_write(payload, body)
         return self._parse(body)
+
+    # -------------------------------------------------------------- 响应缓存
+
+    def _cache_path(self, payload: dict[str, Any]) -> Path | None:
+        if self.cache_dir is None:
+            return None
+        # 键 = 请求体的内容哈希：模型、消息、工具声明、采样参数任一变化都不算命中
+        blob = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return self.cache_dir / (hashlib.sha256(blob).hexdigest()[:32] + ".json")
+
+    def _cache_read(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        path = self._cache_path(payload)
+        if path is None or not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _cache_write(self, payload: dict[str, Any], body: dict[str, Any]) -> None:
+        path = self._cache_path(payload)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            # 缓存写不进去不该让整轮对话失败
+            return
 
     # ---------------------------------------------------------------- 解析
 
-    def _parse(self, body: dict[str, Any]) -> ChatReply:
+    def _parse(self, body: dict[str, Any], *, cached: bool = False) -> ChatReply:
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
             raise LlmError("bad_response", "模型返回里没有 choices")
@@ -217,6 +268,7 @@ class OpenAIChatClient:
             finish_reason=str(choice.get("finish_reason") or "stop"),
             model=str(body.get("model") or self.model),
             usage=usage,
+            cached=cached,
         )
 
 
@@ -232,4 +284,15 @@ def create_client(profile: Any) -> OpenAIChatClient:
         temperature=profile.temperature,
         max_tokens=profile.max_tokens,
         timeout_s=profile.timeout_s,
+        thinking=bool(getattr(profile, "thinking", True)),
+        cache_dir=_cache_dir_for(profile),
     )
+
+
+def _cache_dir_for(profile: Any) -> Path | None:
+    """开了 `llm_cache` 才给缓存目录（默认关：交互每轮内容都新，命中率≈0）。"""
+    if not getattr(profile, "llm_cache", False):
+        return None
+    from scholarscout import paths
+
+    return paths.data_dir() / "cache" / "llm"

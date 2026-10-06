@@ -27,6 +27,7 @@ from eval import metrics, report  # noqa: E402
 from scholarscout.app import build_context  # noqa: E402
 from scholarscout.config import load_config  # noqa: E402
 from scholarscout.grading.tiers import classify_source, load_rules  # noqa: E402
+from scholarscout.providers.llm import create_client  # noqa: E402
 from scholarscout.rpc.methods import dispatch  # noqa: E402
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash  # noqa: E402
 from scholarscout.runtime.toolctx import ToolContext  # noqa: E402
@@ -509,6 +510,7 @@ def run_e3(  # pragma: no cover - 需真模型
         "arm": {
             "auto_artifacts": auto_artifacts,
             "asked_followup": ask_artifacts,
+            "thinking": bool(getattr(getattr(ctx.config, "chat", None), "thinking", True)),
             "system_prompt_hash": system_prompt_hash(
                 build_system_prompt(auto_artifacts=auto_artifacts)
             ),
@@ -561,6 +563,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="E3：首轮之后再发一条「请生成」，量按需生成成功率",
     )
+    parser.add_argument(
+        "--no-thinking",
+        action="store_true",
+        help="E3：关掉推理模型的深度思考（请求体带 thinking=disabled）—— 省钱杠杆的 A/B",
+    )
     parser.add_argument("--out", default=str(ROOT / "eval" / "reports"))
     parser.add_argument(
         "--only",
@@ -601,6 +608,12 @@ def main(argv: list[str] | None = None) -> int:
                     results["sets"]["e3"] = {"skipped": "未配置模型（.env 里的 LLM_API_KEY）"}
                     print("E3 跳过：未配置模型")
                 else:
+                    # 省钱 A/B：只在需要时关思考，且必须**重建客户端**（配置改了不重建＝没生效）
+                    if args.no_thinking:
+                        ctx.config = replace(
+                            ctx.config, chat=replace(ctx.config.chat, thinking=False)
+                        )
+                        ctx.llm = create_client(ctx.config.chat)
                     # e3probe = 题面**不点名要产物**的探针题：量"模型会不会擅自生成"
                     rows = pick("e3_probe_tasks" if args.set == "e3probe" else "e3_tasks")
                     results["sets"]["e3"] = run_e3(

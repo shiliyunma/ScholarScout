@@ -95,6 +95,22 @@ FIELDS: dict[str, Field] = dict(
         _f(
             "llm", "chat", "timeout_s", kind="float", label="对话超时（秒）", minimum=5, maximum=600
         ),
+        _f(
+            "llm",
+            "chat",
+            "thinking",
+            kind="bool",
+            label="深度思考（关掉更省 token）",
+            default=True,
+        ),
+        _f(
+            "llm",
+            "chat",
+            "llm_cache",
+            kind="bool",
+            label="回复缓存（评测复跑用，交互命中率≈0）",
+            default=False,
+        ),
         _f("llm", "summary", "model", kind="str", label="摘要模型名"),
         _f("llm", "summary", "base_url", kind="str", label="摘要模型地址", must_be_url=True),
         _f(
@@ -105,6 +121,14 @@ FIELDS: dict[str, Field] = dict(
             label="摘要 max_tokens",
             minimum=256,
             maximum=65536,
+        ),
+        _f(
+            "llm",
+            "summary",
+            "thinking",
+            kind="bool",
+            label="摘要档深度思考",
+            default=True,
         ),
         _f(
             "runtime",
@@ -121,6 +145,14 @@ FIELDS: dict[str, Field] = dict(
             label="单文档正文上限",
             minimum=5000,
             maximum=500000,
+        ),
+        _f(
+            "runtime",
+            "max_history_chars",
+            kind="int",
+            label="历史正文预算（字符）",
+            minimum=1000,
+            maximum=200000,
         ),
         _f("runtime", "allow_clarify", kind="bool", label="允许反问澄清"),
         _f("features", "enable_mineru", kind="bool", label="扫描版走 MinerU"),

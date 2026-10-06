@@ -46,6 +46,14 @@ class LlmProfile:
     max_tokens: int = 16384
     timeout_s: float = 60.0
     api_key_env: str = "LLM_API_KEY"
+    #: 是否让推理模型"深度思考"。
+    #: 关掉时请求体带 `thinking: {"type": "disabled"}` —— 实测 completion 从 162 掉到 36（−78%），
+    #: `reasoning_content` 归零，而答案内容长度不变（2026-10-06 探针，`run/cost_probe2.py`）。
+    #: 默认 True＝保持原有质量；关掉更省钱，但**工具选择质量要单独验证**（见 docs/05 的 A/B）。
+    thinking: bool = True
+    #: 是否把模型回复按请求体哈希缓存到本地。**默认关** —— 交互几乎不可能命中
+    #: （每轮内容都是新的），它只对"同一请求原样重放"（评测复跑、调试）有价值。
+    llm_cache: bool = False
 
     @property
     def chat_completions_url(self) -> str:
@@ -62,6 +70,8 @@ class RuntimeProfile:
     max_context_chars: int = 60000
     stream: bool = False
     allow_clarify: bool = True
+    #: 历史正文的字符预算（保头保尾裁剪，防长会话 token 线性膨胀）
+    max_history_chars: int = 12000
 
 
 @dataclass(frozen=True)
@@ -119,6 +129,8 @@ def _profile(section: dict[str, Any], defaults: dict[str, Any]) -> LlmProfile:
         temperature=float(merged["temperature"]),
         max_tokens=int(merged["max_tokens"]),
         timeout_s=float(merged["timeout_s"]),
+        thinking=bool(merged.get("thinking", True)),
+        llm_cache=bool(merged.get("llm_cache", False)),
     )
 
 
@@ -178,6 +190,7 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             max_context_chars=int(runtime_section.get("max_context_chars", 60000)),
             stream=bool(runtime_section.get("stream", False)),
             allow_clarify=bool(runtime_section.get("allow_clarify", True)),
+            max_history_chars=int(runtime_section.get("max_history_chars", 12000)),
         ),
         features=Features(
             enable_kb=bool(feature_section.get("enable_kb", False)),

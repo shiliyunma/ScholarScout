@@ -31,6 +31,48 @@ from scholarscout.state.db import Database
 Emitter = Callable[[str, dict[str, Any]], None]
 
 _HISTORY_LIMIT = 40
+#: 历史正文的字符预算（默认 12,000 ≈ 4,000 tokens）。
+#: 实测当前会话规模下历史只有 ~1,000 tokens（12 条消息），所以这条**不是**主要省钱手段 ——
+#: 它的作用是**防长会话失控**：40 条消息每轮重发，token 会随轮次线性膨胀。
+_HISTORY_CHAR_BUDGET = 12000
+
+
+def _fit_history(history: list[dict[str, Any]], budget_chars: int) -> list[dict[str, Any]]:
+    """按字符预算裁剪历史：**保头（最初的需求）保尾（最近的对话）**，中间丢掉并显式说明。
+
+    为什么不直接砍掉最早的几条：用户最初那句话定义了整个任务（"我想入门 XX"），丢了它
+    模型就不知道自己在回答什么；而最近几轮决定当前上下文。所以两头都留。
+    为什么丢中间要留一句说明：不说明的话模型会以为对话就这么短，可能重复问已经说过的信息。
+    """
+    if budget_chars <= 0 or not history:
+        return history
+    if sum(len(str(item.get("content") or "")) for item in history) <= budget_chars:
+        return history
+
+    first_user = next(
+        (item for item in history if item.get("role") == "user" and item.get("content")), None
+    )
+    kept: list[dict[str, Any]] = []
+    used = 0
+    for item in reversed(history):
+        size = len(str(item.get("content") or ""))
+        if kept and used + size > budget_chars:
+            break
+        kept.append(item)
+        used += size
+    kept.reverse()
+
+    dropped = len(history) - len(kept)
+    if dropped <= 0:
+        return kept
+    prefix: list[dict[str, Any]] = []
+    if first_user is not None and all(item is not first_user for item in kept):
+        prefix.append(first_user)
+    note = (
+        f"（为控制上下文成本，中间 {dropped} 条对话已省略；"
+        "下面接的是用户最初的需求与最近的对话。需要旧信息时再问用户。）"
+    )
+    return [*prefix, {"role": "system", "content": note}, *kept]
 
 
 @dataclass
@@ -122,7 +164,9 @@ def build_messages(
     for row in history:
         if row["role"] in {"user", "assistant"} and row["content"].strip():
             messages.append({"role": row["role"], "content": row["content"]})
-    return messages
+    # 保头保尾地裁到字符预算内（长会话防失控；短会话原样返回）
+    budget = int(getattr(config.runtime, "max_history_chars", _HISTORY_CHAR_BUDGET) or 0)
+    return [messages[0], *_fit_history(messages[1:], budget)]
 
 
 def run_turn(
