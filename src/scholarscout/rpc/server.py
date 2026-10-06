@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from collections.abc import Callable, Iterable
 from typing import Any, TextIO
 
@@ -52,7 +53,12 @@ def ok_response(request_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
-def handle_message(ctx: AppContext, message: dict[str, Any]) -> dict[str, Any] | None:
+def handle_message(
+    ctx: AppContext,
+    message: dict[str, Any],
+    *,
+    dispatcher: Callable[[AppContext, str, Any], Any] = dispatch,
+) -> dict[str, Any] | None:
     """处理一条已解析的消息；通知（无 id）返回 None。"""
     request_id = message.get("id")
     name = message.get("method")
@@ -62,19 +68,24 @@ def handle_message(ctx: AppContext, message: dict[str, Any]) -> dict[str, Any] |
     # 通知：没有 id 就不回响应（当前没有客户端→服务端通知，先按契约实现）
     if request_id is None:
         try:
-            dispatch(ctx, name, message.get("params"))
+            dispatcher(ctx, name, message.get("params"))
         except RpcError:
             return None
         return None
 
     try:
-        result = dispatch(ctx, name, message.get("params"))
+        result = dispatcher(ctx, name, message.get("params"))
     except BaseException as exc:
         return error_response(request_id, from_exception(exc))
     return ok_response(request_id, result)
 
 
-def handle_line(ctx: AppContext, line: str) -> dict[str, Any] | None:
+def handle_line(
+    ctx: AppContext,
+    line: str,
+    *,
+    dispatcher: Callable[[AppContext, str, Any], Any] = dispatch,
+) -> dict[str, Any] | None:
     text = line.strip()
     if not text:
         return None
@@ -84,7 +95,11 @@ def handle_line(ctx: AppContext, line: str) -> dict[str, Any] | None:
         return error_response(None, RpcError(Code.PARSE_ERROR, f"JSON 解析失败：{exc}"))
     if not isinstance(message, dict):
         return error_response(None, RpcError(Code.INVALID_REQUEST, "消息必须是 JSON 对象"))
-    return handle_message(ctx, message)
+    return handle_message(ctx, message, dispatcher=dispatcher)
+
+
+#: 同时在跑的请求上限（一轮对话占 1 个；其余留给界面点开资料/取消/设置）
+MAX_CONCURRENT_REQUESTS = 4
 
 
 def serve(
@@ -92,14 +107,47 @@ def serve(
     *,
     stdin: Iterable[str] | None = None,
     stdout: TextIO | None = None,
+    dispatcher: Callable[[AppContext, str, Any], Any] = dispatch,
+    max_workers: int = MAX_CONCURRENT_REQUESTS,
 ) -> int:
-    """阻塞式服务：读一行处理一行，直到 stdin 关闭。"""
+    """**并发**服务：读一行 → 交给工作线程分发 → 写回，直到 stdin 关闭。
+
+    为什么必须并发（真机实测的故障）：单线程时一轮 `chat.send` 会阻塞 3–12 分钟，
+    期间界面点资料库预览（要 `archive.*`）、点「停止」（`chat.cancel`）全都排在它后面 ——
+    用户看到的是"点了没反应"，而取消永远不会生效。JSON-RPC 有 `id`，
+    响应本来就允许乱序，所以并发是安全且必需的。
+
+    并发安全的前提（已分别落实）：
+    - 写 stdout 加锁：一行一条响应的完整性靠锁，不靠时序；
+    - 数据库 WAL + 每语句 autocommit（见 `state/db.py`）→ 一写多读；
+    - 工作线程是 daemon：关窗（stdin 关闭）时立刻能退出，不会等一轮跑完。
+    """
     input_stream = stdin if stdin is not None else sys.stdin
     output = stdout if stdout is not None else sys.stdout
-    write = make_writer(output)
+    raw_write = make_writer(output)
+    write_lock = threading.Lock()
+
+    def write(payload: dict[str, Any]) -> None:
+        with write_lock:
+            raw_write(payload)
+
     ctx.emit = make_emitter(write) if ctx.emit is None else ctx.emit
-    for line in input_stream:
-        response = handle_line(ctx, line)
-        if response is not None:
-            write(response)
+    slots = threading.Semaphore(max(1, max_workers))
+
+    def run_task(line: str) -> None:
+        try:
+            response = handle_line(ctx, line, dispatcher=dispatcher)
+            if response is not None:
+                write(response)
+        finally:
+            slots.release()
+
+    try:
+        for line in input_stream:
+            slots.acquire()
+            threading.Thread(
+                target=run_task, args=(line,), daemon=True, name="scout-rpc-worker"
+            ).start()
+    except KeyboardInterrupt:  # pragma: no cover - 手工调试时的退出路径
+        return 0
     return 0

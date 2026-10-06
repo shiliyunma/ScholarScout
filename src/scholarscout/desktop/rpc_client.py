@@ -72,6 +72,17 @@ def default_command(*, db_path: str | Path | None = None, toolsets: str = "resea
     return command
 
 
+def _result_of(message: dict[str, Any]) -> Any:
+    """把一条响应消息变成结果（或抛出后端错误）。"""
+    error = message.get("error")
+    if isinstance(error, dict):
+        raise RpcCallError(
+            str(error.get("message") or "后端返回错误"),
+            code=int(error.get("code") or -32000),
+        )
+    return message.get("result")
+
+
 class RpcClient:
     """一行一 JSON 的同步客户端（后台线程收行，前台按 id 配对）。"""
 
@@ -92,9 +103,13 @@ class RpcClient:
         self.timeout = timeout
         self._spawn = spawn
         self._proc: ProcessLike | None = None
-        self._lines: queue.Queue[Any] = queue.Queue()
         self._lock = threading.Lock()
         self._next_id = 0
+        #: 等响应的信箱：`id -> Queue`。**一把锁只保护"分配 id + 写请求"**，
+        #: 不覆盖等待，否则并发调用会互相排队（真机症状：生成中点资料库/点停止没反应）。
+        self._pending: dict[int, queue.Queue[Any]] = {}
+        #: 响应比信箱先到的极少数情况（测试里预置响应、或后端快得离谱）——按 id 暂存待取
+        self._orphans: dict[int, dict[str, Any]] = {}
 
     # ------------------------------------------------------------- 生命周期
 
@@ -129,8 +144,42 @@ class RpcClient:
                 break
             if not line:
                 break
-            self._lines.put(line)
-        self._lines.put(_EOF)
+            self._route_line(line)
+        self._route_eof()
+
+    def _route_line(self, line: str) -> None:
+        """把一行分派给"等它的人"：通知进事件回调，响应进对应 id 的信箱。"""
+        text = str(line).strip()
+        if not text:
+            return
+        try:
+            message = json.loads(text)
+        except json.JSONDecodeError:
+            return  # 后端被第三方库的日志污染，不该把界面搞崩
+        if not isinstance(message, dict):
+            return
+        if "id" not in message:
+            name = message.get("method")
+            params = message.get("params")
+            if isinstance(name, str) and self._on_event is not None:
+                self._on_event(name, params if isinstance(params, dict) else {})
+            return
+        request_id = message.get("id")
+        with self._lock:
+            box = self._pending.get(request_id) if isinstance(request_id, int) else None
+            if box is None:
+                if isinstance(request_id, int):
+                    self._orphans[request_id] = message
+                    while len(self._orphans) > 32:  # 没人认领的响应不能无限堆积
+                        self._orphans.pop(next(iter(self._orphans)))
+                return
+        box.put(message)
+
+    def _route_eof(self) -> None:
+        with self._lock:
+            boxes = list(self._pending.values())
+        for box in boxes:
+            box.put(_EOF)
 
     @property
     def alive(self) -> bool:
@@ -141,9 +190,11 @@ class RpcClient:
     def call(
         self, method: str, params: dict[str, Any] | None = None, *, timeout: float | None = None
     ) -> Any:
+        """调用一个方法。**可以在已有调用未返回时再调用**（各自按 id 收响应）。"""
         if self._proc is None:
             raise RpcCallError("后端未启动")
-        with self._lock:
+        box: queue.Queue[Any] = queue.Queue(maxsize=1)
+        with self._lock:  # 只保护"分配 id + 写请求 + 登记信箱"，不覆盖等待
             self._next_id += 1
             request_id = self._next_id
             payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
@@ -156,46 +207,32 @@ class RpcClient:
                 self._proc.stdin.flush()
             except (BrokenPipeError, ValueError, OSError) as exc:
                 raise RpcCallError(f"写入后端失败：{exc}") from exc
-            return self._await(request_id, self.timeout if timeout is None else timeout)
+            self._pending[request_id] = box
+            orphan = self._orphans.pop(request_id, None)
+        if orphan is not None:
+            with self._lock:
+                self._pending.pop(request_id, None)
+            return _result_of(orphan)
+        try:
+            return self._await(box, self.timeout if timeout is None else timeout)
+        finally:
+            with self._lock:
+                self._pending.pop(request_id, None)
 
-    def _await(self, request_id: int, timeout: float) -> Any:
+    def _await(self, box: queue.Queue[Any], timeout: float) -> Any:
+        """只等**自己那个信箱**：别的调用在等什么与本调用无关。"""
         deadline = time.monotonic() + max(timeout, 0.0)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RpcCallError(f"等待后端响应超时（{timeout:.0f} 秒）")
             try:
-                item = self._lines.get(timeout=min(remaining, 0.25))
+                message = box.get(timeout=min(remaining, 0.25))
             except queue.Empty:
                 continue
-            if item is _EOF:
+            if message is _EOF:
                 raise RpcCallError("后端进程已退出（输出结束）")
-            text = str(item).strip()
-            if not text:
-                continue
-            try:
-                message = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(message, dict):
-                continue
-
-            if "id" not in message:  # 通知：转给事件回调，继续等自己那条响应
-                name = message.get("method")
-                params = message.get("params")
-                if isinstance(name, str) and self._on_event is not None:
-                    self._on_event(name, params if isinstance(params, dict) else {})
-                continue
-
-            if message.get("id") != request_id:
-                continue  # 别人的响应（正常情况下串行化后不会出现）
-            error = message.get("error")
-            if isinstance(error, dict):
-                raise RpcCallError(
-                    str(error.get("message") or "后端返回错误"),
-                    code=int(error.get("code") or -32000),
-                )
-            return message.get("result")
+            return _result_of(message)
 
     def close(self, *, timeout: float = 5.0) -> None:
         """关掉 stdin 让后端自然退出；不肯退就 terminate。"""

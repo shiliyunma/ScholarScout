@@ -34,7 +34,12 @@ class Database:
     def __init__(self, path: str | Path, *, timeout_s: float = 5.0) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path), timeout=timeout_s, isolation_level=None)
+        # check_same_thread=False + WAL：RPC 层是并发的（一轮对话在跑时，界面还要
+        # 能点开资料预览 / 点停止），所以同一个连接会被多个工作线程使用。
+        # 安全性来自 sqlite3 的序列化模式 + 每条语句 autocommit（不持长事务）。
+        self._conn = sqlite3.connect(
+            str(self.path), timeout=timeout_s, isolation_level=None, check_same_thread=False
+        )
         self._conn.row_factory = sqlite3.Row
         self._apply_connection_pragmas()
 
