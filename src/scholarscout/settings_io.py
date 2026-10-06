@@ -166,7 +166,22 @@ FIELDS: dict[str, Field] = dict(
             label="产物自动生成（关＝先询问）",
             default=False,
         ),
+        _f(
+            "generation",
+            "title_by_model",
+            kind="bool",
+            label="标题用模型总结（关＝用首句截断）",
+            default=True,
+        ),
         _f("search", "searxng_base_url", kind="str", label="自建 SearxNG 地址"),
+        _f("search", "google_cse_cx", kind="str", label="Google CSE 搜索引擎 ID（CX）"),
+        _f(
+            "search",
+            "allow_searchpage_scraping",
+            kind="bool",
+            label="允许抓搜索结果页（默认关：Bing robots 禁 /search）",
+            default=False,
+        ),
         _f("search", "openalex_mailto", kind="str", label="OpenAlex 联系邮箱"),
     ]
 )

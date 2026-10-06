@@ -367,6 +367,24 @@ button.ghost:hover {
 
 /* ─────────────────────────────────────────────────────────── 聊天区 */
 
+/* 当前会话标题：在轮次开始前就生成，用户一发送就能看到 */
+.chat-head {
+  flex: 0 0 auto;
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid var(--border);
+  min-height: 0;
+}
+
+.chat-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .messages {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -854,6 +872,32 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 
 .set-group { display: flex; flex-direction: column; gap: 6px; }
+
+/* 搜索引擎：可用性状态表（填 key 保存后会自动重画） */
+.provider-status { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 8px; }
+.provider-row {
+  display: grid;
+  grid-template-columns: 110px 84px 92px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12.5px;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.provider-row:last-child { border-bottom: none; }
+.provider-name { font-weight: 600; color: var(--foreground); }
+.provider-kind { color: var(--muted-foreground); }
+.provider-badge {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  text-align: center;
+  white-space: nowrap; /* 「被 robots 拦」不要折成两行 */
+}
+.provider-badge.is-ok { color: #1a7f37; border-color: #1a7f3755; background: #1a7f3711; }
+.provider-badge.is-off { color: var(--muted-foreground); }
+.provider-note { color: var(--muted-foreground); }
 .set-group h4 {
   margin: 12px 0 0;
   font-size: 12.5px;

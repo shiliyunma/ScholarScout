@@ -94,6 +94,15 @@ function short(text, n) {
 window.scoutEvent = function (event) {
   if (!event || !event.method) return;
   const p = event.params || {};
+  // 标题在轮次开始前就推过来（不等这一轮跑完）——这条要在"没有 pending 就返回"之前处理
+  if (event.method === "session.updated") {
+    if (state.sessionId === p.session_id && p.title) {
+      const titleNode = el("chat-title");
+      if (titleNode) titleNode.textContent = p.title;
+    }
+    loadSessions();
+    return;
+  }
   const trace = state.pending;
   if (!trace) return;
 
@@ -490,8 +499,13 @@ function wireSplitter(id, side) {
 
 async function loadSessions() {
   const payload = await scout.call("session.list", { limit: 50 });
-  renderSessions(payload.items || []);
-  return payload.items || [];
+  const items = payload.items || [];
+  renderSessions(items);
+  // 顶部标题跟着当前会话走：标题在轮次开始前就生成，用户一发送就能看到
+  const current = items.filter(function (item) { return item.session_id === state.sessionId; })[0];
+  const titleNode = el("chat-title");
+  if (titleNode) titleNode.textContent = (current && current.title) || "新会话";
+  return items;
 }
 
 async function newSession() {
@@ -1080,6 +1094,7 @@ var SETTINGS_SPEC = [
     hint: "关掉「自动」之后，知识地图与学习路线只在你点了按钮或明确要求时才生成",
     fields: [
       { key: "generation.auto_artifacts", label: "每轮自动生成产物", kind: "bool" },
+      { key: "generation.title_by_model", label: "标题用模型总结（关＝用首句截断）", kind: "bool" },
       { key: "features.enable_topic_map", label: "允许生成知识地图", kind: "bool" },
       { key: "features.enable_route_plan", label: "允许生成学习路线", kind: "bool" },
       { key: "features.enable_mineru", label: "扫描版 PDF 走 MinerU 兜底", kind: "bool" },
@@ -1087,16 +1102,33 @@ var SETTINGS_SPEC = [
     ],
   },
   {
+    title: "搜索引擎",
+    hint: "「可用」＝现在就会被检索用到；填了 key 保存即生效，不必重启",
+    providers: true,
+    fields: [
+      { key: "search.searxng_base_url", label: "自建 SearxNG 地址", kind: "text" },
+      { key: "search.google_cse_cx", label: "Google CSE 搜索引擎 ID（CX）", kind: "text" },
+      {
+        key: "search.allow_searchpage_scraping",
+        label: "允许抓搜索结果页（Bing / DuckDuckGo，默认关）",
+        kind: "bool",
+      },
+      { key: "search.tavily_api_key", label: "Tavily Key", kind: "secret" },
+      { key: "search.serper_api_key", label: "Serper Key", kind: "secret" },
+      { key: "search.brave_api_key", label: "Brave Key", kind: "secret" },
+      { key: "search.google_cse_key", label: "Google CSE Key", kind: "secret" },
+      { key: "search.s2_api_key", label: "Semantic Scholar Key", kind: "secret" },
+      { key: "search.github_token", label: "GitHub Token（可选，提高额度）", kind: "secret" },
+    ],
+  },
+  {
     title: "检索与预算",
     hint: "对应 config.yaml 里的 search.* 与 runtime.*",
     fields: [
-      { key: "search.searxng_base_url", label: "自建 SearxNG 地址", kind: "text" },
       { key: "search.openalex_mailto", label: "OpenAlex 联系邮箱", kind: "text" },
       { key: "runtime.max_tool_calls_per_turn", label: "单轮工具预算", kind: "number" },
       { key: "runtime.max_context_chars", label: "单文档正文上限", kind: "number" },
       { key: "runtime.max_history_chars", label: "历史正文预算（字符）", kind: "number" },
-      { key: "search.tavily_api_key", label: "Tavily Key", kind: "secret" },
-      { key: "search.github_token", label: "GitHub Token", kind: "secret" },
       { key: "mineru.api_token", label: "MinerU Token", kind: "secret" },
     ],
   },
@@ -1311,6 +1343,13 @@ async function openSettings() {
     note.className = "hint";
     note.textContent = group.hint;
     box.appendChild(note);
+    if (group.providers) {
+      // 状态表放在这组最前面：先让用户看到"哪些能用"，再看填 key 的地方
+      var statusBox = document.createElement("div");
+      statusBox.className = "provider-status";
+      box.appendChild(statusBox);
+      renderProviderStatus(statusBox);
+    }
     group.fields.forEach(function (field) {
       box.appendChild(renderSettingsField(field, values, secrets));
     });
@@ -1365,6 +1404,54 @@ async function openSettings() {
 
 function closeSettings() {
   el("settings").hidden = true;
+}
+
+/*: 来源不可用的原因 → 人话（后端给的是错误码风格，界面别直接甩给用户）。 */
+var REASON_LABELS = {
+  ok: "可用",
+  missing_api_key: "缺 key",
+  missing_config: "缺配置",
+  blocked_by_robots: "被 robots 拦",
+  off: "已关闭",
+};
+
+// 哪些搜索引擎能用、不能用的原因、怎么才能用 —— 填完 key 保存后会自动重画这张表
+async function renderProviderStatus(box) {
+  var payload = null;
+  try {
+    payload = await scout.call("search.providers", {});
+  } catch (error) {
+    box.textContent = "读取来源状态失败：" + error.message;
+    return;
+  }
+  var items = payload.items || [];
+  var head = document.createElement("p");
+  head.className = "hint";
+  head.textContent =
+    "可用 " + payload.usable_count + " / " + items.length + " 个来源；" + (payload.note || "");
+  box.appendChild(head);
+  items.forEach(function (item) {
+    var row = document.createElement("div");
+    row.className = "provider-row" + (item.usable ? " is-usable" : "");
+    var name = document.createElement("span");
+    name.className = "provider-name";
+    name.textContent = item.name;
+    var kind = document.createElement("span");
+    kind.className = "provider-kind";
+    kind.textContent = item.kind;
+    var badge = document.createElement("span");
+    badge.className = "provider-badge" + (item.usable ? " is-ok" : " is-off");
+    badge.textContent = REASON_LABELS[item.reason] || item.reason;
+    var note = document.createElement("span");
+    note.className = "provider-note";
+    note.textContent =
+      item.note + (item.env_var ? "（环境变量 " + item.env_var + "）" : "");
+    row.appendChild(name);
+    row.appendChild(kind);
+    row.appendChild(badge);
+    row.appendChild(note);
+    box.appendChild(row);
+  });
 }
 
 async function saveSettings() {

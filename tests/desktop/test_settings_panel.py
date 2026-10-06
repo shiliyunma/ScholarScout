@@ -43,13 +43,30 @@ def test_backend_fields_are_reachable_from_the_panel() -> None:
     from scholarscout import settings_io
 
     keys = set(spec_keys())
-    hidden = [
-        key
-        for key in settings_io.FIELDS
-        if key not in keys
-        and not key.startswith(("search.tavily", "search.serper", "search.brave"))
-    ]
+    hidden = [key for key in settings_io.FIELDS if key not in keys]
     assert not hidden, f"后端能改但面板没有入口：{hidden}"
+
+
+def test_all_secret_fields_are_reachable_from_the_panel() -> None:
+    """每个密钥字段都必须能在面板里填 —— 否则"添加 key 让来源可用"就是句空话。
+
+    （真实缺口：Serper / Brave / Google CSE / Semantic Scholar 的 key 曾经只存在于后端
+    白名单里，面板上没有入口，用户只能去手改 `.env`。）
+    """
+    from scholarscout import settings_io
+
+    keys = set(spec_keys())
+    missing = [key for key in settings_io.SECRET_FIELDS if key not in keys]
+    assert not missing, f"这些密钥面板里填不了：{missing}"
+
+
+def test_search_group_shows_provider_status() -> None:
+    """搜索引擎那一组必须画状态表（用户要看到"哪些能用"），且必须有添加 key 的入口。"""
+    text = read_app_js()
+    assert "providers: true" in text, "搜索引擎组没有标记 providers，状态表不会被渲染"
+    assert 'scout.call("search.providers"' in text, "没有调用 search.providers"
+    for reason in ("missing_api_key", "missing_config", "blocked_by_robots"):
+        assert reason in text, f"界面没有把 {reason} 翻成人话"
 
 
 def test_index_html_has_the_panel_markup() -> None:

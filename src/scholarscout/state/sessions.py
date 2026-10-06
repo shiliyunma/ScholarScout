@@ -205,6 +205,37 @@ def _title_from(content: str) -> str:
     return auto_title(content)
 
 
+def is_unnamed(title: str | None) -> bool:
+    """标题是否算"未命名"（NULL / 空白 / 占位符都算）。
+
+    与 `set_title_if_unnamed` 的 WHERE 条件必须一致：不一致会出现
+    "判定说没名字、写回时又不给写"这种自相矛盾。
+    """
+    text = (title or "").strip()
+    return not text or text in PLACEHOLDER_TITLES
+
+
+def set_title_if_unnamed(db: Database, session_id: str, title: str) -> str | None:
+    """会话还没有**真标题**时，把它设成给定的 `title`；返回新标题（没改则 None）。
+
+    与 `retitle_if_unnamed` 的分工：这里接受**调用方算好的**标题（例如模型总结出来的），
+    那里是用消息内容本地截断。两者共用同一套"什么算未命名"的判定。
+    """
+    text = (title or "").strip()
+    if not text:
+        return None
+    placeholders = ",".join("?" for _ in PLACEHOLDER_TITLES)
+    cursor = db.execute(
+        f"""
+        UPDATE sessions SET title = ?, updated_at = ?
+        WHERE id = ?
+          AND (title IS NULL OR trim(title) = '' OR title IN ({placeholders}))
+        """,
+        (text, now_iso(), session_id, *sorted(PLACEHOLDER_TITLES)),
+    )
+    return text if cursor.rowcount else None
+
+
 def retitle_if_unnamed(db: Database, session_id: str, content: str) -> str | None:
     """会话还没有**真标题**时，用这条消息给它起名；返回新标题（没改则 None）。
 
@@ -213,18 +244,7 @@ def retitle_if_unnamed(db: Database, session_id: str, content: str) -> str | Non
     （这是真发生过的：所有会话都叫"新调研"）。
     用户手动改过名的会话**不会被覆盖**。
     """
-    title = auto_title(content)
-    placeholders = ",".join("?" for _ in PLACEHOLDER_TITLES)
-    params: tuple[Any, ...] = (title, session_id, *sorted(PLACEHOLDER_TITLES))
-    cursor = db.execute(
-        f"""
-        UPDATE sessions SET title = ?, updated_at = ?
-        WHERE id = ?
-          AND (title IS NULL OR trim(title) = '' OR title IN ({placeholders}))
-        """,
-        (title, now_iso(), *params[1:]),
-    )
-    return title if cursor.rowcount else None
+    return set_title_if_unnamed(db, session_id, auto_title(content))
 
 
 def rename_session(db: Database, session_id: str, title: str) -> str | None:

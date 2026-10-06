@@ -97,6 +97,9 @@ class Generation:
     """
 
     auto_artifacts: bool = False
+    #: 用模型把用户第一句总结成会话标题（**轮次开始前**做，标题立刻出现）。
+    #: 关掉就用首句本地截断；开着每次新建会话多一次极小调用（几十 token）。
+    title_by_model: bool = True
 
 
 @dataclass(frozen=True)
@@ -206,6 +209,7 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         db_path=paths.db_path(),
         generation=Generation(
             auto_artifacts=bool(generation_section.get("auto_artifacts", False)),
+            title_by_model=bool(generation_section.get("title_by_model", True)),
         ),
         raw=raw,
         summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),

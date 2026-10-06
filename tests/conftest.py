@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scholarscout.config import Config, Features, LlmProfile, RuntimeProfile
+from scholarscout.config import Config, Features, Generation, LlmProfile, RuntimeProfile
 from scholarscout.providers.llm import ChatReply, ToolCall
 from scholarscout.providers.settings import SearchSettings
 from scholarscout.rpc.methods import AppContext
@@ -174,6 +174,9 @@ def config(tmp_path: Path) -> Config:
         summary=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
         runtime=RuntimeProfile(max_tool_calls_per_turn=3, stream=False, allow_clarify=True),
         features=Features(enable_kb=False),
+        # 标题默认**关掉**：否则每个走 chat.send 的测试都要多备一条桩回复（那是噪声）。
+        # 标题行为由 tests/runtime/test_title_suggest.py 显式打开开关来测。
+        generation=Generation(title_by_model=False),
         data_dir=tmp_path / "data",
         db_path=tmp_path / "state.db",
         search_cfg=SearchSettings(providers=("arxiv",)),

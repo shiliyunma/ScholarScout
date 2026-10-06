@@ -19,8 +19,9 @@ from scholarscout import __version__, paths, settings_io
 from scholarscout.config import Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient, LlmError, create_client
+from scholarscout.providers.settings import provider_statuses
 from scholarscout.rpc.errors import Code, RpcError
-from scholarscout.runtime import loop, registry
+from scholarscout.runtime import loop, registry, titles
 from scholarscout.state import archive, export_session, learning, sessions, traces
 from scholarscout.state.db import Database
 
@@ -248,6 +249,28 @@ def session_export(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------- 对话
 
 
+def _title_before_turn(ctx: AppContext, session_id: str, text: str) -> None:
+    """轮次开始前先把标题定下来 —— 用户一发送就能在左侧栏看到名字。
+
+    顺序很重要（踩过）：用户消息一落库，`sessions.retitle_if_unnamed` 就会用**本地截断**
+    起名；那个名字看起来像真标题，之后模型总结的标题**再也写不进去**。
+    所以必须"先总结标题 → 再跑轮次"。
+
+    任何失败都静默放过：标题不值得让一轮对话失败，本地兜底会补上。
+    """
+    if not ctx.config.generation.title_by_model or ctx.llm is None:
+        return
+    row = sessions.get_session(ctx.db, session_id)
+    if row is not None and not sessions.is_unnamed(row["title"]):
+        return  # 已经有真标题（含用户手动改名）→ 一次调用都不花
+    title = titles.suggest_title(ctx.llm, text, prompts_dir=ctx.config.summary_cfg.prompts_dir)
+    if not title:
+        return
+    applied = sessions.set_title_if_unnamed(ctx.db, session_id, title)
+    if applied and ctx.emit is not None:
+        ctx.emit("session.updated", {"session_id": session_id, "title": applied, "source": "model"})
+
+
 @method("chat.send")
 def chat_send(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     params = _params(params)
@@ -261,6 +284,7 @@ def chat_send(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(toolsets, list):
         raise RpcError(Code.INVALID_PARAMS, "toolsets 必须是数组")
 
+    _title_before_turn(ctx, session_id, text)  # 标题在轮次前定下来（用户一发送就能看到）
     result = loop.run_turn(
         ctx.turn_context(),
         session_id=session_id,
@@ -454,6 +478,24 @@ def archive_reveal(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         raise RpcError(Code.NOT_FOUND, f"文件不在磁盘上：{rel}")
     _reveal_in_file_manager(target)
     return {"ok": True, "path": rel, "which": which}
+
+
+@method("search.providers")
+def search_providers(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """哪些搜索引擎/来源现在能用、不能用的原因、以及怎么才能用。
+
+    界面把这张表和"填 key 的输入框"放在一起，用户填完 key 立刻能看到它变成可用
+    （`settings.update` 写 `.env` 的同时会更新进程环境，不必重启）。
+    """
+    del params
+    settings = ctx.config.search_cfg
+    items = [status.as_dict() for status in provider_statuses(settings)]
+    return {
+        "items": items,
+        "auto": list(settings.auto_names()),
+        "usable_count": sum(1 for item in items if item["usable"]),
+        "note": "「auto」只带此刻真能用的来源；填了 key 立即生效（不必重启）。",
+    }
 
 
 @method("session.usage")

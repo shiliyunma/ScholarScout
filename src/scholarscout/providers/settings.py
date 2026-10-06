@@ -172,3 +172,122 @@ class SearchSettings:
     def robots_exempt_hosts(self) -> tuple[str, ...]:
         """打开抓取开关后要豁免的主机（关着就是空 —— 默认不动 robots）。"""
         return SEARCHPAGE_HOSTS if self.allow_searchpage_scraping else ()
+
+
+#: 界面上来源的展示顺序（学术 → 代码 → 通用/商用 → 抓页）
+DISPLAY_ORDER = (
+    "arxiv",
+    "openalex",
+    "semantic_scholar",
+    "github",
+    "searxng",
+    "tavily",
+    "serper",
+    "brave",
+    "google_cse",
+    "bing",
+    "duckduckgo",
+)
+
+#: 每个来源的分组名（界面直接显示，别让用户去读源码）
+KIND_LABEL = {
+    "arxiv": "学术",
+    "openalex": "学术",
+    "semantic_scholar": "学术",
+    "github": "代码与教程",
+    "searxng": "通用检索",
+    "tavily": "商用检索",
+    "serper": "商用检索",
+    "brave": "商用检索",
+    "google_cse": "商用检索",
+    "bing": "抓搜索结果页",
+    "duckduckgo": "抓搜索结果页",
+}
+
+#: 不可用时的说明（**必须写清怎么才能用**，否则用户只能猜）
+NOTE = {
+    "arxiv": "免 key；只索引英文、≥3s 限速",
+    "openalex": "免 key；本机实测常返 429，配「联系邮箱」可走礼貌池",
+    "semantic_scholar": "无 key 恒 429（实测）；填 key 后可用",
+    "github": "免 key 也能用（10 次/分钟）；填 Token 提到 30 次/分钟",
+    "searxng": "自建实例，免 key：`scripts/searxng_up.py` 一键起（Docker）",
+    "tavily": "注册即得免费额度；填 key 后自动进入可用来源",
+    "serper": "注册即得免费额度；填 key 后自动进入可用来源",
+    "brave": "注册即得免费额度；填 key 后自动进入可用来源",
+    "google_cse": "需要 Key **和** 搜索引擎 ID(CX) 两个都填才可用",
+    "bing": "Bing robots 明确禁 /search；默认不抓，要显式打开「允许抓搜索结果页」",
+    "duckduckgo": "国内需梯子；robots 同样不允抓结果页，且要显式打开「允许抓搜索结果页」",
+}
+
+
+@dataclass(frozen=True)
+class ProviderStatus:
+    """一个来源此刻的状态 —— 界面要回答"哪些能用、为什么不能用、怎么才能用"。"""
+
+    name: str
+    kind: str
+    keyless: bool
+    env_var: str | None
+    key_configured: bool
+    usable: bool
+    reason: str  # ok | missing_api_key | missing_config | blocked_by_robots | off
+    note: str
+    optional_env_var: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "keyless": self.keyless,
+            "env_var": self.env_var,
+            "optional_env_var": self.optional_env_var,
+            "key_configured": self.key_configured,
+            "usable": self.usable,
+            "reason": self.reason,
+            "note": self.note,
+        }
+
+
+def provider_statuses(
+    settings: SearchSettings, *, key_lookup: Callable[[str], str | None] = api_key_for
+) -> tuple[ProviderStatus, ...]:
+    """算出每个来源此刻能不能用、不能用为什么、怎么才能用。
+
+    判定口径必须与 `auto_names` 一致 —— 不一致会出现"界面说可用、实际检索时不带上它"。
+    """
+    statuses: list[ProviderStatus] = []
+    for name in DISPLAY_ORDER:
+        env_var = COMMERCIAL_KEYS.get(name)
+        optional_env_var = OPTIONAL_TOKENS.get(name)
+        has_key = bool(key_lookup(name)) if env_var else False
+        configured = has_key or (bool(optional_token(name)) if optional_env_var else False)
+        if name == "searxng":
+            usable = bool(settings.searxng_base_url.strip())
+            reason = "ok" if usable else "missing_config"
+        elif name == "google_cse":
+            has_cx = bool(settings.google_cse_cx.strip())
+            usable = has_key and has_cx
+            reason = "ok" if usable else ("missing_config" if has_key else "missing_api_key")
+        elif name in COMMERCIAL_KEYS:
+            usable = has_key
+            reason = "ok" if usable else "missing_api_key"
+        elif name in ("bing", "duckduckgo"):
+            usable = bool(settings.allow_searchpage_scraping)
+            reason = "ok" if usable else "blocked_by_robots"
+        else:  # arxiv / openalex / github：免 key
+            usable = True
+            reason = "ok"
+        statuses.append(
+            ProviderStatus(
+                name=name,
+                kind=KIND_LABEL.get(name, "其他"),
+                keyless=env_var is None,
+                env_var=env_var,
+                optional_env_var=optional_env_var,
+                key_configured=configured,
+                usable=usable,
+                reason=reason,
+                note=NOTE.get(name, ""),
+            )
+        )
+    return tuple(statuses)
