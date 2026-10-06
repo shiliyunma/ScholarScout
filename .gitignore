@@ -31,6 +31,9 @@ dist/
 /ScholarScout.exe
 /ScholarScout.launcher.ini
 /launcher-diagnose.txt
+# 论文成品（由 scripts/build_thesis_docx.py 从 docs/*.md 生成，不入库）
+/*.docx
+/*.pdf
 
 # ===== 编辑器 / 系统 =====
 .vscode/
