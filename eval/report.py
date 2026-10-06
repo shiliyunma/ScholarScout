@@ -200,6 +200,11 @@ def render(results: dict[str, Any]) -> str:
                         ],
                         ["单任务工具调用次数", _num(e3["tool_calls_per_task"], 2), "—"],
                         [
+                            "失败的工具调用（哪个工具 / 报什么错）",
+                            _failure_text(e3.get("failures") or []),
+                            "—",
+                        ],
+                        [
                             "出处覆盖率（资料类，只算 paper/doc/video/code）",
                             _pct(e3["coverage"]),
                             _ratio(
@@ -244,7 +249,7 @@ def render(results: dict[str, Any]) -> str:
                     _pct(task["coverage"]),
                     str(task["artifacts"]["topic_maps"]) + "/" + str(task["artifacts"]["routes"]),
                     f"{task['elapsed_ms'] / 1000:.1f}s",
-                    (task.get("error") or "—")[:60],
+                    _task_failure_text(task),
                 ]
                 for task in e3["tasks"]
             ]
@@ -258,7 +263,7 @@ def render(results: dict[str, Any]) -> str:
                         "出处覆盖率",
                         "主题图/路线",
                         "端到端耗时",
-                        "错误",
+                        "错误 / 失败工具",
                     ],
                     rows,
                 ),
@@ -304,3 +309,31 @@ def render(results: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(parts)
+
+
+def _failure_text(failures: list[dict]) -> str:
+    """把失败明细压成一行：`source.fetch ×2（Failed to fetch …）；research.search ×1（…）`。
+
+    只给成功率不给明细，读者没法核实；这里连错误样本一起带上（超长截断）。
+    """
+    if not failures:
+        return "无"
+    parts = []
+    for item in failures:
+        label = f"{item.get('tool')} ×{item.get('n')}"
+        task = item.get("task")
+        if task:
+            label = f"[{task}] " + label
+        error = str(item.get("error") or "").strip()
+        parts.append(f"{label}（{error[:60]}）" if error else label)
+    return "；".join(parts)
+
+
+def _task_failure_text(task: dict) -> str:
+    """逐任务那一列的取值：会话级错误 + 失败的工具调用。"""
+    bits = []
+    if task.get("error"):
+        bits.append(str(task["error"])[:40])
+    for item in task.get("failures") or []:
+        bits.append(f"{item.get('tool')} ×{item.get('n')}")
+    return "；".join(bits)[:70] if bits else "—"

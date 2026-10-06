@@ -290,6 +290,25 @@ def _looks_like_asking(text: str) -> bool:
     )
 
 
+def failure_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把失败的工具调用按工具名归并，带一次错误样本。
+
+    为什么必须报这个：报告只给"工具成功率 88.9%"是**不够复算**的 —— 读者会追问"哪一次、哪个工具、
+    报什么错"。`tool_traces` 里本来就存了 `error`，只是之前的报告没取（评测又跑在临时库上，
+    跑完即删，事后无法回溯）。所以从这里就把明细带进报告。
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row.get("ok"):
+            continue
+        name = str(row.get("tool_name") or "?")
+        item = grouped.setdefault(name, {"tool": name, "n": 0, "error": ""})
+        item["n"] += 1
+        if not item["error"] and row.get("error"):
+            item["error"] = str(row["error"])[:160]
+    return sorted(grouped.values(), key=lambda item: (-int(item["n"]), str(item["tool"])))
+
+
 def run_e3(  # pragma: no cover - 需真模型
     ctx: Any,
     rows: list[dict[str, Any]],
@@ -390,6 +409,7 @@ def run_e3(  # pragma: no cover - 需真模型
                 "tool_calls": result["tool_calls"],
                 "elapsed_ms": elapsed_ms,
                 "traces": len(traces_rows),
+                "failures": failure_summary(traces_rows),
                 "tool_success_rate": metrics.success_rate(traces_rows),
                 "latency_p50": metrics.percentile(
                     [r["latency_ms"] or 0 for r in traces_rows if r["ok"]], 50
@@ -471,6 +491,13 @@ def run_e3(  # pragma: no cover - 需真模型
             sum(1 for task in tasks if not task["request_asked_artifact"]),
         ),
         "unrequested_denominator": sum(1 for task in tasks if not task["request_asked_artifact"]),
+        # 失败明细：哪个工具、几次、一次错误样本（报告要能"指出是哪一次"，不然 88.9% 这种数字没法复算）
+        "failures": [
+            {"task": task["id"], **item} for task in tasks for item in task.get("failures", [])
+        ],
+        "failed_tool_calls": sum(
+            int(item["n"]) for task in tasks for item in task.get("failures", [])
+        ),
         # 「模型有没有把选择权交出去」：启发式（措辞匹配），报告里要标注不精确。
         "asked_rate": metrics.float_rate(sum(1 for task in tasks if task["asked"]), len(tasks)),
         # 按需生成成功率：用户点单之后真出产物的比例（确定性口径，没跑 ask 就是 None）。
