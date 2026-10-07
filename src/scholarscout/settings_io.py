@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 
 from scholarscout import paths
-from scholarscout.config import Config, load_config
+from scholarscout.config import STYLE_CHOICES, Config, load_config
 
 
 class SettingsError(ValueError):
@@ -42,6 +42,9 @@ class Field:
     #: 配置里还没写这个键时界面该显示什么。**必填**语义要小心：
     #: 布尔默认成 True 会让"默认关"的开关看起来是开的（用户以为改了实际没改）。
     default: Any = None
+    #: 取值白名单（如风格档）。**有它就只收白名单里的值** ——
+    #: 面板上写错一个值，会在下次启动 load_config 时才炸；在这里拦住才是对的时机。
+    choices: tuple[str, ...] | None = None
 
     def check(self, value: Any) -> Any:
         if self.kind == "bool":
@@ -60,6 +63,8 @@ class Field:
         text = str(value).strip()
         if not text:
             raise SettingsError(f"{self.label} 不能为空")
+        if self.choices is not None and text not in self.choices:
+            raise SettingsError(f"{self.label} 只能是：{'、'.join(self.choices)}")
         if self.must_be_url and not (text.startswith("http://") or text.startswith("https://")):
             raise SettingsError(f"{self.label} 必须是 http(s):// 开头的地址")
         return text
@@ -173,6 +178,14 @@ FIELDS: dict[str, Field] = dict(
             kind="bool",
             label="标题用模型总结（关＝用首句截断）",
             default=True,
+        ),
+        _f(
+            "generation",
+            "style",
+            kind="str",
+            label="风格档（default／academic 严谨学术／tutor 亲切助教／concise 简洁）",
+            default="default",
+            choices=STYLE_CHOICES,
         ),
         _f("search", "searxng_base_url", kind="str", label="自建 SearxNG 地址"),
         _f("search", "google_cse_cx", kind="str", label="Google CSE 搜索引擎 ID（CX）"),

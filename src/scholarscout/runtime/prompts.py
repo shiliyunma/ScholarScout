@@ -87,22 +87,62 @@ RESEARCH_STATE_RULE = """\
 """
 
 
+#: 人格/风格档（D4）。**默认档是空串** —— 这样"没改过设置"的提示词与本功能上线前**逐字节相同**，
+#: 实验臂哈希不变、E3 那批数字仍然可比。改风格＝改实验臂，报告里必须写明用了哪一档。
+STYLE_PROMPTS: dict[str, str] = {
+    "default": "",
+    "academic": """\
+## 说话风格：严谨学术
+
+- 术语用规范译名，首次出现给英文原词；数字、年份、结论都要能追到具体来源。
+- 少用感叹与鼓励语，先给证据再说判断；不确定就写"现有资料不足以判断"。
+- 引用写成"作者/机构（年份）"的形式，别写"有研究表明"这种没有出处的说法。""",
+    "tutor": """\
+## 说话风格：亲切助教
+
+- 先给一句话结论，再用类比或小例子展开；一次只推进一个概念。
+- 你面对的是在自学的人：允许他"还不知道"，把前置知识先补上再讲正文。
+- 每段末尾给一个能立刻动手的小检查点（"试着用一句话说出 X 和 Y 的区别"）。
+- 鼓励要具体（指出他做对了什么），不要空洞地夸。""",
+    "concise": """\
+## 说话风格：简洁
+
+- 结论先写，理由最多三条，其余放进"需要时再看"的部分。
+- 不复述用户的问题，不写开场白与收尾客套；能一句说清就不写两句。
+- 表格/列表优先于长段落。""",
+}
+
+
+def normalize_style(value: str | None) -> str:
+    """校验风格档，并与 `STYLE_PROMPTS` 对齐（取值清单在 config 层，文本在本层）。"""
+    from scholarscout.config import normalize_style as _check
+
+    style = _check(value)
+    if style not in STYLE_PROMPTS:  # pragma: no cover - 由漂移测试兜住
+        raise ValueError(f"风格档 {style!r} 在 config 里允许，但这里没有对应提示词")
+    return style
+
+
 def build_system_prompt(
     *,
     toolsets: list[str] | None = None,
     allow_clarify: bool = True,
     auto_artifacts: bool = False,
+    style: str = "default",
 ) -> str:
     """组装系统提示词。
 
-    ``auto_artifacts`` 决定用哪一档流程（默认按需）。这个开关会进哈希，
-    所以"自动档"与"按需档"跑出来的结果在报告里能分清出处。
+    ``auto_artifacts`` 决定用哪一档流程（默认按需）。这两个开关都会进哈希，
+    所以"自动档 / 按需档 / 各风格档"跑出来的结果在报告里能分清出处。
     """
+    chosen = normalize_style(style)
     parts = [BASE_PROMPT, PIPELINE_PROMPT if auto_artifacts else ON_DEMAND_PIPELINE_PROMPT]
     if allow_clarify:
         parts.append(CLARIFY_RULE)
     # A1/A2/A7：怎么用每轮注入的「研究台账」（放最后，作为本轮流程的补充说明）
     parts.append(RESEARCH_STATE_RULE)
+    if STYLE_PROMPTS[chosen]:
+        parts.append(STYLE_PROMPTS[chosen])
     active = ", ".join(toolsets or ["research"])
     parts.append(f"\n当前可用工具集：{active}。工具未注册时不要假装调用它，直接说明能力边界。")
     return "\n".join(parts).strip()

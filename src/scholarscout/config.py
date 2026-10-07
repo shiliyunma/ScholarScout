@@ -36,6 +36,20 @@ DEFAULT_SUMMARY = {
 }
 
 
+#: 允许的风格档（D4）。提示词文本在 `runtime/prompts.py::STYLE_PROMPTS` ——
+#: 文本属于 runtime 层，config 只做"取值合不合法"的校验（config 不能反向依赖 runtime）。
+#: 两处必须一致，由 `tests/runtime/test_style_prompt.py` 钉住，免得加了档位忘了接。
+STYLE_CHOICES: tuple[str, ...] = ("default", "academic", "tutor", "concise")
+
+
+def normalize_style(value: Any) -> str:
+    """校验风格档。**不认识的值直接报错** —— 静默回默认档等于"用户以为改了、其实没改"。"""
+    style = str(value or "default").strip().lower()
+    if style not in STYLE_CHOICES:
+        raise ValueError(f"未知的风格档：{value!r}（允许：{'、'.join(STYLE_CHOICES)}）")
+    return style
+
+
 @dataclass(frozen=True)
 class LlmProfile:
     """一个模型档位（对话档 / 摘要档）。"""
@@ -107,6 +121,9 @@ class Generation:
     #: D2 跨会话记忆的自动抽取：每**会话**最多一次小调用，且要有"值得记"的迹象。
     #: 关掉之后仍可在「研究看板 → 跨会话记忆」手动点「从现在整理」。
     memory_by_model: bool = True
+    #: D4 人格/风格档：default | academic | tutor | concise。
+    #: **默认档不加任何字符**，所以不改它就不影响实验臂哈希（E3 那批数字仍可比）。
+    style: str = "default"
 
 
 @dataclass(frozen=True)
@@ -220,6 +237,8 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             title_by_model=bool(generation_section.get("title_by_model", True)),
             # D2：跨会话记忆的自动抽取（每会话最多一次小调用）。关掉仍可手动整理。
             memory_by_model=bool(generation_section.get("memory_by_model", True)),
+            # 认识的风格档才认；不认识就**报错**（静默回默认＝用户以为改了其实没改）
+            style=normalize_style(generation_section.get("style", "default")),
         ),
         raw=raw,
         summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),

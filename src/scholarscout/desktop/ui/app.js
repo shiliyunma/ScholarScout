@@ -1744,6 +1744,11 @@ var SETTINGS_SPEC = [
     fields: [
       { key: "generation.auto_artifacts", label: "每轮自动生成产物", kind: "bool" },
       { key: "generation.title_by_model", label: "标题用模型总结（关＝用首句截断）", kind: "bool" },
+      {
+        key: "generation.style",
+        label: "风格档（default 默认／academic 严谨学术／tutor 亲切助教／concise 简洁）",
+        kind: "text",
+      },
       { key: "features.enable_topic_map", label: "允许生成知识地图", kind: "bool" },
       { key: "features.enable_route_plan", label: "允许生成学习路线", kind: "bool" },
       { key: "features.enable_mineru", label: "扫描版 PDF 走 MinerU 兜底", kind: "bool" },
