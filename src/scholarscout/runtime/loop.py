@@ -63,16 +63,24 @@ def _fit_history(history: list[dict[str, Any]], budget_chars: int) -> list[dict[
     kept.reverse()
 
     dropped = len(history) - len(kept)
-    if dropped <= 0:
-        return kept
+    # 前缀稳定性（A6）：**头部不许变**。服务端上下文缓存按"从头开始的最长公共前缀"命中，
+    # 而缓存命中的输入单价差一个量级。所以：
+    #   ① 最初那条用户消息固定在 system 之后（下轮也一样）→ 前缀 [system, first_user] 恒定；
+    #   ② "中间省略"的说明**追加到末尾**，不再插在头部；
+    #   ③ 被裁掉的是中间那段，且下一轮裁掉的只会更多 → 后面整体是 append-only 的形态。
     prefix: list[dict[str, Any]] = []
     if first_user is not None and all(item is not first_user for item in kept):
         prefix.append(first_user)
-    note = (
-        f"（为控制上下文成本，中间 {dropped} 条对话已省略；"
-        "下面接的是用户最初的需求与最近的对话。需要旧信息时再问用户。）"
-    )
-    return [*prefix, {"role": "system", "content": note}, *kept]
+    if dropped <= 0:
+        return kept
+    note = {
+        "role": "system",
+        "content": (
+            f"（为控制上下文成本，中间 {dropped} 条对话已省略；"
+            "上面是用户最初的需求与最近的对话。需要旧信息时再问用户。）"
+        ),
+    }
+    return [*prefix, *kept, note]
 
 
 @dataclass
@@ -222,6 +230,7 @@ def run_turn(
                 turn_id=turn_id,
                 prompt_tokens=reply.usage.get("prompt_tokens"),
                 completion_tokens=reply.usage.get("completion_tokens"),
+                cached_tokens=reply.usage.get("cached_tokens"),
             )
             final_text = reply.content or final_text
 

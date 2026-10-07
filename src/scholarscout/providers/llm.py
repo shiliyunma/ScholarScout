@@ -255,12 +255,21 @@ class OpenAIChatClient:
 
         raw_usage = body.get("usage")
         usage_raw: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
-        # 只留真正会用到的两个键（domain 对象不做 API 透传）
+        # 只留真正会用到的键（domain 对象不做 API 透传）
         usage: dict[str, int] = {}
         for key in ("prompt_tokens", "completion_tokens"):
             value = usage_raw.get(key)
             if isinstance(value, int | float) and not isinstance(value, bool):
                 usage[key] = int(value)
+        # **服务端缓存命中数**：两种命名都要认（DeepSeek 用 prompt_cache_hit_tokens，
+        # OpenAI 兼容用 prompt_tokens_details.cached_tokens）。
+        # 为什么要记：不记的话"前缀稳定到底省了多少"只能靠猜 —— 缓存命中的输入单价差一个量级。
+        cached_hit = usage_raw.get("prompt_cache_hit_tokens")
+        if not isinstance(cached_hit, int | float) or isinstance(cached_hit, bool):
+            details = usage_raw.get("prompt_tokens_details")
+            cached_hit = details.get("cached_tokens") if isinstance(details, dict) else None
+        if isinstance(cached_hit, int | float) and not isinstance(cached_hit, bool):
+            usage["cached_tokens"] = int(cached_hit)
         content = message.get("content")
         return ChatReply(
             content=str(content) if content is not None else "",

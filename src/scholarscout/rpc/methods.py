@@ -541,6 +541,8 @@ def session_usage(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     total = ctx.db.query_one(
         "SELECT count(*) AS calls, coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
         " coalesce(sum(completion_tokens),0) AS completion_tokens,"
+        " coalesce(sum(cached_tokens),0) AS cached_tokens,"
+        " count(cached_tokens) AS calls_with_cache_field,"
         " coalesce(sum(est_cost),0.0) AS est_cost FROM usage_records WHERE session_id = ?",
         (session_id,),
     )
@@ -553,13 +555,24 @@ def session_usage(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     )
     row = dict(total) if total is not None else {}
     cost = float(row.get("est_cost") or 0.0)
+    prompt_tokens = int(row.get("prompt_tokens") or 0)
+    cached_tokens = int(row.get("cached_tokens") or 0)
     return {
         "session_id": session_id,
         "calls": int(row.get("calls") or 0),
         "tokens": {
-            "prompt": int(row.get("prompt_tokens") or 0),
+            "prompt": prompt_tokens,
             "completion": int(row.get("completion_tokens") or 0),
+            # 缓存命中的输入（服务端真返回了才非零；一口都没命中时这里是 0，与"没这个字段"不同）
+            "cached": cached_tokens,
         },
+        # 缓存命中率：**只在服务端确实返回过缓存字段时**才算，否则回 None
+        # （把"服务端不报"算成 0% 会让人误以为前缀策略完全失效）
+        "cache_hit_rate": (
+            cached_tokens / prompt_tokens
+            if int(row.get("calls_with_cache_field") or 0) > 0 and prompt_tokens > 0
+            else None
+        ),
         # 单价没配就不报金额（报 0 会让人以为"免费"）
         "est_cost": cost if cost > 0 else None,
         "by_purpose": [dict(item) for item in by_purpose],

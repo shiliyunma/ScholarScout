@@ -321,7 +321,7 @@ async function send(text) {
       state.pending.add(
         "ok",
         "token 输入 " + fmtTokens(usage.prompt_tokens) + " ／ 输出 " + fmtTokens(usage.completion_tokens) +
-          (usage.cached_tokens ? "（命中缓存 " + fmtTokens(usage.cached_tokens) + "）" : "")
+        (usage.cached_tokens ? "（命中缓存 " + fmtTokens(usage.cached_tokens) + "）" : ""),
       );
     }
     await refreshSide();
@@ -354,8 +354,14 @@ async function refreshSessionUsage() {
     }
     node.textContent =
       "本会话累计 输入 " + fmtTokens(tokens.prompt) + " ／ 输出 " + fmtTokens(tokens.completion) +
+      // 缓存命中的输入单独说：它和未命中的输入单价差一个量级，合在一起看会误判省钱效果
+      (tokens.cached ? "（其中缓存命中 " + fmtTokens(tokens.cached) + "）" : "") +
       " ／ 模型调用 " + usage.calls + " 次" + (usage.est_cost ? " ／ 约 " + usage.est_cost : "");
-    node.title = "数据来自 usage_records；未配置单价故不折算金额";
+    node.title =
+      "数据来自 usage_records；未配置单价故不折算金额" +
+      (usage.cache_hit_rate === null || usage.cache_hit_rate === undefined
+        ? "。本次服务端未返回缓存字段，故不给命中率（不按 0 算）"
+        : "。输入缓存命中率 " + Math.round(usage.cache_hit_rate * 100) + "%（前缀稳定时该值应随轮次上升）");
   } catch (error) {
     node.textContent = "";
   }

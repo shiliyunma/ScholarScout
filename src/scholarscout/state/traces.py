@@ -108,14 +108,15 @@ def record_usage(
     turn_id: str | None = None,
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
+    cached_tokens: int | None = None,
     est_cost: float | None = None,
 ) -> str:
     usage_id = new_id("usg")
     db.execute(
         """
         INSERT INTO usage_records (id, session_id, turn_id, model, purpose,
-                                   prompt_tokens, completion_tokens, est_cost, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   prompt_tokens, completion_tokens, cached_tokens, est_cost, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             usage_id,
@@ -125,6 +126,7 @@ def record_usage(
             purpose,
             prompt_tokens,
             completion_tokens,
+            cached_tokens,
             est_cost,
             now_iso(),
         ),
