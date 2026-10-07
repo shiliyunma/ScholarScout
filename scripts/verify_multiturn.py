@@ -29,10 +29,14 @@ from scholarscout.runtime import research_state as rs  # noqa: E402
 from scholarscout.state import sessions  # noqa: E402
 
 
-def _search_calls(db, session_id: str) -> list[tuple[str, str]]:
-    """这一会话的检索调用（时间序）：(turn_id, query)。"""
+def _search_calls(db, session_id: str) -> list[tuple[str, str, bool]]:
+    """这一会话的检索调用（时间序）：(turn_id, query, 是否成功)。
+
+    **必须带上 ok**：被判重闸门拦下的那一次不能算"重复执行了一次检索" ——
+    那正是 A3 生效的表现，把它算成重复是假阴性。
+    """
     rows = db.query(
-        "SELECT turn_id, args_json FROM tool_traces"
+        "SELECT turn_id, args_json, ok FROM tool_traces"
         " WHERE session_id = ? AND tool_name = 'research.search' ORDER BY step",
         (session_id,),
     )
@@ -42,7 +46,7 @@ def _search_calls(db, session_id: str) -> list[tuple[str, str]]:
             payload = json.loads(str(row["args_json"]) or "{}")
         except json.JSONDecodeError:
             payload = {}
-        out.append((str(row["turn_id"] or ""), str(payload.get("query") or "")))
+        out.append((str(row["turn_id"] or ""), str(payload.get("query") or ""), bool(row["ok"])))
     return out
 
 
@@ -80,8 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     turn1 = loop.run_turn(ctx.turn_context(), session_id=session_id, text=args.goal)
     after1 = set(_source_ids(ctx.db, session_id))
     calls1 = _search_calls(ctx.db, session_id)
-    print(f"【第 1 轮】stop={turn1.stop_reason} 工具={len(turn1.tool_calls)} 检索={len(calls1)}")
-    for _turn, query in calls1:
+    done1 = [(q, ok) for _t, q, ok in calls1 if ok]
+    print(f"【第 1 轮】stop={turn1.stop_reason} 工具={len(turn1.tool_calls)} 检索={len(done1)}")
+    for query, _ok in done1:
         print(f"    搜索：{query}")
     print(f"    新来源：{len(after1 - before)}")
 
@@ -97,16 +102,23 @@ def main(argv: list[str] | None = None) -> int:
     turn2 = loop.run_turn(ctx.turn_context(), session_id=session_id, text=args.follow)
     after2 = set(_source_ids(ctx.db, session_id))
     calls2 = [item for item in _search_calls(ctx.db, session_id) if item not in calls1]
-    print(f"\n【第 2 轮】stop={turn2.stop_reason} 工具={len(turn2.tool_calls)} 检索={len(calls2)}")
-    for _turn, query in calls2:
+    done2 = [(q, ok) for _t, q, ok in calls2 if ok]
+    refused2 = [(q, ok) for _t, q, ok in calls2 if not ok]
+    print(
+        f"\n【第 2 轮】stop={turn2.stop_reason} 工具={len(turn2.tool_calls)} "
+        f"实际检索={len(done2)} 被判重拦下={len(refused2)}"
+    )
+    for query, _ok in done2:
         print(f"    搜索：{query}")
+    for query, _ok in refused2:
+        print(f"    ✋ 被拦下（判重）：{query}")
     fresh2 = after2 - before2
     print(f"    新来源：{len(fresh2)}")
 
     # 判据 ② 重复查询（与产品代码同一实现）
     repeats = []
-    for _turn, query in calls2:
-        prior = [q for _t, q in calls1 if q]
+    for query, _ok in done2:
+        prior = [q for q, ok in done1 if q and ok]
         match = next((p for p in prior if rs.similarity(query, p) >= rs.DEFAULT_SIMILARITY), None)
         if match:
             repeats.append((query, match))
@@ -123,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checks = [
         ("第 2 轮有新来源（改进前实测 0）", len(fresh2) >= 1),
-        ("第 2 轮没有重复查询", not repeats),
+        (f"第 2 轮没有重复查询（判重拦下 {len(refused2)} 次）", not repeats),
         ("服务端缓存命中 > 0（A6 前缀稳定）", int(usage.get("cached") or 0) > 0),
         ("结束原因是有意义的停", turn2.stop_reason in {"completed", "no_new_evidence"}),
         ("开局拆出了子问题清单（A1）", len(state.get("questions") or []) >= 3),

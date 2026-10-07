@@ -170,3 +170,23 @@ def test_loop_records_the_query_and_next_turn_rejects_the_repeat(
     assert state["used_queries"] == ["GraphRAG 的社区摘要"], "循环必须把这条查询记进台账"
     # 下轮换词重搜：判重闸门直接命中（判据与产品代码同一实现）
     assert rs.find_repeat(state, "GraphRAG 社区摘要 是什么") == "GraphRAG 的社区摘要"
+
+
+def test_empty_rounds_do_not_leak_into_the_next_turn(ctx: AppContext, monkeypatch) -> None:
+    """上一轮的"连续无新增"计数不能带进下一轮。
+
+    不修的话：一次"没搜到新东西"的轮次结束后，用户换个话题再问，第一轮就会被立刻叫停
+    —— 明明是新的检索方向，却连工具都不给。计数是**轮内**的概念。
+    """
+    _register_fake(monkeypatch)  # 需要有工具注册，才谈得上"给不给工具"
+    session_id = _session(ctx)
+    state = rs.empty_state("旧目标")
+    state["empty_rounds"] = rs.MAX_EMPTY_ROUNDS  # 上一轮留下的满格计数
+    rs.save_state(ctx.db, session_id, state)
+
+    ctx.llm = StubLlm(reply("这轮该正常给工具"))
+    loop.run_turn(ctx.turn_context(), session_id=session_id, text="换个话题")
+
+    # 模型这一轮拿到的工具声明不该是 None（被叫停的轮次才收走工具）
+    assert ctx.llm.calls[0]["tools"] is not None
+    assert "停止检索" not in str(ctx.llm.calls[0]["messages"][-1]["content"])

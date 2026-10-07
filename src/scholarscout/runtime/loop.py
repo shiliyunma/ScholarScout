@@ -203,6 +203,9 @@ def run_turn(
     state = research_state.load_state(ctx.db, session_id) or research_state.empty_state(
         goal=text.strip()[:200]
     )
+    # 「连续无新增」是**轮内**计数：上一轮留下的计数不能带进这一轮，
+    # 否则用户换个话题继续问时，第一轮就会被立刻叫停。
+    state["empty_rounds"] = 0
     if not state.get("questions") and not state.get("used_queries"):
         # 开局拆一次子问题（每会话一次的小调用）——关掉开关就退化成"只有目标 + 只有缺口"
         if (
