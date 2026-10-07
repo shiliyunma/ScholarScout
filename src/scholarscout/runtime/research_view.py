@@ -148,28 +148,27 @@ def _evidence_from_support_checks(
             ids = []
         parsed.append((dict(row), ids))
         all_ids.update(ids)
-
     # 会话内已加载的来源优先（含"有没有正文"），缺的按 id 跨会话补查
     missing = [item for item in all_ids if item not in sources_by_id]
     resolved = {**sources_by_id, **_resolve_sources(db, missing)}
 
     table = []
-    for row, ids in parsed:
+    for check, ids in parsed:
         cited = [resolved[item] for item in ids if item in resolved]
-        strong = str(row["evidence_level"]) == "summary" and str(row["verdict"]) in {
+        strong = str(check["evidence_level"]) == "summary" and str(check["verdict"]) in {
             "supported",
             "partial",
         }
         table.append(
             {
-                "artifact_kind": str(row["artifact_kind"]),
-                "artifact_id": str(row["artifact_id"]),
-                "item_id": str(row["item_id"]),
-                "claim": str(row["claim"]),
-                "verdict": str(row["verdict"]),
-                "evidence_level": str(row["evidence_level"]),
+                "artifact_kind": str(check["artifact_kind"]),
+                "artifact_id": str(check["artifact_id"]),
+                "item_id": str(check["item_id"]),
+                "claim": str(check["claim"]),
+                "verdict": str(check["verdict"]),
+                "evidence_level": str(check["evidence_level"]),
                 "strength": "强" if strong else "弱",
-                "reason": str(row["reason"] or ""),
+                "reason": str(check["reason"] or ""),
                 "sources": [
                     {
                         "source_id": item["source_id"],
