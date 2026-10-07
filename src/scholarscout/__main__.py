@@ -75,6 +75,12 @@ def _chat_repl(db_path: Path | None, toolsets: tuple[str, ...]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # 打包后**双击 exe 就是不带参数**：那就直接开界面（"点开即用"）。
+    # 源码运行时保持打印用法 —— 免得误伤脚本调用与排障习惯。
+    if getattr(sys, "frozen", False) and not any(
+        (args.version, args.initdb, args.rpc, args.chat, args.desktop, args.check_ui)
+    ):
+        args.desktop = True
     toolsets = tuple(t.strip() for t in str(args.toolsets).split(",") if t.strip()) or ("research",)
     db_target = Path(args.db) if args.db else None
 
