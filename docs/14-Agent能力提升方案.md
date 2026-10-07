@@ -41,7 +41,7 @@
 | 系统提示词把流程写成**固定顺序**（search → fetch → grade → build_map → plan → notes） | `runtime/prompts.py` | 第 2 轮"继续搜索"自然回到同一步：再 search 一遍，不会换策略 |
 | **没有覆盖度/缺口概念**：库里知道有哪些来源，但没有任何东西告诉模型"还缺什么子问题/哪一年/哪类来源" | 无 | 于是"继续"＝同质重复，无法收敛 |
 | 用户的"不满意"是**自由文本**，没有把它结构化成可执行计划的地方 | 无 | 「继续搜索」只能被理解成"再搜一次" |
-| 历史超长会被裁剪（`runtime.max_history_chars`，默认 12000） | `runtime/loop.py` | 第 1 轮的关键细节可能在后面几轮被裁掉，agent 想接着用也拿不到 |
+| 历史超长会被裁剪（`runtime.max_history_chars`，默认 12000） | `runtime/loop.py` `_trim_history` | 两重后果：① 第 1 轮的关键证据在中间被裁掉，agent 想接着用也拿不到；② 裁剪后消息序列变成 `[system, 最初用户消息, 省略说明, …最近 N 条]` —— **头部每轮都在变**，服务端 context cache 无法命中（Anthropic 把计划外置正是为了防这个；Manus 实测缓存命中与未命中输入价差 **10×**） |
 | 产物只有 4 种（知识地图/路线/抽背卡/笔记），且**大多整条重生成**（路线已有增量修改，地图/笔记还没有） | 工具层 | 用户能"看"的界面少，能"操作"的产物更少 |
 | 工具集里没有"读自己已有产物"的入口（如 `route.get` / `topic.get` 只在界面用） | 工具层 | agent 不知道自己上一轮产出了什么，容易前后重复 |
 
@@ -53,8 +53,67 @@
 
 ## 2. 业界做法（有出处）
 
-> 三路并行调研（架构 / 迭代与质量 / 产物与界面）的结论会合并在这一节。
-> 待补：机制清单、出处 URL、以及"模糊反馈如何变成可执行计划"的公开做法。
+> 三路并行调研（架构 / 迭代与质量 / 产物与界面）的结论汇总。**每条都带出处 URL**；
+> 本机网络对部分站点（openai.com/help.openai.com、support.google.com、perplexity help-center、
+> gamma）取不到正文，这些条目已在该路报告里标注为"经检索缓存/二次来源"，不当作可直接引用的原文。
+
+### 2.1 直接指向我们缺口的三条（最重要）
+
+| 做法 | 关键细节（出处） | 对我们的意义 |
+|---|---|---|
+| **计划必须外置存储** | Anthropic 多智能体研究系统：Lead agent 把计划**存到 Memory**，理由是"上下文超 20 万 token 会被截断，必须保住计划"；子 agent"评估质量、识别缺口、精炼下一条 query"（<https://www.anthropic.com/engineering/multi-agent-research-system>） | 我们已经在**截断历史**（`max_history_chars=12000`）却没有任何外置计划 —— 这正是"第 2 轮失去方向"的机制性原因，也是 A1 的直接依据 |
+| **模糊反馈先结构化，再生成查询** | 成熟系统不把"继续搜索"直接当指令重发检索：① 用固定 rubric 落到具体维度（DeepResearch Bench 的 Comp/Depth/Instr/Read 四维，<https://arxiv.org/abs/2506.11763>）；② 找缺口（Anthropic 子 agent 的 gap 识别；STORM 的多视角问题清单，组织性 +25%、覆盖度 +10%，<https://arxiv.org/abs/2402.14207>）；③ 缺口转查询（Self-RAG 的 reflection token 判"是否需再检索/是否被支持"，<https://arxiv.org/abs/2310.11511>；ICR 的"澄清↔重写"迭代，<https://arxiv.org/abs/2509.05100>；GuideCQR 用**上一轮命中文档**精炼查询，<https://arxiv.org/abs/2407.12363>）；④ Reflexion 把失败写进情景记忆，跨轮改进（<https://arxiv.org/abs/2303.11366>） | 这就是"不满意 → 可执行计划"的公开范式；对应我们的 A2/A3/A5，且 STORM 的"多视角问题清单"是最便宜的覆盖度提升手段 |
+| **成本敏感要按"先规划后批量执行"而非交错** | ReWOO：把推理与工具观测解耦（Planner/Worker/Solver），比 ReAct 在 HotpotQA 上 **5× token 效率 + 4% 准确率**，六个基准平均省 64% token（<https://arxiv.org/abs/2305.18323>）；Manus 上下文工程：KV-cache 命中是生产 agent 最重要指标，**缓存输入 $0.30/MTok vs 未缓存 $3.00/MTok（10×）**，做法是"前缀稳定 + append-only + 确定性序列化 + 显式缓存断点"，并用 todo.md **反复复述目标**把计划推入近期注意力（<https://manus.im/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus>） | 两条都可直接落地：A6（稳定前缀拿缓存折扣，省钱）与 A1（用台账复述目标，替代重发历史） |
+
+### 2.2 架构侧可借鉴的机制
+
+| 机制 | 关键细节 | 出处 |
+|---|---|---|
+| 澄清式开局 + 执行侧栏 | 开跑前先问澄清问题；执行中展示思维链摘要/检索词/访问站点供中途校正 | <https://openai.com/index/introducing-deep-research/>（本机 403，行为经 <https://www.deeplearning.ai/the-batch/issue-288> 佐证） |
+| 计划 → 批准 → 执行 | 先出"多步研究计划"供用户修改/批准，批准后才深挖 | <https://blog.google/products/gemini/google-gemini-deep-research/> |
+| 树状广度/深度 + 并发 | 每层生成多个子查询（breadth 默认 4），递归下钻（depth 默认 2），并发 4；约 5 分钟 / 约 $0.4 一次 | <https://docs.gptr.dev/docs/gpt-researcher/gptr/deep_research> |
+| Planner / 执行 / Publisher 分工 + 来源追踪 | planner 出研究问题集合，逐问抓取、每来源摘要并追踪，最后过滤聚合 | <https://github.com/assafelovic/gpt-researcher> |
+| 视角引导提问 + 模拟对话 | 先调研同类主题发现多种视角，再让不同"视角"向领域专家提问追问（直接让模型提问效果差） | <https://arxiv.org/abs/2402.14207> |
+| 两阶段写作 | pre-writing（检索 + 层级大纲）→ writing（按大纲填带引用正文） | <https://github.com/stanford-oval/storm> |
+| 人在环话语协议 + 动态思维导图 | Co-STORM：LLM 专家/主持人/人类轮流发言，用户可注入话语改焦点；mind map 组织已收集信息 | <https://arxiv.org/abs/2408.15232> |
+| 自主选引擎 + 本地知识复利 | LDR：LLM 自决搜什么、用哪个专业引擎（arXiv/PubMed/S2）并按发现切换；研究→下载→入本地库→索引→下轮同时查本地与网络 | <https://github.com/LearningCircuit/local-deep-research> |
+| 反 prompt-injection | 不允许多步研究 agent 导航到/构造任意 URL（防把敏感信息塞进 URL 外泄） | <https://cdn.openai.com/deep-research-system-card.pdf> |
+| 检索循环原语 | ReAct（<https://arxiv.org/abs/2210.03629>）、IRCoT（<https://arxiv.org/abs/2212.10509>）、Self-RAG（<https://arxiv.org/abs/2310.11511>）、Least-to-Most（<https://arxiv.org/abs/2205.10625>）；agentic RAG 设计模式综述（<https://arxiv.org/abs/2501.09136>） | 同左 |
+
+### 2.3 质量与度量侧
+
+- **自评要防偏差**：LLM-as-judge 有位置/冗长/自我增强偏差，GPT-4 一致性 >60% 而 Claude-v1 仅 23.8%（<https://arxiv.org/abs/2306.05685>）；15 评委 / 22 任务 / 15 万次评测的系统测量显示位置偏差非随机（<https://arxiv.org/abs/2406.07791>）。
+  → 我们有 `support_checks` 这类模型判定，**必须换位复评或对照参考**，否则"分数变好"可能是偏差。
+- **RACE 的消融最有价值的一条**：去掉"对照高质量参考报告"掉分最多；RACE(Full) 与人评一致性 72.56% vs vanilla 60.46%（<https://arxiv.org/abs/2506.11763>）。
+- **FACT 的检索侧指标**：有效引用数 E.Cit. 与引用准确率 C.Acc.（Gemini-2.5-Pro DR 平均 111.21 条有效引用；Perplexity 引用准确率最高 90.24%）→ 可当作我们"第 2 轮是否更有用"的量化口径。
+- **GAIA**：466 题需推理/浏览/工具，人类 92% vs GPT-4+插件 15%（<https://arxiv.org/abs/2311.12983>）→ 说明多步工具任务本身就是当前最大短板，值得单独做回归集。
+
+### 2.4 产物与界面侧（逐个产品）
+
+| 产物/界面 | 交互要点 | 出处 |
+|---|---|---|
+| 版本化产物面板 | 独立窗口 + 版本选择器 + 就地编辑 + diff + 只读分享 | <https://support.claude.com/en/articles/9487310-what-are-artifacts-and-how-do-i-use-them> |
+| 并列画布、只改选中段 | 选中→内联建议；改写（缩短/拉长/调难度）；后退恢复历史 | <https://openai.com/index/introducing-canvas/> |
+| 概念图/思维导图（Studio 面板） | 生成分支图、缩放折叠、点节点继续提问 | <https://support.google.com/gemininotebook/answer/16212283> |
+| 无限画布 | 卡片（可嵌笔记/图片/PDF）自由编排并持久化 | <https://obsidian.md/canvas> |
+| 行内引用 + 悬停预览 + 跳回出处 | 编号引用、悬停出原文引文、点击跳转高亮 | <https://support.google.com/notebooklm/answer/16179559> |
+| 卡片/测验双形态 | 设难度/题量；Got it / Missed it 记进度与断点续练；只练错过的；Explain 带引用；导出 CSV | <https://support.google.com/notebooklm/answer/16958963> |
+| 证据抽取表（living review） | 自定义抽取列 → 全量跑；点单元格看原文；改列重跑；导出 CSV | <https://support.elicit.com/en/articles/14759154-systematic-reviews-in-elicit> |
+| 可溯源报告 + PRISMA 流程 | 每条主张附来源句；导出带流程图与检索策略 | <https://elicit.com/blog/systematic-review-for-prisma-2020> |
+| 研究计划 + 实时进度 + 活动史 | 开跑前审阅计划；运行中滚动计划；可打断改焦点；完成后报告含目录/来源/活动史 | <https://help.openai.com/en/articles/10500283-deep-research-in-chatgpt> |
+| 可编辑计划文档 + 确认门 | 生成 Markdown 计划可直接改；点 Confirm 才开跑 | <https://manus.im/blog/manus-plan-mode> |
+| 步骤状态清单 | todo/doing/done/failed 渲染；新增步骤实时插入 | <https://open.manus.ai/docs/v2/task.listMessages> |
+| 研究看板 | 卡片+优先级+列，可就对话增删列、改卡，导出网页 | <https://manus.im/playbook/kanban-board-generator> |
+| 项目工作区 | 每 Space 设自定义指令与文件；多 Thread 归入；可分享 | <https://www.perplexity.ai/help-center/en/articles/10352961-spaces> |
+| 报告 + 多格式导出 | Research 产报告；导出 PDF/docx/HTML/PPTX…（PPTX 我们缺依赖） | <https://www.perplexity.ai/help-center/en/articles/10738684-what-is-research-mode> |
+| 交互式路线图 + 进度打勾 | 点节点展开资源；记录进度；生成可分享进度页 | <https://roadmap.sh/about> |
+| SM-2 复习调度 | 质量分 0–5 更新 EF；间隔 I(1)=1、I(2)=6、I(n)=I(n-1)·EF；EF 下限 1.3 | <https://super-memory.com/english/ol/sm2.htm> |
+| PDF 阅读器注释 → 笔记回链 | 高亮/区域标注 → 一键成子笔记带引用与回链；"Show on Page" | <https://www.zotero.org/support/pdf_reader> |
+| 单文件自包含 HTML | 脚本/样式/图片以 data: URI 内联 | <https://pandoc.org/MANUAL.html>（**我们已实现**，见 `state/export_html.py`） |
+| 静态站点导出 | 整包渲染成多页站点 | <https://quarto.org/docs/websites/index.html> |
+| 多形态文案（演示/文档/网页/社交） | 同一内容一键变换形态并套模板 | <https://help.gamma.app/en/articles/8028093-how-do-i-create-a-new-presentation-document-or-webpage-in-gamma> |
+| 里程碑时间线 | 时间轴排条目，点击展开说明 | <https://deepmind.google/science/alphafold/>（展示范式，非产品文档） |
+| 后台运行 / 断点续跑 | 进行中/等待输入/已完成状态；完成后通知；活动史回看 | <https://open.manus.ai/docs/v2/task-lifecycle> |
 
 ---
 
@@ -72,6 +131,8 @@
 | **A3** | **查询去重闸门**：`research.search` 在工具层拒掉"与本次会话已搜过的查询高度相似"的请求，并**回一句提示**（"这个已搜过，换角度或换来源"） | 原地打转 | 零模型成本（本地判重） | 用现有 3 个多轮会话回放：重复查询应被拦下并改写 |
 | **A4** | **产物读回工具**：给模型 `route.get` / `topic.get` / `note.list` 的读取能力（只读、无成本） | agent 不知道自己产出过什么 | 工具声明 +约 300 字符/次调用（可只在该会话已有产物时挂上） | 第 2 轮说"在上一版路线上继续"，模型应先读再改 |
 | **A5** | **把"不满意"结构化**：界面上把自由文本换成可点选维度（缺深度 / 缺来源 / 缺对比 / 想换角度 / 想动手做），点选后拼成一句结构化指令 | 反馈不可执行 | 纯前端 + 提示词模板 | 点不同维度后，第 2 轮的工具构成应不同（现在三轮几乎一样） |
+| **A6** | **前缀稳定换缓存折扣**（**已确认我们现在是反着做的**）：`_trim_history` 在**头部**插入"省略说明"，前缀每轮都变 → 缓存必然不命中。改成：省略说明追加到**末尾**；`system` 与最初用户消息位置保持不动；配 A1（外置台账）后可裁得更狠而不丢方向。Manus 实测：缓存输入 $0.30/MTok vs 未缓存 $3.00/MTok（**10×**） | 成本 + 上下文被裁 | 零模型成本（只是挪位置） | 同题连问两轮，看服务端返回的 cached tokens 是否 > 0（或账单里 cache 命中的输入占比） |
+| **A7** | **显式停止条件**：frontier 为空 / 连续 N 轮无新来源 / 达预算上限 → 停，并**如实告知"这轮没有再新增证据"**（Self-RAG 式"要不要再检索"的判定） | 无界重复烧钱 | 纯本地判定 + 提示词一行 | 「新调研」那类会话应停在"无新增"并说明，而不是继续搜 |
 
 ### B 档（中期）
 
@@ -93,14 +154,38 @@
 | **C2** | 本地全文检索/向量检索（把已抓全文做索引，支持"在我已收集的资料里检索"） | 需要嵌入模型或本地索引（新依赖/新模型），与"正文不入库"的既有决议冲突，需重新拍板 |
 | **C3** | 报表级导出（PDF/docx/静态站点） | docx 已有脚本可复用；PDF 需要额外依赖或走打印路径 |
 
+### 明确"不建议做"（都有依据，写下来免得反复讨论）
+
+| 不建议 | 依据 |
+|---|---|
+| **多智能体编排**（检索员/分析员/审稿员并行） | Anthropic 自述多智能体 **token 约 10–15×**（<https://www.anthropic.com/engineering/multi-agent-research-system>）；我们成本敏感 + 单机 + 已有 4 依赖边界，收益不足以抵消 |
+| **本地向量库/嵌入**（做"在我已收集资料里检索"） | 与既有决议"**正文不入库**"直接冲突（`docs/02`、`docs/00` 决议 5/9），需要先重新拍板；现在有 `summaries_fts` 全文检索 + 来源摘要可顶一部分 |
+| **思维导图 / 无限画布** | 需要手写布局算法（无构建、禁外部图库），代价大；而现有「知识地图」已覆盖"先看全局再钻细节"的大半价值（NotebookLM/Obsidian 出处见 §2.4） |
+| **音频概览（双人播客）** | 需要 TTS；四个运行期依赖里没有离线语音方案，联网 TTS 又要密钥与费用 |
+| **OpenAI 式"广度/深度树"全量并发**（breadth=4/depth=2 默认） | 单机 + 成本敏感：官方默认一次约 $0.4/5 分钟（GPT-Researcher 文档），我们按 token 计费扛不住；**只取"子查询展开"的思想，不做递归并发** |
+
 ---
 
-## 4. 建议顺序
+## 4. 建议顺序（并请你挑）
 
-1. **先做 A1 + A2 + A3**（"让第 2 轮真的有新信息"）—— 这是痛点正中心，且几乎零成本；
-2. **再做 A5 + A4**（用户能结构化表达不满 + agent 能读回产物）—— 让交互不再只有"继续搜索"；
-3. **然后 B2 / B3 / B7**（新产物 + 新界面，直接回应"生成其他内容和界面"）；
-4. B5 / B6 与 C 档按兴趣排。
+**第一步（直击痛点，几乎零成本，建议直接做）**：**A1 + A2 + A3 + A7**
+- 一句话：让"继续"变成"有目标的下一轮"，而不是同义重搜。
+- 依据：Anthropic 把计划外置（防截断）、子 agent 识别缺口精炼 query；STORM 的多视角问题清单；Self-RAG 的"要不要再检索"。
+- 验证：`scripts/diagnose_turns.py` 同口径复测 —— 目标是把"第 2 轮起新来源数"从 0–1 提到 ≥3，重复查询降到 0。
 
-每条都用 `scripts/diagnose_turns.py` 的**同一口径**复测（重复查询数、每轮新增来源数），
-避免"感觉变好了"。
+**第二步（让交互不再只有"继续搜索"，成本也降）**：**A5 + A6 + A4 + B9**
+- A5 点选式不满意 + B9 计划文档与确认门 = 你能在开跑前改方向；
+- A6 稳定前缀拿缓存折扣（对成本敏感的你，这条可能是最实惠的一条）；
+- A4 让 agent 能读回自己上一轮的产物。
+
+**第三步（你要的"新内容 + 新界面"）**：**B2 证据表 + B7 研究看板 + B4 时间线**
+- 三条都是"把已有库里的东西换个可见形态"，不需要新依赖；
+- B2 每格可点回原文（NotebookLM/Elicit 式），我们已经有 `support_checks` 可复用。
+
+**第四步（按兴趣）**：B3 对比矩阵、B5 产物迭代扩展到地图/笔记、B6 SM-2 复习排期、
+B8 行内引用悬停、B10 工作区分组；C 档与"不建议"清单里的项目**按上面依据先不做**。
+
+**论文角度（顺带）**：A1/A2（外置计划 + 缺口驱动）与第二步的 rubric 化反馈，
+可以写进第 3 章（设计）与第 5 章（改进后同口径复测），
+并引入 §2.3 的 RACE 四维 / FACT 的 E.Cit.·C.Acc. 作为更贴近研究型任务的指标 ——
+这比"覆盖率 100%"更能说明系统真的在变好。
