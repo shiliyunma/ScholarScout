@@ -55,7 +55,7 @@ def test_first_user_message_stays_at_the_head() -> None:
 def test_prefix_is_stable_when_history_grows() -> None:
     """模拟"下一轮"：历史只增不改，前缀必须逐字节相同（缓存才能命中）。"""
     turn_n = _history(6)
-    turn_n1 = _history(6) + [_msg("assistant", "再答一轮。" + "答" * 200), _msg("user", "再追问")]
+    turn_n1 = [*turn_n, _msg("assistant", "再答一轮。" + "答" * 200), _msg("user", "再追问")]
     fitted_n = _fit_history(turn_n, budget_chars=1200)
     fitted_n1 = _fit_history(turn_n1, budget_chars=1200)
     common = 0

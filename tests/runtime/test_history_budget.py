@@ -36,7 +36,10 @@ def test_long_history_keeps_head_and_tail() -> None:
     trimmed = _fit_history([first, *middle, last], 3000)
 
     assert trimmed[0] is first, "最初的需求必须留下"
-    assert trimmed[-1] is last, "最近的对话必须留下"
+    # 最近一轮对话必须留下（末尾现在多一条"中间已省略"的 system 说明，见 A6）
+    assert last in trimmed, "最近的对话必须留下"
+    assert trimmed[-2] is last, "说明追加在最后，最近一轮对话应紧挨着它"
+    assert trimmed[-1]["role"] == "system" and "已省略" in str(trimmed[-1]["content"])
     assert len(trimmed) < len([first, *middle, last])
 
 

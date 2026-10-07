@@ -189,7 +189,9 @@ def test_session_usage_sums_only_this_session(ctx: AppContext) -> None:
     )
     usage = dispatch(ctx, "session.usage", {"session_id": "ses_a"})
     assert usage["calls"] == 3
-    assert usage["tokens"] == {"prompt": 1800, "completion": 350}
+    assert usage["tokens"] == {"prompt": 1800, "completion": 350, "cached": 0}
+    # 服务端没报过缓存字段 → 命中率必须是 None（把"没报"算成 0% 会误导）
+    assert usage["cache_hit_rate"] is None
     # 按用途拆开：摘要用的是另一档模型，混在一起看不清钱花在哪
     by_purpose = {row["purpose"]: row for row in usage["by_purpose"]}
     assert by_purpose["chat"]["calls"] == 2
@@ -232,5 +234,6 @@ def test_session_usage_on_empty_session_is_zero_not_an_error(ctx: AppContext) ->
     session_id = _session(ctx)
     usage = dispatch(ctx, "session.usage", {"session_id": session_id})
     assert usage["calls"] == 0
-    assert usage["tokens"] == {"prompt": 0, "completion": 0}
+    assert usage["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+    assert usage["cache_hit_rate"] is None
     assert usage["est_cost"] is None
