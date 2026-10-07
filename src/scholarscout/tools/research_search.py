@@ -171,11 +171,10 @@ def research_search(
     # 拦下来比让它搜完更省 —— 一次检索的钱是花了的，重复的结果对结论毫无贡献。
     from scholarscout.runtime import research_state
 
+    # 只**读**台账做判重，**不写** —— 写者只有一个（runtime/loop.py）。
+    # 两个写者会丢更新：工具写进去的查询，会被循环在轮末用自己那份内存状态整表覆盖
+    # （真机抓到：第 2 轮照样重复搜了两条，因为第 1 轮的查询记录被覆盖没了）。
     state = research_state.load_state(ctx.db, ctx.session_id) if ctx.session_id else None
-    if state is None and ctx.session_id:
-        # 工具不能假设"台账已经存在"：循环会先建，但工具也可能被直接调用
-        # （评测脚本、单测、或者循环建台账那一步失败过）。缺了就现建一张。
-        state = research_state.empty_state()
     if state is not None:
         repeated = research_state.find_repeat(state, query)
         if repeated:
@@ -254,12 +253,6 @@ def research_search(
             "data": {"items": [], "provider_status": status, "query": query},
             "refs": {"source_ids": []},
         }
-
-    # 搜成功才记账：这条查询进台账，下轮"换词重搜"会被判重拦下（A3）。
-    # 失败的不记 —— 否则一次网络抖动就把某个方向永久锁死了。
-    if state is not None and ctx.session_id:
-        research_state.record_query(state, query)
-        research_state.save_state(ctx.db, ctx.session_id, state)
 
     return {
         "ok": True,

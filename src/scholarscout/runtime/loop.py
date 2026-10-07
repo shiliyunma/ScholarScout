@@ -307,7 +307,7 @@ def run_turn(
                 break
 
             for call in reply.tool_calls:
-                result_text, tool_refs, canonical = _execute_tool(
+                result_text, tool_refs, canonical, tool_ok = _execute_tool(
                     ctx,
                     session_id,
                     turn_id,
@@ -325,6 +325,12 @@ def run_turn(
                         state["empty_rounds"] = 0
                     else:
                         state["empty_rounds"] = int(state.get("empty_rounds") or 0) + 1
+                    # 记账（A3 判重的唯一数据源）：**搜成功才记**，失败不记 ——
+                    # 否则一次网络抖动就把这个方向永久锁死。写者只有循环这一个。
+                    query = _query_from_arguments(call.arguments)
+                    if tool_ok and query:
+                        research_state.record_query(state, query)
+                    research_state.save_state(ctx.db, session_id, state)
                 executed.append(canonical)
                 messages.append(
                     {
@@ -418,6 +424,17 @@ def _accumulate_usage(total: dict[str, int], reply: ChatReply) -> None:
         total[key] = total.get(key, 0) + int(value)
 
 
+def _query_from_arguments(arguments: str) -> str:
+    """从工具调用的实参里取 query（取不到回空串 —— 记账只认确定的东西）。"""
+    try:
+        payload = json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("query") or "").strip()
+
+
 def _execute_tool(
     ctx: TurnContext,
     session_id: str,
@@ -427,8 +444,11 @@ def _execute_tool(
     emit: Emitter | None,
     *,
     seen_source_ids: set[str] | None = None,
-) -> tuple[str, dict[str, Any], str]:
-    """执行一次工具调用，返回（喂回模型的文本, 该工具报出的 refs, 规范工具名）。
+) -> tuple[str, dict[str, Any], str, bool]:
+    """执行一次工具调用，返回（喂回模型的文本, 该工具报出的 refs, 规范工具名, 是否成功）。
+
+    `ok` 单独带出来是给 A3 记账用的：工具**可以不抛异常而回"我失败了"**（例如所有检索来源都挂了），
+    那种情况不该把查询记进台账（否则一次网络抖动就把这个方向永久锁死）。
 
     失败也要如实回话并记 trace；规范名用于事件、轨迹与对外结果（线上名只在 API 报文里用）。
     """
@@ -465,7 +485,7 @@ def _execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return message, {}, canonical
+        return message, {}, canonical, False
 
     import time
 
@@ -504,6 +524,9 @@ def _execute_tool(
             context_budget.project_tool_result(result, seen_source_ids=seen_source_ids),
             (refs if isinstance(refs, dict) else {}),
             canonical,
+            # 工具可以不抛异常而回"我失败了"（例如所有检索来源都挂了）——
+            # 判重记账必须按这个 ok 走，否则一次网络抖动就把某个方向永久锁死
+            bool(result.get("ok", True)) if isinstance(result, dict) else True,
         )
     except Exception as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -523,7 +546,7 @@ def _execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return f"工具 {call.name} 执行失败：{exc}", {}, canonical
+        return f"工具 {call.name} 执行失败：{exc}", {}, canonical, False
 
 
 def mark_system_prompt(

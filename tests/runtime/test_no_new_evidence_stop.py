@@ -130,3 +130,43 @@ def test_ledger_note_is_injected_at_the_end_of_the_messages(ctx: AppContext) -> 
     assert sent[-1]["role"] == "system"
     # 前缀仍然是 [system, 用户消息]，与上一轮逐字节相同
     assert sent[1]["role"] == "user" and sent[1]["content"] == "调研 LLM Wiki"
+
+
+def test_loop_records_the_query_and_next_turn_rejects_the_repeat(
+    ctx: AppContext, monkeypatch
+) -> None:
+    """端到端：循环记下第 1 轮的查询 → 第 2 轮换词重搜被工具拒绝。
+
+    这条钉的是"单一写者"这个修复：原来工具也写台账，结果循环在轮末用它自己那份
+    （不含工具的更新）整表覆盖 → 第 1 轮的查询记录被抹掉 → 第 2 轮照样重复搜
+    （真机两轮验证抓到过）。
+    """
+    from scholarscout.rpc.methods import AppContext as _AppContext  # noqa: F401
+    from scholarscout.runtime.registry import ToolSpec
+
+    registry.register(
+        ToolSpec(
+            name="research.search",
+            description="假检索",
+            parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            handler=lambda ctx, query="": {
+                "ok": True,
+                "data": {"items": []},
+                "refs": {"source_ids": ["src_a"]},
+            },
+            toolset="research",
+        ),
+        replace=True,
+    )
+    session_id = _session(ctx)
+    ctx.llm = StubLlm(
+        reply("", tool_calls=[tool_call("research.search", '{"query": "GraphRAG 的社区摘要"}')]),
+        reply("第一轮结论"),
+    )
+    loop.run_turn(ctx.turn_context(), session_id=session_id, text="调研 GraphRAG")
+
+    state = rs.load_state(ctx.db, session_id)
+    assert state is not None
+    assert state["used_queries"] == ["GraphRAG 的社区摘要"], "循环必须把这条查询记进台账"
+    # 下轮换词重搜：判重闸门直接命中（判据与产品代码同一实现）
+    assert rs.find_repeat(state, "GraphRAG 社区摘要 是什么") == "GraphRAG 的社区摘要"
