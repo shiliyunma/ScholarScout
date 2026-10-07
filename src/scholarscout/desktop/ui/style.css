@@ -1536,3 +1536,56 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   -webkit-user-select: none;
   user-select: none;
 }
+
+
+/* 无边框窗口的三条隐形抓手：右边缘 / 下边缘 / 右下角（自己实现缩放，见 app.js） */
+.frameless-grip {
+  display: none;
+  position: fixed;
+  z-index: 45;
+}
+.frameless .frameless-grip {
+  display: block;
+}
+.frameless .grip-right {
+  top: 34px;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+}
+.frameless .grip-bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 8px;
+}
+.frameless .grip-corner {
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+}
+
+
+/* ------------------------- 用户反馈②：资料库列表行（内嵌「⋯」+ 宽度自适应） */
+
+#source-list li.source-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#source-list .row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#source-list .row-meta {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+#source-list .detail-actions {
+  flex: 0 0 auto;
+  margin: 0;
+}

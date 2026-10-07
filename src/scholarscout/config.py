@@ -136,18 +136,20 @@ class Generation:
 class UiSettings:
     """桌面外壳的外观。**只影响窗口本身，不碰任何数据。**
 
-    `frameless_window`：去掉原生标题行（第一行那个"ScholarScout —— 开放世界学术调研与学习辅助"），
-    改成自绘的窗控条 + 右下角拉伸把手。之所以留这个开关并默认开：无边框窗口在 Windows 上
-    拖动/缩放的行为由 pywebview 的后端决定，万一哪台机器上拖不动，把这里改成 false
-    就立刻回到普通窗口，**不会把人锁在一个动不了的窗口里**。
+    `frameless_window`：去掉原生标题行，改成自绘窗控条 + 右下角抓手。
+
+    **默认关，这是踩过之后的决定**：pywebview 在 Windows 上的无边框窗口既不响应标题区拖动，
+    也没有系统边框可拖（实测：拖动位移 0、右缘缩放无效）。后来自己用 JS 打桥实现移动/缩放，
+    在本机 WebView2 里也没能跑通。所以对外默认用普通窗口 —— 能移动、能缩放、能边缘拉伸，
+    代价是多一行标题栏。要试无边框就把这里改成 true（自绘窗控条与抓手的代码都还在）。
     """
 
-    frameless_window: bool = True
+    frameless_window: bool = False
 
     @classmethod
     def from_raw(cls, section: object) -> UiSettings:
         data = section if isinstance(section, dict) else {}
-        return cls(frameless_window=bool(data.get("frameless_window", True)))
+        return cls(frameless_window=bool(data.get("frameless_window", False)))
 
 
 @dataclass(frozen=True)

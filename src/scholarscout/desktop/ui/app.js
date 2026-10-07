@@ -50,6 +50,9 @@ function cycleTheme() {
 
 /* ------------------------------------------------------------------ 通道 */
 
+/* 前端版本标记：只用来确认真机跑的是哪一版（WebView2 会缓存 app.js） */
+var APP_JS_REV = "ux-batch2-r2";
+
 var scout = {
   async call(method, params) {
     const raw = await window.pywebview.api.rpc(method, params ? JSON.stringify(params) : "");
@@ -75,6 +78,82 @@ async function bridgeCall(name) {
   return payload.result;
 }
 
+/* 无边框窗口的移动与缩放：pywebview 的无边框后端不给这两个能力（实测拖动无效、
+   也没有系统边框可拖），所以自己实现。所有尺寸/位置都在后端夹一次，前端不重复规则。 */
+
+function wireFramelessDrag() {
+  const throttleMs = 40;
+
+  // 通用拖动：按下 → 取基准几何 → 按屏幕坐标增量算 → 打桥
+  function startDrag(event, onMove) {
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (target && target.closest && target.closest("button, a, input, select, textarea")) {
+      return; // 按钮/输入框照常点，别被拖动吃掉
+    }
+    event.preventDefault();
+    // 基准直接问浏览器要（screenX/screenY 是窗口在屏幕上的位置，innerWidth/Height 是无边框下的整窗尺寸）。
+    // 一开始走桥问 win_geometry，结果拖动毫无反应 —— 桥那侧是好的（用排障通道单独调 win_move 能把窗口
+    // 精确移到指定坐标），问题就出在这一步，索性不绕桥。
+    const anchor = { x: event.screenX, y: event.screenY };
+    const geo = {
+      x: window.screenX,
+      y: window.screenY,
+      width: window.innerWidth,
+      height: window.innerHeight,
+    };
+    let last = 0;
+    const move = function (moveEvent) {
+      const now = Date.now();
+      if (now - last < throttleMs) return;
+      last = now;
+      onMove(geo, {
+        dx: moveEvent.screenX - anchor.x,
+        dy: moveEvent.screenY - anchor.y,
+      });
+    };
+    const stop = function () {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", stop);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", stop);
+  }
+
+  const bar = document.querySelector(".topbar");
+  if (bar) {
+    bar.addEventListener("mousedown", function (event) {
+      startDrag(event, function (geo, delta) {
+        bridgeCall("win_move", String(geo.x + delta.dx), String(geo.y + delta.dy)).catch(
+          function () {},
+        );
+      });
+    });
+  }
+
+  // 三条隐形抓手：右边缘 / 下边缘 / 右下角
+  const edges = [
+    { cls: "grip-right", cursor: "ew-resize", mode: "w" },
+    { cls: "grip-bottom", cursor: "ns-resize", mode: "h" },
+    { cls: "grip-corner", cursor: "nwse-resize", mode: "wh" },
+  ];
+  edges.forEach(function (spec) {
+    const node = document.createElement("div");
+    node.className = "frameless-grip " + spec.cls;
+    node.style.cursor = spec.cursor;
+    node.addEventListener("mousedown", function (event) {
+      startDrag(event, function (geo, delta) {
+        const width = spec.mode.indexOf("w") >= 0 ? geo.width + delta.dx : geo.width;
+        const height = spec.mode.indexOf("h") >= 0 ? geo.height + delta.dy : geo.height;
+        bridgeCall("win_resize", String(width), String(height)).catch(function () {});
+      });
+    });
+    // 挂到 documentElement 而不是 body：这段接线可能在 <body> 就绪之前跑
+    // （踩过：class 加上了、抓手一个都没建 —— 因为那时 document.body 还是 null）
+    document.documentElement.appendChild(node);
+  });
+}
+
 async function wireWindowControls() {
   // 有原生标题行时不该出现自绘窗控：问桥要窗口模式，别猜、也别依赖启动时机。
   let mode = { frameless: false };
@@ -85,6 +164,7 @@ async function wireWindowControls() {
   }
   if (!mode.frameless) return;
   document.documentElement.classList.add("frameless");
+  wireFramelessDrag();
   const report = function (label) {
     return function (error) {
       el("status").textContent = label + "失败：" + error.message;
@@ -656,14 +736,24 @@ async function loadSources(query) {
   }
   items.forEach(function (item) {
     const li = document.createElement("li");
-    li.innerHTML =
-      esc(short(item.title, 22)) +
-      '<span class="meta">' +
-      esc(item.domain || "") +
+    li.className = "source-row";
+    // 标题不再按字符数截断（原来 short(title, 22) 会把长标题砍一半），
+    // 改成占满剩余宽度、窄了才由 CSS 省略 —— 面板变宽它就跟着变宽。
+    const title = document.createElement("span");
+    title.className = "row-title";
+    title.textContent = item.title || "(无标题)";
+    title.title = item.title || "";
+    li.appendChild(title);
+    const meta = document.createElement("span");
+    meta.className = "meta row-meta";
+    meta.textContent =
+      (item.domain || "") +
       "｜tier " +
-      esc(item.tier === null || item.tier === undefined ? "未判权" : item.tier) +
-      (payload.search_path ? "｜" + payload.search_path : "") +
-      "</span>";
+      (item.tier === null || item.tier === undefined ? "未判权" : item.tier) +
+      (payload.search_path ? "｜" + payload.search_path : "");
+    li.appendChild(meta);
+    // 「⋯」按用户要求跟着条目走（原来放在摘要区右上）：打开文件 / 在文件管理器定位 / 打开源网站
+    li.appendChild(detailActions(item.docId, item));
     li.addEventListener("click", function () {
       showSource(item.docId);
     });
@@ -680,9 +770,7 @@ async function showSource(docId) {
 
   const box = el("source-detail");
   box.innerHTML = "";
-  // 「⋯」放在最前面：它是这一块的工具栏，固定在右上，不随内容滚走
-  // （先清空再插 —— 顺序反了的话 clear 会把它一起抹掉）
-  box.appendChild(detailActions(docId, doc));
+  // 「⋯」按用户要求挪到列表条目那一行去了（跟着条目走，这里不再重复）
   const title = document.createElement("h3");
   title.textContent = first.title_zh || doc.title || "(无标题)";
   box.appendChild(title);
@@ -814,6 +902,13 @@ async function renderRoutes(routeIds) {
       showRoute(routeId);
     });
     list.appendChild(li);
+  }
+  // 用户要求：一个对话只有一份学习路线，直接展示全部内容，不用再点按钮。
+  // 列表留着（将来一份会话里要是有多份仍可切换），但不再把它当入口。
+  list.hidden = true;
+  if (routeIds.length && !state.routeShown) {
+    state.routeShown = routeIds[0];
+    await showRoute(routeIds[0]);
   }
 }
 
@@ -2316,6 +2411,7 @@ function openFloatingMenu(anchorEl, rows) {
   var menu = document.createElement("div");
   menu.className = "row-menu is-floating";
   rows.forEach(function (row) {
+    if (!row) return; // 拿不到 URL 之类的项会传 null，跳过
     var button = document.createElement("button");
     button.type = "button";
     button.textContent = row[0];

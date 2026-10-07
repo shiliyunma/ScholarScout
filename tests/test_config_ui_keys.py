@@ -21,9 +21,9 @@ def test_every_ui_field_is_read_from_yaml(tmp_path) -> None:
         assert getattr(loaded.ui, field.name) is False, f"{field.name} 没被读出来"
 
 
-def test_frameless_defaults_to_on(tmp_path) -> None:
-    """默认开：这是用户明确要的"隐藏最上面那一行"。"""
+def test_frameless_defaults_to_off(tmp_path) -> None:
+    """默认**关**：无边框在 Windows 后端拖动/缩放都不好使，宁多一行标题栏也不能让人动不了窗口。"""
     path = tmp_path / "config.yaml"
     path.write_text("runtime: {}\n", encoding="utf-8")
-    assert UiSettings().frameless_window is True
-    assert load_config(path, load_env=False).ui.frameless_window is True
+    assert UiSettings().frameless_window is False
+    assert load_config(path, load_env=False).ui.frameless_window is False
