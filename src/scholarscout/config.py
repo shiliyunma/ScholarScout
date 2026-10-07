@@ -133,6 +133,24 @@ class Generation:
 
 
 @dataclass(frozen=True)
+class UiSettings:
+    """桌面外壳的外观。**只影响窗口本身，不碰任何数据。**
+
+    `frameless_window`：去掉原生标题行（第一行那个"ScholarScout —— 开放世界学术调研与学习辅助"），
+    改成自绘的窗控条 + 右下角拉伸把手。之所以留这个开关并默认开：无边框窗口在 Windows 上
+    拖动/缩放的行为由 pywebview 的后端决定，万一哪台机器上拖不动，把这里改成 false
+    就立刻回到普通窗口，**不会把人锁在一个动不了的窗口里**。
+    """
+
+    frameless_window: bool = True
+
+    @classmethod
+    def from_raw(cls, section: object) -> UiSettings:
+        data = section if isinstance(section, dict) else {}
+        return cls(frameless_window=bool(data.get("frameless_window", True)))
+
+
+@dataclass(frozen=True)
 class Config:
     chat: LlmProfile
     summary: LlmProfile
@@ -147,6 +165,7 @@ class Config:
     )
     fetch_cfg: FetchSettings = field(default_factory=FetchSettings)
     search_cfg: SearchSettings = field(default_factory=SearchSettings)
+    ui: UiSettings = field(default_factory=UiSettings)
 
     def api_key(self, profile: LlmProfile | None = None) -> str | None:
         return (profile or self.chat).api_key()
@@ -209,6 +228,7 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         raw.get("generation", {}) if isinstance(raw.get("generation"), dict) else {}
     )
 
+    ui_cfg = UiSettings.from_raw(raw.get("ui"))
     search_cfg = SearchSettings.from_raw(raw.get("search"))
     fetch_cfg = FetchSettings.from_raw(raw.get("fetch"))
     if search_cfg.robots_exempt_hosts():
@@ -252,4 +272,5 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),
         fetch_cfg=fetch_cfg,
         search_cfg=search_cfg,
+        ui=ui_cfg,
     )

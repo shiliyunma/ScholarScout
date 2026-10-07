@@ -365,9 +365,7 @@ def build_overview(db: Database, *, limit: int = 30) -> dict[str, Any]:
         if state is None and not sources:
             continue
         questions = [
-            item
-            for item in ((state or {}).get("questions") or [])
-            if isinstance(item, dict)
+            item for item in ((state or {}).get("questions") or []) if isinstance(item, dict)
         ]
         covered = sum(1 for item in questions if str(item.get("status")) == "covered")
         counts = {
@@ -404,20 +402,20 @@ def build_overview(db: Database, *, limit: int = 30) -> dict[str, Any]:
     def total(key: str) -> int:
         return sum(int(item[key]) for item in sessions)
 
-    totals = {
+    covered_total = total("covered")
+    questions_total = total("questions")
+    # 覆盖率只在"真的问过子问题"时给，问都没问过时是 None（不是 0）
+    totals: dict[str, Any] = {
         "sessions": len(sessions),
         "sources": total("sources"),
-        "questions": total("questions"),
-        "covered": total("covered"),
+        "questions": questions_total,
+        "covered": covered_total,
         "queries": total("queries"),
         "maps": total("maps"),
         "routes": total("routes"),
         "notes": total("notes"),
         "cards": total("cards"),
         "without_summary": total("without_summary"),
+        "coverage_rate": (round(covered_total / questions_total, 3) if questions_total else None),
     }
-    # 覆盖率只在"真的问过子问题"时给，问都没问过时是 None（不是 0）
-    totals["coverage_rate"] = (
-        round(totals["covered"] / totals["questions"], 3) if totals["questions"] else None
-    )
     return {"sessions": sessions, "totals": totals}

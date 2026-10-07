@@ -1478,3 +1478,61 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .cal-detail-week {
   color: var(--ui-text-primary);
 }
+
+
+/* ------------------------------- 批次二⑤：无边框窗口（frameless）时的自绘窗控与把手 */
+
+/* 这两个只在无边框模式下出现：Python 侧启动时给 <html> 加 .frameless */
+.winbar {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 0.0625rem solid var(--ui-stroke-tertiary);
+}
+.frameless .winbar {
+  display: inline-flex;
+}
+.win-btn {
+  width: 34px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ui-text-secondary);
+  cursor: pointer;
+}
+.win-btn:hover {
+  background: var(--ui-row-hover-background);
+  color: var(--ui-text-primary);
+}
+/* 关闭：悬停才是红的 —— 平时不抢眼，要按的时候不会按错 */
+.win-close:hover {
+  background: #d64545;
+  color: #ffffff;
+}
+
+.resize-grip {
+  display: none;
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  z-index: 40;
+  cursor: nwse-resize;
+}
+.frameless .resize-grip {
+  display: block;
+}
+
+/* 无边框窗口里拖动标题区来搬窗口；文字被反复选中会很烦，索性禁掉选择 */
+.frameless .topbar {
+  -webkit-user-select: none;
+  user-select: none;
+}

@@ -63,6 +63,71 @@ var scout = {
   },
 };
 
+/* ---------------------------------------- ⑤ 无边框窗口：自绘窗控条 + 拉伸把手 */
+
+async function bridgeCall(name) {
+  /* 直接打桥（不走 RPC）：窗控只关乎窗口，后端忙的时候也必须点得动关闭。 */
+  const api = (window.pywebview && window.pywebview.api) || {};
+  if (typeof api[name] !== "function") throw new Error("桥没有这个方法：" + name);
+  const raw = await api[name].apply(api, Array.prototype.slice.call(arguments, 1));
+  const payload = JSON.parse(raw);
+  if (!payload.ok) throw new Error(payload.error.message);
+  return payload.result;
+}
+
+async function wireWindowControls() {
+  // 有原生标题行时不该出现自绘窗控：问桥要窗口模式，别猜、也别依赖启动时机。
+  let mode = { frameless: false };
+  try {
+    mode = await bridgeCall("window_mode");
+  } catch (error) {
+    return; // 普通窗口：什么都不接管
+  }
+  if (!mode.frameless) return;
+  document.documentElement.classList.add("frameless");
+  const report = function (label) {
+    return function (error) {
+      el("status").textContent = label + "失败：" + error.message;
+    };
+  };
+  el("win-min").addEventListener("click", function () {
+    bridgeCall("win_minimize").catch(report("最小化"));
+  });
+  el("win-max").addEventListener("click", function () {
+    bridgeCall("win_toggle_maximize").catch(report("最大化"));
+  });
+  el("win-close").addEventListener("click", function () {
+    bridgeCall("win_close").catch(report("关闭"));
+  });
+
+  // 右下角把手：无边框窗口没有系统边框，缩放得自己来。
+  // 按屏幕绝对坐标算新尺寸，再交给后端夹到最小尺寸（夹的规则只有后端一处）。
+  const grip = el("resize-grip");
+  let start = null;
+  let lastSent = 0;
+  grip.addEventListener("mousedown", function (event) {
+    start = {
+      x: event.screenX,
+      y: event.screenY,
+      w: window.innerWidth,
+      h: window.innerHeight,
+    };
+    event.preventDefault();
+  });
+  window.addEventListener("mousemove", function (event) {
+    if (!start) return;
+    const now = Date.now();
+    if (now - lastSent < 60) return; // 节流：别每移动一像素就打一次桥
+    lastSent = now;
+    const width = Math.round(start.w + (event.screenX - start.x));
+    const height = Math.round(start.h + (event.screenY - start.y));
+    bridgeCall("win_resize", String(width), String(height)).catch(function () {});
+  });
+  window.addEventListener("mouseup", function () {
+    start = null;
+  });
+}
+
 function el(id) {
   return document.getElementById(id);
 }
@@ -3037,6 +3102,7 @@ function wire() {
   el("textmodal").addEventListener("click", function (event) {
     if (event.target === el("textmodal")) closeTextModal();
   });
+  wireWindowControls();
   el("btn-profile").addEventListener("click", function () {
     openProfile().catch(function (error) {
       el("status").textContent = "个人中心打开失败：" + error.message;

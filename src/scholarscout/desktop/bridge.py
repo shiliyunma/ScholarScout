@@ -17,6 +17,9 @@ from typing import Any
 from scholarscout import __version__
 from scholarscout.desktop.rpc_client import RpcCallError, RpcClient
 
+#: 窗口最小尺寸（逻辑像素）。**只有一处定义**：壳用它建窗口，桥用它夹住自绘把手的尺寸。
+MIN_WINDOW_SIZE = (960, 640)
+
 #: 前端接收事件用的全局函数名
 JS_EVENT_FUNCTION = "window.scoutEvent"
 
@@ -37,13 +40,20 @@ class Bridge:
     def __init__(self, client: RpcClient, *, window: Any = None) -> None:
         self._client = client
         self._window = window
+        self._maximized = False
+        self.frameless = False  # attach() 时才确定；默认按"有原生标题行"处理
         self._pending: list[tuple[str, dict[str, Any]]] = []
 
     # ------------------------------------------------------------ 窗口与事件
 
-    def attach(self, window: Any) -> None:
-        """窗口就绪后调用：把之前缓冲的事件冲出去，之后实时推送。"""
+    def attach(self, window: Any, *, frameless: bool | None = None) -> None:
+        """窗口就绪后调用：把之前缓冲的事件冲出去，之后实时推送。
+
+        为什么要显式传 ``frameless``：pywebview 的窗口对象不保留这个参数，
+        界面却要知道"现在是没有原生标题行的模式"才决定显不显示自绘窗控条。
+        """
         self._window = window
+        self.frameless = bool(frameless) if frameless is not None else False
         self.flush_pending()
 
     def flush_pending(self) -> None:
@@ -123,6 +133,79 @@ class Bridge:
         except Exception as exc:
             return error_payload(-32603, f"打开链接失败：{exc}")
         return ok_payload({"opened": target, "handled": bool(opened)})
+
+    # ---------------------------------------------------------------- 窗口控制
+    # 无边框窗口（ui.frameless_window）没有系统按钮，下面四个方法就是它们的替代品。
+    # 为什么放在桥而不是 RPC：这几个动作只关乎窗口本身，跟后端会话/数据无关，
+    # 没必要绕一圈 RPC，也不该因为后端正忙就点不动关闭。
+
+    def window_mode(self) -> str:
+        """窗口模式：界面靠它决定要不要显示自绘窗控条。
+
+        为什么不让 Python 侧在启动时 `evaluate_js` 加个 class：那个时机早于页面加载，
+        加载完成后整个 document 被换掉，class 会丢（踩过一次）。让界面自己问最稳。
+        """
+        return ok_payload(
+            {
+                "frameless": bool(getattr(self, "frameless", False)),
+                "min_width": MIN_WINDOW_SIZE[0],
+                "min_height": MIN_WINDOW_SIZE[1],
+            }
+        )
+
+    def win_minimize(self) -> str:
+        """最小化窗口。"""
+        window = self._window
+        if window is None:
+            return error_payload(-32000, "窗口还没就绪")
+        try:
+            window.minimize()
+        except Exception as exc:
+            return error_payload(-32603, f"最小化失败：{exc}")
+        return ok_payload({"minimized": True})
+
+    def win_toggle_maximize(self) -> str:
+        """最大化 / 还原。自己记状态：不依赖后端是否暴露 ``maximized`` 属性。"""
+        window = self._window
+        if window is None:
+            return error_payload(-32000, "窗口还没就绪")
+        try:
+            if self._maximized:
+                window.restore()
+            else:
+                window.maximize()
+        except Exception as exc:
+            return error_payload(-32603, f"最大化失败：{exc}")
+        self._maximized = not self._maximized
+        return ok_payload({"maximized": self._maximized})
+
+    def win_close(self) -> str:
+        """关闭窗口（走正常销毁流程，几何会被 ``closing`` 事件记下来）。"""
+        window = self._window
+        if window is None:
+            return error_payload(-32000, "窗口还没就绪")
+        try:
+            window.destroy()
+        except Exception as exc:
+            return error_payload(-32603, f"关闭失败：{exc}")
+        return ok_payload({"closed": True})
+
+    def win_resize(self, width: str = "0", height: str = "0") -> str:
+        """右下角自绘把手用。
+
+        尺寸在**这里**统一夹到最小尺寸 —— 前端传什么都不会把窗口拖成一条缝，
+        这条规则只有一处，前端就不必重复一遍。
+        """
+        window = self._window
+        if window is None:
+            return error_payload(-32000, "窗口还没就绪")
+        try:
+            target_w = max(MIN_WINDOW_SIZE[0], int(float(width or 0)))
+            target_h = max(MIN_WINDOW_SIZE[1], int(float(height or 0)))
+            window.resize(target_w, target_h)
+        except Exception as exc:
+            return error_payload(-32603, f"调整窗口大小失败：{exc}")
+        return ok_payload({"width": target_w, "height": target_h})
 
     def shutdown(self) -> str:
         """关闭后端进程（关窗口时由壳自己调，JS 也可主动调）。"""

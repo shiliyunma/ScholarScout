@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from scholarscout import paths
+from scholarscout.config import UiSettings
 from scholarscout.desktop import window_state
-from scholarscout.desktop.bridge import Bridge
+from scholarscout.desktop.bridge import MIN_WINDOW_SIZE, Bridge
 from scholarscout.desktop.icon import apply_window_icon, set_app_user_model_id
 from scholarscout.desktop.rpc_client import RpcClient, default_command
 
@@ -27,7 +28,7 @@ UI_DIR = Path(__file__).resolve().parent / "ui"
 #: 窗口/任务栏图标（跟 exe 图标同一份，见 scripts/make_icon.py）；缺了也不影响启动
 ICON_PATH = Path(__file__).resolve().parents[3] / "assets" / "icon.ico"
 WINDOW_TITLE = "ScholarScout —— 开放世界学术调研与学习辅助"
-MIN_SIZE = (960, 640)
+MIN_SIZE = MIN_WINDOW_SIZE  # 只有一处定义，见 bridge.py
 
 
 def window_icon() -> str | None:
@@ -146,6 +147,15 @@ def launch(
     client.start()
 
     # 上次的窗口几何（大小/位置/是否最大化）。没有记录就用默认值。
+    # 外观开关（⑤）：配置坏了不该让窗口打不开 —— 退回普通窗口。
+    ui_cfg = UiSettings()
+    try:
+        from scholarscout.config import load_config as _load_config
+
+        ui_cfg = _load_config().ui
+    except Exception:
+        pass
+
     geometry = window_state.load(paths.run_dir(), screens=_screen_rects())
     window = webview.create_window(
         WINDOW_TITLE,
@@ -157,8 +167,10 @@ def launch(
         y=geometry.get("y"),
         min_size=MIN_SIZE,
         maximized=bool(geometry.get("maximized", False)),
+        # ⑤ 无边框：原生标题行整条去掉，改用界面里自绘的窗控条
+        frameless=bool(ui_cfg.frameless_window),
     )
-    bridge.attach(window)
+    bridge.attach(window, frameless=bool(ui_cfg.frameless_window))
     # 关闭前把几何记下来；`closing` 在销毁之前触发，属性还能读到。
     # 另挂 `closed` 与 start() 之后的兜底：不同后端的事件可用性不完全一致。
     for event_name in ("closing", "closed"):
@@ -179,6 +191,10 @@ def launch(
             细节见 `desktop/icon.py` 的模块说明。
             """
             apply_window_icon(WINDOW_TITLE, ICON_PATH)
+            if ui_cfg.frameless_window:
+                # 界面靠这个 class 才显示自绘窗控条与右下角把手（有原生标题行时不该出现）
+                with contextlib.suppress(Exception):
+                    window.evaluate_js("document.documentElement.classList.add('frameless')")
             if open_settings or os.environ.get("SCHOLARSCOUT_DEBUG_JS", "").strip():
                 # 排障入口：--open-settings 开设置面板；SCHOLARSCOUT_DEBUG_JS 可直接跑一段 JS
                 thread = threading.Thread(target=_open_settings_later, args=(window,), daemon=True)
