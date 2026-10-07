@@ -284,6 +284,39 @@ def render(results: dict[str, Any]) -> str:
                     parts += [f"- `{count}` 次：{reason}"]
                 parts += [""]
 
+            source_years = e3.get("source_years") or {}
+            source_kinds = e3.get("source_kinds") or {}
+            if source_years or source_kinds:
+                parts += [
+                    "### 来源时效性与多样性（产物引用到的资料）",
+                    "",
+                    "> 口径：年份分布里**未知年份单列**，且不进「近两年占比」的分母 —— "
+                    "取不到年份就不编一个。",
+                    "",
+                ]
+                if source_years:
+                    parts += [
+                        _table(
+                            ["年份", "引用条数"],
+                            [[label, str(count)] for label, count in source_years.items()],
+                        ),
+                        "",
+                    ]
+                if source_kinds:
+                    parts += [
+                        _table(
+                            ["来源类型", "引用条数"],
+                            [[label, str(count)] for label, count in source_kinds.items()],
+                        ),
+                        "",
+                    ]
+                parts += [
+                    f"- 近两年来源占比：{_pct(e3.get('source_fresh_share'))}"
+                    f"（分母＝有年份的引用；未知年份 {source_years.get('未知年份', 0)} 条单列）",
+                    f"- 每题不同域名数（均值）：{_num(e3.get('distinct_domains'), 1)}",
+                    "",
+                ]
+
             failed = [task for task in e3["tasks"] if task["stop_reason"] != "completed"]
             if failed:
                 reasons: dict[str, int] = {}

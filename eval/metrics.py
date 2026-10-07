@@ -32,6 +32,62 @@ def distinct_sources(graph: Mapping[str, Any] | None, plan: Mapping[str, Any] | 
     return len(refs)
 
 
+def kind_mix(kinds: Iterable[str]) -> dict[str, int]:
+    """来源类型分布（按条数降序；空值归 "?"，**排在最后**，与年份分布的"未知年份"一致）。"""
+    counts = Counter(str(kind or "?") for kind in kinds)
+    return {
+        key: count
+        for key, count in sorted(counts.items(), key=lambda kv: (kv[0] == "?", -kv[1], kv[0]))
+    }
+
+
+def year_mix(
+    years: Iterable[int | None], *, now_year: int, window_years: int = 2
+) -> dict[str, int]:
+    """年份分布（人看的三个桶 + 未知）。
+
+    **未知年份必须单列**：把"取不到年份"塞进任何一桶都是编数据。
+    `now_year` 显式传入（而不是在函数里读今天）——否则同一个数据集在不同日子跑出不同结论。
+    """
+    recent = f"近 {window_years} 年（≥{now_year - window_years + 1}）"
+    middle = f"前 {window_years} 年（{now_year - 2 * window_years + 1}–{now_year - window_years}）"
+    older = f"更早（≤{now_year - 2 * window_years}）"
+    mix = {recent: 0, middle: 0, older: 0, "未知年份": 0}
+    for year in years:
+        if year is None:
+            mix["未知年份"] += 1
+        elif int(year) >= now_year - window_years + 1:
+            mix[recent] += 1
+        elif int(year) >= now_year - 2 * window_years + 1:
+            mix[middle] += 1
+        else:
+            mix[older] += 1
+    return mix
+
+
+def fresh_share(
+    years: Iterable[int | None], *, now_year: int, window_years: int = 2
+) -> float | None:
+    """近 N 年占比 = 近 N 年条数 / **有年份的条数**（未知年份不进分母，单独看）。"""
+    known = [int(year) for year in years if year is not None]
+    if not known:
+        return None
+    fresh = sum(1 for year in known if year >= now_year - window_years + 1)
+    return fresh / len(known)
+
+
+def sum_mixes(mixes: Sequence[Mapping[str, int]]) -> dict[str, int]:
+    """按桶标签合并多份分布（各题的年份桶标签必须一致，否则合并会静默错位）。"""
+    total: Counter[str] = Counter()
+    labels: set[tuple[str, ...]] = set()
+    for mix in mixes:
+        labels.add(tuple(mix.keys()))
+        total.update(mix)
+    if len(labels) > 1:
+        raise ValueError("桶标签不一致，合并会错位 —— 检查 `now_year` 是否同一个")
+    return dict(total)
+
+
 def agreement(pairs: Sequence[tuple[str, str]]) -> float | None:
     """一致率 = 相同的对数 / 总对数。"""
     if not pairs:

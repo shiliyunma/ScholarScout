@@ -13,7 +13,9 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Iterable
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -310,6 +312,23 @@ def failure_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(grouped.values(), key=lambda item: (-int(item["n"]), str(item["tool"])))
 
 
+def _source_meta(db: Any, source_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """取这些来源的年份/类型/域名。
+
+    **取不到就返回空**，绝不在报告里给来源安一个年份 —— 时效性指标一旦混入猜测值，
+    整张表就不可信了。
+    """
+    ids = sorted({str(item) for item in source_ids if item})
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    rows = db.query(
+        f"SELECT id, year, source_type, domain FROM sources WHERE id IN ({placeholders})",
+        tuple(ids),
+    )
+    return [dict(row) for row in rows]
+
+
 def run_e3(  # pragma: no cover - 需真模型
     ctx: Any,
     rows: list[dict[str, Any]],
@@ -401,6 +420,11 @@ def run_e3(  # pragma: no cover - 需真模型
             " FROM usage_records WHERE session_id = ?",
             (session_id,),
         )
+        # 来源时效性与多样性：从**库里的元数据**算（引用到的来源的年份/类型/域名）。
+        # 口径：未知年份单列、不进"近两年占比"的分母（取不到就不编）。
+        meta = _source_meta(ctx.db, sources_seen)
+        years = [item.get("year") for item in meta]
+        now_year = date.today().year
         tasks.append(
             {
                 "id": row["id"],
@@ -430,6 +454,14 @@ def run_e3(  # pragma: no cover - 需真模型
                 "ungrounded_ratio": metrics.float_rate(ungrounded, total),
                 "exercise_items": exercises,
                 "distinct_sources": len(sources_seen),
+                "source_years": metrics.year_mix(years, now_year=now_year),
+                "source_fresh_share": metrics.fresh_share(years, now_year=now_year),
+                "source_kinds": metrics.kind_mix(
+                    [str(item.get("source_type") or "?") for item in meta]
+                ),
+                "distinct_domains": len(
+                    {str(item["domain"]) for item in meta if item.get("domain")}
+                ),
                 "counts": {"grounded": grounded, "total": total, "ungrounded": ungrounded},
                 "tokens": {"prompt": int(usage["pin"]), "completion": int(usage["pout"])},
                 "refs": result.get("refs", {}),
@@ -470,6 +502,11 @@ def run_e3(  # pragma: no cover - 需真模型
         ),
         "exercise_items": sum(t["exercise_items"] for t in tasks),
         "distinct_sources": metrics.mean([t["distinct_sources"] for t in tasks]),
+        # 来源时效性与多样性（口径：未知年份单列、不进"近两年占比"的分母）
+        "source_years": metrics.sum_mixes([t["source_years"] for t in tasks]),
+        "source_fresh_share": metrics.mean([t["source_fresh_share"] for t in tasks]),
+        "source_kinds": metrics.sum_mixes([t["source_kinds"] for t in tasks]),
+        "distinct_domains": metrics.mean([t["distinct_domains"] for t in tasks]),
         # 产物完整率：同时出主题图与路线的任务占比。
         # 真机第三轮有两道题只出路线没出地图 —— 光看"任务完成 6/6"会完全漏掉这件事。
         "artifact_completeness": metrics.float_rate(
