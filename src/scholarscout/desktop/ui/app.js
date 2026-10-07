@@ -1783,6 +1783,12 @@ var SETTINGS_SPEC = [
       { key: "runtime.max_tool_calls_per_turn", label: "单轮工具预算", kind: "number" },
       { key: "runtime.max_context_chars", label: "单文档正文上限", kind: "number" },
       { key: "runtime.max_history_chars", label: "历史正文预算（字符）", kind: "number" },
+      { key: "runtime.compact_after_chars", label: "D3 压缩阈值（字符）", kind: "number" },
+      {
+        key: "generation.compact_by_model",
+        label: "历史用模型摘要式压缩（关＝只做规则裁剪）",
+        kind: "bool",
+      },
       { key: "mineru.api_token", label: "MinerU Token（扫描版精准解析；空＝走免费通道）", kind: "secret" },
     ],
   },

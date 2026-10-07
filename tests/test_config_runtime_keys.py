@@ -22,6 +22,8 @@ NON_DEFAULT_VALUES: dict[str, object] = {
     "allow_clarify": False,
     "max_history_chars": 4321,
     "plan_by_model": True,
+    # D3：加字段就必须同步这里，否则 YAML 里写这个键会被静默忽略（守卫测试会当场失败）
+    "compact_after_chars": 5555,
 }
 
 

@@ -21,7 +21,7 @@ from typing import Any
 from scholarscout.config import Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import ChatReply, LlmClient, LlmError, ToolCall
-from scholarscout.runtime import context_budget, registry, research_state
+from scholarscout.runtime import compaction, context_budget, registry, research_state
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import sessions, traces
@@ -173,6 +173,12 @@ def build_messages(
         style=getattr(config.generation, "style", "default"),
     )
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
+    # D3：较早对话的提要固定在 system 之后、历史之前 —— 位置固定，服务端缓存才能在
+    # 两次压缩之间稳定命中（每次压缩只让缓存冷一次，而不是每轮都冷）。
+    state = research_state.load_state(db, session_id) or {}
+    summary = str(state.get(compaction.SUMMARY_KEY) or "").strip()
+    if summary:
+        messages.append({"role": "system", "content": compaction.render_summary_note(summary)})
     history, _ = sessions.list_messages(db, session_id, limit=_HISTORY_LIMIT)
     for row in history:
         if row["role"] in {"user", "assistant"} and row["content"].strip():
@@ -195,6 +201,43 @@ def run_turn(
     sessions.append_message(ctx.db, session_id, role="user", content=text)
 
     specs = ctx.tools(toolsets)
+    # ---- D3：历史超过阈值就先压一次（**同一段只压一次**，提要与"已覆盖到第几条"存进台账）。
+    # 失败了退回规则式裁剪（_fit_history），本轮照常 —— 压缩是省钱手段，不能因为它弄挂一轮。
+    if bool(getattr(ctx.config.generation, "compact_by_model", True)) and ctx.llm is not None:
+        try:
+            threshold = int(
+                getattr(ctx.config.runtime, "compact_after_chars", compaction.DEFAULT_AFTER_CHARS)
+            )
+            if ctx.config.summary_cfg is not None and compaction.should_compact(
+                ctx.db, session_id, after_chars=threshold
+            ):
+                outcome = compaction.compact(
+                    ctx.llm,
+                    ctx.db,
+                    session_id,
+                    prompts_dir=ctx.config.summary_cfg.prompts_dir,
+                )
+                if outcome.get("summary"):
+                    compaction.save_summary(
+                        ctx.db,
+                        session_id,
+                        summary=str(outcome["summary"]),
+                        covered=int(outcome["covered"]),
+                    )
+                usage = outcome.get("usage") or {}
+                if usage:
+                    traces.record_usage(
+                        ctx.db,
+                        model=ctx.config.summary.model,
+                        purpose="compact",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        prompt_tokens=usage.get("prompt_tokens"),
+                        completion_tokens=usage.get("completion_tokens"),
+                        cached_tokens=usage.get("cached_tokens"),
+                    )
+        except Exception:
+            pass
     messages = build_messages(ctx.db, session_id, config=ctx.config, toolsets=toolsets)
     tool_decls = registry.openai_tools(specs) or None
 

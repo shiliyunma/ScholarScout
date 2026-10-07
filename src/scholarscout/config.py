@@ -90,6 +90,9 @@ class RuntimeProfile:
     allow_clarify: bool = True
     #: 历史正文的字符预算（保头保尾裁剪，防长会话 token 线性膨胀）
     max_history_chars: int = 12000
+    #: D3：未被提要覆盖的那段超过这么多字符，才值得为它花一次模型调用去做摘要式压缩。
+    #: 太短的话规则式裁剪就够了（压缩是"每压一段一次调用"，不是免费的）。
+    compact_after_chars: int = 4000
     #: 开局是否用一次小调用把目标拆成子问题（A1）。**默认关**：它会多一次模型调用，
     #: 打开就改变了原有的回复序列（测试里的脚本化假模型会被它吃掉一次），所以由 config.yaml 显式打开。
     #: 代价是每**会话**一次小调用（不是每轮）；关掉就退化成"只有目标 + 只有缺口"，粒度为粗。
@@ -124,6 +127,9 @@ class Generation:
     #: D4 人格/风格档：default | academic | tutor | concise。
     #: **默认档不加任何字符**，所以不改它就不影响实验臂哈希（E3 那批数字仍可比）。
     style: str = "default"
+    #: D3 历史摘要式压缩：历史超阈值时用一次模型调用把中段压成结构化提要（每段只压一次）。
+    #: 关掉则退回规则式裁剪（省调用，但被裁掉的中段就真丢了）。
+    compact_by_model: bool = True
 
 
 @dataclass(frozen=True)
@@ -222,6 +228,7 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             stream=bool(runtime_section.get("stream", False)),
             allow_clarify=bool(runtime_section.get("allow_clarify", True)),
             max_history_chars=int(runtime_section.get("max_history_chars", 12000)),
+            compact_after_chars=int(runtime_section.get("compact_after_chars", 4000)),
             plan_by_model=bool(runtime_section.get("plan_by_model", False)),
         ),
         features=Features(
@@ -239,6 +246,7 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             memory_by_model=bool(generation_section.get("memory_by_model", True)),
             # 认识的风格档才认；不认识就**报错**（静默回默认＝用户以为改了其实没改）
             style=normalize_style(generation_section.get("style", "default")),
+            compact_by_model=bool(generation_section.get("compact_by_model", True)),
         ),
         raw=raw,
         summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),
