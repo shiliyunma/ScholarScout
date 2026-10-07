@@ -254,4 +254,17 @@ python -m scholarscout --rpc 子进程  ← 与 CLI/测试走同一个分发器
 
 ## 许可
 
-毕业设计代码，未定许可证。（`LICENSE` 待补）
+MIT License，见 `LICENSE`（2026-10-07 由作者定为 MIT）。
+
+## 打包交付
+
+两种交付方式，**不是替代关系**（见 `docs/03 §6`）：
+
+| 方式 | 命令 | 适合 |
+|---|---|---|
+| 启动器（项目根 `ScholarScout.exe`） | `.venv/Scripts/python.exe scripts/build_exe.py` | 自己机器：依赖本机 Python，但**改代码不用重打包** |
+| 自包含 Windows 包 | `.venv/Scripts/python.exe scripts/build_bundle.py` | 交作业/演示/发给别人：把解释器、依赖、界面资源、提示词全带上，**拷过去点开即用** |
+
+自包含包产物在 `ScholarScout-Portable/ScholarScout.exe`（不入库）。首次运行前把 LLM 密钥写进
+该目录的 `.env`（模板 `.env.example`）；`data/`、`run/state.db` 会自动建在 exe 旁边，
+**整个目录拷走，资料一起走**。

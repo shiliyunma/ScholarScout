@@ -25,6 +25,8 @@ venv/
 # ===== 打包 =====
 build/
 dist/
+# 自包含 Windows 包（`scripts/build_bundle.py` 的产物：解释器+依赖，几十~几百 MB，不入库）
+ScholarScout-Portable/
 *.spec
 
 # ===== 启动器（构建产物 + 本机绝对路径，不入库；默认输出在项目根）=====

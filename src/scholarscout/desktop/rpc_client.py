@@ -53,11 +53,21 @@ class ProcessLike(Protocol):
 
 
 def default_env() -> dict[str, str]:
-    """子进程环境：强制 UTF-8，并把 ``src/`` 挂进 PYTHONPATH（源码运行也能起）。"""
+    """子进程环境：强制 UTF-8；**源码运行时**再把 ``src/`` 挂进 PYTHONPATH。
+
+    打包后**不许**挂 PYTHONPATH（踩过）：打包目录里同样有一份 `scholarscout/` 源码，
+    一旦把它挂进 PYTHONPATH，子进程会去 import **源码**而不是打进包的模块 ——
+    行为与包不一致，而且那条路径下的输出编码会退回 GBK，壳按 UTF-8 读就 `UnicodeDecodeError`
+    → 壳判定"后端进程已退出"。真机症状：界面能开，页头红字"连接后端失败"。
+    """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    if getattr(sys, "frozen", False):
+        return env
     src = Path(__file__).resolve().parents[2]
+    if not src.is_dir():
+        return env
     existing = env.get("PYTHONPATH", "")
     parts = [str(src)] + ([existing] if existing else [])
     env["PYTHONPATH"] = os.pathsep.join(parts)
@@ -65,8 +75,16 @@ def default_env() -> dict[str, str]:
 
 
 def default_command(*, db_path: str | Path | None = None, toolsets: str = "research") -> list[str]:
-    """后端命令：与手工跑 ``--rpc`` 完全一致，壳不搞特殊通道。"""
-    command = [sys.executable, "-m", "scholarscout", "--rpc", "--toolsets", toolsets]
+    """后端命令：与手工跑 ``--rpc`` 完全一致，壳不搞特殊通道。
+
+    **打包后要拉起自己**（`sys.executable --rpc`），不能再拼 `-m scholarscout`：
+    PyInstaller 的引导器不认 `-m 模块`，那样起出来的子进程会立刻退出 ——
+    真机表现是界面能开、页头却红字写着「连接后端失败：后端进程已退出」。
+    """
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "--rpc", "--toolsets", toolsets]
+    else:
+        command = [sys.executable, "-m", "scholarscout", "--rpc", "--toolsets", toolsets]
     if db_path is not None:
         command += ["--db", str(db_path)]
     return command
@@ -129,6 +147,10 @@ class RpcClient:
                     stderr=subprocess.DEVNULL,
                     text=True,
                     encoding="utf-8",
+                    # 一个坏字节不该弄死整条通道：解码失败降级成 U+FFFD。
+                    # 真机上就是"某行含 GBK 字节 → UnicodeDecodeError → 读线程退出 →
+                    # 界面显示'后端进程已退出'"，而其实后端好好的。
+                    errors="replace",
                     bufsize=1,
                 )
         except OSError as exc:

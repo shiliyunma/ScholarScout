@@ -6,3 +6,7 @@ httpx
 pyyaml
 pywebview
 pymupdf
+
+# 构建期依赖（不打进 wheel，也不参与运行；只给 scripts/build_bundle.py 出交付包用）
+# 审批：大浩 2026-10-07 明确要求"搞一个 windows 的安装包，点开即用"
+pyinstaller

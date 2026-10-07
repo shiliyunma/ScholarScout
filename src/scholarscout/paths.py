@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 #: data/ 下允许出现的子目录（超出这个集合即视为越界）
@@ -20,10 +21,17 @@ class PathOutsideDataError(ValueError):
 
 
 def home() -> Path:
-    """项目根目录：环境变量优先，否则取包目录的上三级（src/scholarscout -> 项目根）。"""
+    """项目根目录：环境变量优先；打包后取 exe 所在目录；否则取包目录的上三级。
+
+    为什么打包后要换：PyInstaller 把代码放进临时解包目录（onefile）或 `_internal/`（onedir），
+    **那个位置不能放数据** —— `data/`、`run/state.db`、`config.yaml` 必须落在用户看得见、
+    拷得走的地方。所以冻结模式下统一用 `sys.executable` 的目录：exe 在哪，数据就在哪（便携）。
+    """
     env = os.environ.get(_ENV_HOME)
     if env:
         return Path(env).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
 
 

@@ -17,6 +17,11 @@ dev = [
     "ruff>=0.7,<1",
     "mypy>=1.13,<2",
 ]
+#: 只在你**要出交付包**时才需要（`scripts/build_bundle.py`）；运行期完全不依赖，
+#: 所以不进 project.dependencies（审批记录见 deps-allowlist.txt 与 docs/03 §6）
+build = [
+    "pyinstaller>=6.10,<7",
+]
 
 [build-system]
 requires = ["hatchling"]
