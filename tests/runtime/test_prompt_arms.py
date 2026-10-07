@@ -15,14 +15,21 @@ from scholarscout.runtime.prompts import (
     system_prompt_hash,
 )
 
-#: 2026-10-05 E3 第四轮（"两件产物齐出"）用的提示词 —— 现在的**对照臂**
-GOLDEN_AUTO_HASH = "af6f1b33e12c"
-#: 默认档（按需）：先问再生成
-GOLDEN_ON_DEMAND_HASH = "f68b1b7abb03"
+#: **历史值**（2026-10-05 E3 第四轮用的提示词，当时的对照臂）：`af6f1b33e12c`
+#:   —— 那时系统提示词里还没有 `RESEARCH_STATE_RULE`（A1/A2/A7 的多轮规矩）
+GOLDEN_AUTO_HASH_V1 = "af6f1b33e12c"
+#: **历史值**：默认档（按需）当时是 `f68b1b7abb03`
+GOLDEN_ON_DEMAND_HASH_V1 = "f68b1b7abb03"
+#: 现值（2026-10-07 加入 A1/A2/A7 的多轮规矩之后）。
+#: **注意**：E3 那批数字（覆盖率 100%、ungrounded 0%）是用 V1 跑的；引用时必须写明，
+#: 要拿新数字得按 docs/14 的口径重跑 E3。
+GOLDEN_AUTO_HASH = "fa8522427ff6"
+GOLDEN_ON_DEMAND_HASH = "58c966149165"
 
 
 def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
-    """对照臂必须逐字等于旧提示词，否则"自动 vs 按需"就不是单变量对照。"""
+    """对照臂必须逐字钉死，否则"自动 vs 按需"就不是单变量对照。"""
+    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V1, "提示词变过就得留痕（旧值仍在上面的常量里）"
     assert system_prompt_hash(build_system_prompt(auto_artifacts=True)) == GOLDEN_AUTO_HASH
 
 

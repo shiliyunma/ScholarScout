@@ -166,6 +166,33 @@ def research_search(
     year_from: int | None = None,
     sort: str = "relevance",
 ) -> dict[str, Any]:
+    # ---- A3：判重闸门。同一会话里"换词重搜同一件事"要被拦下，并告诉它该往哪走。
+    # 真机证据：3 个多轮会话里 2 个出现重复查询（其中一轮一个新来源都没发现）。
+    # 拦下来比让它搜完更省 —— 一次检索的钱是花了的，重复的结果对结论毫无贡献。
+    from scholarscout.runtime import research_state
+
+    state = research_state.load_state(ctx.db, ctx.session_id) if ctx.session_id else None
+    if state is None and ctx.session_id:
+        # 工具不能假设"台账已经存在"：循环会先建，但工具也可能被直接调用
+        # （评测脚本、单测、或者循环建台账那一步失败过）。缺了就现建一张。
+        state = research_state.empty_state()
+    if state is not None:
+        repeated = research_state.find_repeat(state, query)
+        if repeated:
+            gaps = (
+                research_state.compute_gaps(ctx.db, ctx.session_id, state) if ctx.session_id else []
+            )
+            hint = (
+                gaps[0]["suggest"]
+                if gaps
+                else "换关键词/换来源/换年份；如果确实没有新信息，就直接如实说明并停止"
+            )
+            raise ValueError(
+                f"查询被拒绝：它与本会话已搜过的「{repeated}」高度重复（判重阈值 "
+                f"{research_state.DEFAULT_SIMILARITY}）。同一件事换词重搜不会带来新证据。"
+                f"请按缺口清单换方向：{hint}"
+            )
+
     settings = ctx.config.search_cfg
     requested = [str(name) for name in sources] if sources else list(settings.providers)
     wanted = resolve_wanted(settings, requested)
@@ -227,6 +254,12 @@ def research_search(
             "data": {"items": [], "provider_status": status, "query": query},
             "refs": {"source_ids": []},
         }
+
+    # 搜成功才记账：这条查询进台账，下轮"换词重搜"会被判重拦下（A3）。
+    # 失败的不记 —— 否则一次网络抖动就把某个方向永久锁死了。
+    if state is not None and ctx.session_id:
+        research_state.record_query(state, query)
+        research_state.save_state(ctx.db, ctx.session_id, state)
 
     return {
         "ok": True,

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sqlite3
 import sys
 from collections import Counter
@@ -22,22 +21,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+sys.path.insert(0, str(ROOT / "src"))
 
+from scholarscout.runtime import research_state as rs  # noqa: E402
+
+
+# 判据与产品代码**共用同一个实现**（A3 的判重闸门用的就是它）：
+# 两处各写一份"相似度"迟早会给出两套数字，"用同一把尺子复测改进"就无从谈起。
 def _norm(query: str) -> str:
-    """把查询归一化成一个"是不是同一件事"的粗判据（去空格/标点、转小写）。"""
-    return re.sub(r"[\s\W_]+", "", query.lower())
-
-
-def _bigrams(text: str) -> set[str]:
-    return {text[i : i + 2] for i in range(max(0, len(text) - 1))}
+    return rs.normalize_query(query)
 
 
 def _similar(a: str, b: str) -> float:
-    """二字符组 Jaccard —— 中文查询用这个比"完全相等"更贴近"其实在搜同一件事"。"""
-    left, right = _bigrams(a), _bigrams(b)
-    if not left or not right:
-        return 0.0
-    return len(left & right) / len(left | right)
+    """二字符组 Jaccard —— 与产品代码同一实现（A3 的判重闸门调的就是它）。"""
+    return rs.similarity(a, b)
 
 
 def _query_of(args_json: str) -> str:
@@ -52,7 +49,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="多轮有效性诊断")
     parser.add_argument("--db", default=str(ROOT / "run" / "state.db"))
     parser.add_argument("--limit", type=int, default=30)
-    parser.add_argument("--threshold", type=float, default=0.6, help="查询相似度阈值（判为重复）")
+    parser.add_argument(
+        "--threshold", type=float, default=rs.DEFAULT_SIMILARITY, help="查询相似度阈值（判为重复）"
+    )
     args = parser.parse_args()
     if not Path(args.db).exists():
         print(f"[FAIL] 找不到库：{args.db}", file=sys.stderr)

@@ -69,6 +69,24 @@ CLARIFY_RULE = """
 不要连续追问，也不要把澄清当成不回答的借口。"""
 
 
+#: A1/A2/A7 的规矩：把"继续搜索"从"换词重搜"变成"按缺口清单推进"。
+# 每轮消息末尾会注入一份研究台账（目标/子问题覆盖情况/已搜查询/缺口清单），本段说明怎么用它。
+RESEARCH_STATE_RULE = """\
+## 多轮研究怎么推进（每轮消息末尾会附一份「研究台账」）
+
+1. **先读台账再决定搜什么**：台账里有目标、子问题（标注了"缺口/已覆盖"）、已搜过的查询、
+   以及系统算出的**缺口清单**。本轮的第一批检索要针对"缺口"，不要去搜已经覆盖的东西。
+2. **不要换词重搜**：同一件事换个说法再搜一遍不会带来新证据，工具会直接拒绝并告诉你该往哪走。
+   要换就换**维度**：换来源族（论文→代码/官方文档）、换年份、换语种、换对照对象。
+3. **一轮下来没有新来源就收**：如实说明"这个方向已经搜过、没有新信息"，并给出下一步可换的方向，
+   不要为了把话说圆而重复已有结论或编造细节。
+4. **每轮回复的最后一行附一条状态标记**（给系统记账用，用户看不到）：
+   `<!--research-state:{"covered":[1,3],"open":[2]}-->`
+   数字是台账里子问题的序号：有证据支撑的放进 covered，还没有的放进 open。**只标记确实有证据的**，
+   拿不准就留在 open —— 乱标 covered 会让后面的轮次不再去补它。
+"""
+
+
 def build_system_prompt(
     *,
     toolsets: list[str] | None = None,
@@ -83,6 +101,8 @@ def build_system_prompt(
     parts = [BASE_PROMPT, PIPELINE_PROMPT if auto_artifacts else ON_DEMAND_PIPELINE_PROMPT]
     if allow_clarify:
         parts.append(CLARIFY_RULE)
+    # A1/A2/A7：怎么用每轮注入的「研究台账」（放最后，作为本轮流程的补充说明）
+    parts.append(RESEARCH_STATE_RULE)
     active = ", ".join(toolsets or ["research"])
     parts.append(f"\n当前可用工具集：{active}。工具未注册时不要假装调用它，直接说明能力边界。")
     return "\n".join(parts).strip()

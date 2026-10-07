@@ -21,7 +21,7 @@ from typing import Any
 from scholarscout.config import Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import ChatReply, LlmClient, LlmError, ToolCall
-from scholarscout.runtime import context_budget, registry
+from scholarscout.runtime import context_budget, registry, research_state
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import sessions, traces
@@ -197,8 +197,31 @@ def run_turn(
     messages = build_messages(ctx.db, session_id, config=ctx.config, toolsets=toolsets)
     tool_decls = registry.openai_tools(specs) or None
 
+    # ---- A1/A2：把跨轮研究台账与"缺口清单"注入到**本轮消息的最后**。
+    # 为什么放最后而不是最前：服务端缓存按"从头的最长公共前缀"命中（A6），
+    # 台账每轮都会变（已搜查询、缺口都会增长），放前面等于每轮都让缓存失效。
+    state = research_state.load_state(ctx.db, session_id) or research_state.empty_state(
+        goal=text.strip()[:200]
+    )
+    if not state.get("questions") and not state.get("used_queries"):
+        # 开局拆一次子问题（每会话一次的小调用）——关掉开关就退化成"只有目标 + 只有缺口"
+        if (
+            bool(getattr(ctx.config.runtime, "plan_by_model", False))
+            and ctx.llm is not None
+            and ctx.config.summary_cfg is not None
+        ):
+            state["questions"] = research_state.decompose(
+                ctx.llm, text, prompts_dir=ctx.config.summary_cfg.prompts_dir
+            )
+        research_state.save_state(ctx.db, session_id, state)
+    gaps = research_state.compute_gaps(ctx.db, session_id, state)
+    messages.append({"role": "system", "content": research_state.render_note(state, gaps)})
+
     executed: list[str] = []
     usage_total: dict[str, int] = {}
+    #: 本轮新发现的来源（A7 的判据：连续几轮没有新增就该停）
+    fresh_sources: list[str] = []
+    stop_hinted = False
     #: 本轮已发给模型的 source_id —— 同一条来源第二次出现时只回锚点，摘要不再重复计费
     seen_source_ids: set[str] = set()
     stop_reason = "completed"
@@ -216,7 +239,7 @@ def run_turn(
             if ctx.is_cancelled(turn_id):
                 stop_reason = "cancelled"
                 break
-            tools_for_round = None if len(executed) >= tool_budget else tool_decls
+            tools_for_round = None if (stop_hinted or len(executed) >= tool_budget) else tool_decls
             reply = ctx.llm.chat(messages, tools=tools_for_round)
             _accumulate_usage(usage_total, reply)
             # **每次模型调用立即记账**：原来只在整轮结束记一次，结果是"被停止或中断的轮次
@@ -290,6 +313,14 @@ def run_turn(
                     seen_source_ids=seen_source_ids,
                 )
                 _merge_refs(refs_total, tool_refs)
+                # ---- A1/A7：把这一批来源并进台账，看本轮到底有没有新东西
+                fresh = research_state.new_sources(state, list(tool_refs.get("source_ids") or []))
+                fresh_sources.extend(fresh)
+                if canonical == "research.search":
+                    if fresh:
+                        state["empty_rounds"] = 0
+                    else:
+                        state["empty_rounds"] = int(state.get("empty_rounds") or 0) + 1
                 executed.append(canonical)
                 messages.append(
                     {
@@ -309,6 +340,27 @@ def run_turn(
                     tool_call_id=call.id,
                     name=call.name,
                 )
+
+            # ---- A7：连续 N 次检索都拿不到新来源 → 明确叫停，让模型如实总结。
+            # 为什么不直接断掉：断了就没有总结，用户只看到半句话。多花一次模型调用，
+            # 换"如实说明还缺什么"，比让它继续换词重搜（每轮 ~10 次调用）便宜得多。
+            if (
+                not stop_hinted
+                and int(state.get("empty_rounds") or 0) >= research_state.MAX_EMPTY_ROUNDS
+            ):
+                stop_hinted = True
+                stop_reason = "no_new_evidence"
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"已经连续 {research_state.MAX_EMPTY_ROUNDS} 次检索没有新增来源。"
+                            "请**停止检索**（本轮不再给你工具），如实总结：现在能确认什么、"
+                            "还缺什么证据、建议用户下一步怎么做（换来源/换年份/换个说法）。"
+                            "不要为了凑内容而重复已有的说法。"
+                        ),
+                    }
+                )
         else:
             stop_reason = "tool_limit"
     except LlmError as exc:
@@ -320,6 +372,15 @@ def run_turn(
     finally:
         # 无论怎么结束都要摘掉：留着会让"下一次取消"打到一轮已经结束的轮次上
         ctx.running.pop(session_id, None)
+
+    # ---- A1/A2：把模型回填的覆盖状态并进台账；记账标记从**可见正文**里剥掉。
+    # 标记解析不出来就什么都不改（保持 open）—— 猜覆盖等于自欺。
+    try:
+        if research_state.apply_coverage(state, final_text, fresh_sources):
+            final_text = research_state.strip_marker(final_text)
+        research_state.save_state(ctx.db, session_id, state)
+    except Exception:
+        pass
 
     message_id = sessions.append_message(
         ctx.db,

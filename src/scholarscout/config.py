@@ -76,6 +76,10 @@ class RuntimeProfile:
     allow_clarify: bool = True
     #: 历史正文的字符预算（保头保尾裁剪，防长会话 token 线性膨胀）
     max_history_chars: int = 12000
+    #: 开局是否用一次小调用把目标拆成子问题（A1）。**默认关**：它会多一次模型调用，
+    #: 打开就改变了原有的回复序列（测试里的脚本化假模型会被它吃掉一次），所以由 config.yaml 显式打开。
+    #: 代价是每**会话**一次小调用（不是每轮）；关掉就退化成"只有目标 + 只有缺口"，粒度为粗。
+    plan_by_model: bool = False
 
 
 @dataclass(frozen=True)
