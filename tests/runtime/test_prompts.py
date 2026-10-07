@@ -65,6 +65,27 @@ def test_clarify_rule_is_optional() -> None:
     assert "澄清规则" not in without_rule
 
 
+def test_no_single_brace_placeholders_in_prompt_files() -> None:
+    """提示词变量必须是 `{{双花括号}}`。
+
+    为什么要有这条：占位符写错成单花括号**不会报错** —— 替换靠 `{{...}}` 的正则匹配，
+    单花括号根本匹配不上，于是原样把 `{route}` 发给模型。这个 bug 是在 `route.revise`
+    的测试里抓到的（提示词里带着 `{instruction}` 就去问模型了），所以补一道静默失效的守卫。
+    JSON 示例里的 `{"ops": ...}` 不会被误报（`{` 后面是引号不是字母）。
+    """
+    import re
+    from pathlib import Path
+
+    pattern = re.compile(r"(?<!\{)\{[a-z][a-z0-9_]{1,}\}(?!\})")
+    offenders: list[str] = []
+    for path in sorted(Path("prompts").glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            line = text[: match.start()].count("\n") + 1
+            offenders.append(f"{path.name}:{line} {match.group(0)}")
+    assert not offenders, "这些占位符不会被替换（应为 {{x}}）：" + ", ".join(offenders)
+
+
 def test_prompt_names_active_toolsets() -> None:
     assert "当前可用工具集：research" in build_system_prompt(toolsets=["research"])
     assert "research, kb" in build_system_prompt(toolsets=["research", "kb"])

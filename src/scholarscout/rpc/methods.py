@@ -22,6 +22,7 @@ from scholarscout.providers.llm import LlmClient, LlmError, create_client
 from scholarscout.providers.settings import provider_statuses
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.runtime import loop, registry, titles
+from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import archive, export_session, learning, sessions, traces
 from scholarscout.state.db import Database
 
@@ -738,6 +739,46 @@ def note_stats(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """抽背总体情况：练过几张、各档多少、记住率（分母只算评过的卡）。"""
     del params
     return learning.card_stats(ctx.db)
+
+
+@method("route.revise")
+def route_revise_rpc(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """对已有路线做增量修改（与模型用的 `route.revise` 工具**同一条实现**）。
+
+    为什么 RPC 与工具共用一个实现：这是"必须一致"的路径 —— 界面上点一次和模型调用一次
+    得产生完全相同的结果与版本行为，分成两份迟早会漂移。
+    """
+    params = _params(params)
+    from scholarscout.tools.route_revise import route_revise
+
+    route_id = str(params.get("route_id") or "").strip()
+    instruction = str(params.get("instruction") or "").strip()
+    tool_ctx = ToolContext(db=ctx.db, config=ctx.config, http=ctx.http, llm=ctx.llm)
+    try:
+        return route_revise(tool_ctx, route_id, instruction)
+    except ValueError as exc:
+        raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
+
+
+@method("route.versions")
+def route_versions(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """列出这条路线**已归档的旧版本**（改错了要能退回去，所以得看得见）。
+
+    `with_payload=true` 时连正文一起给（用于对照查看或回退），默认只给元信息。
+    """
+    params = _params(params)
+    route_id = str(params.get("route_id") or "").strip()
+    if not route_id:
+        raise RpcError(Code.INVALID_PARAMS, "route_id 不能为空")
+    if not bool(params.get("with_payload")):
+        return {"items": learning.list_versions(ctx.db, kind="route", artifact_id=route_id)}
+    items = []
+    for meta in learning.list_versions(ctx.db, kind="route", artifact_id=route_id):
+        full = learning.get_version(
+            ctx.db, kind="route", artifact_id=route_id, version=int(meta["version"])
+        )
+        items.append(full or meta)
+    return {"items": items}
 
 
 # --------------------------------------------------------------------- 分发

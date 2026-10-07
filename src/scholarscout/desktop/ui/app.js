@@ -743,12 +743,15 @@ async function showRoute(routeId) {
   const meta = document.createElement("div");
   meta.className = "kv";
   const stats = plan.stats || {};
+  const version = payload.version || 1;
   meta.textContent =
     "水平 " + (payload.level || "-") +
     "｜周数 " + (payload.weeks || (plan.weeks || []).length) +
     "｜生成方式 " + (plan.mode || "-") +
     "｜条目 " + (stats.items === undefined ? "-" : stats.items) +
-    "｜无出处 " + (stats.ungrounded_items === undefined ? "-" : stats.ungrounded_items);
+    "｜无出处 " + (stats.ungrounded_items === undefined ? "-" : stats.ungrounded_items) +
+    // 改过就显示"第 N 版"：增量修改就地升版，用户得看得见自己改过几轮
+    (version > 1 ? "｜第 " + version + " 版（改过 " + (version - 1) + " 次）" : "｜第 1 版");
   box.appendChild(meta);
 
   (plan.weeks || []).forEach(function (week) {
