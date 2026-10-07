@@ -71,14 +71,13 @@
           <button id="btn-search" type="button">搜索</button>
         </div>
         <ul class="list" id="source-list"></ul>
+        <div class="splitter-h" id="split-sources" role="separator"
+             title="拖动调整摘要区高度（双击复位）"></div>
         <div class="detail" id="source-detail"></div>
       </div>
 
       <div class="pane" id="pane-routes">
-        <p class="hint">本会话生成的路线；点开看每周目标与检查点。</p>
-        <div class="row">
-          <button id="btn-history" class="ghost" type="button">显示全部历史产物</button>
-        </div>
+        <p class="hint">本会话生成的路线；点开看每周目标与检查点。（跨会话汇总在「个人中心」）</p>
         <ul class="list" id="route-list"></ul>
         <div class="detail" id="route-detail"></div>
       </div>
@@ -109,10 +108,7 @@
           本会话的研究状态：子问题覆盖情况、缺口、证据强度与来源时间线。全部从库里读，
           不额外调模型、不花 token；每条都能点回原始来源。
         </p>
-        <div class="row">
-          <button id="btn-board-refresh" class="ghost" type="button">刷新看板</button>
-          <span class="hint" id="board-summary"></span>
-        </div>
+        <p class="hint" id="board-summary"></p>
         <div class="board-scroll">
           <div class="board-block">
             <h4 class="board-title">

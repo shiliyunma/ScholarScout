@@ -461,6 +461,7 @@ function initLayout() {
   applyLayout(left, right, false);
 
   wireSplitter("split-left", "left");
+  wireHeightSplitter("split-sources", "source-detail", SOURCE_HEIGHT_KEY);
   wireSplitter("split-right", "right");
   window.addEventListener("resize", function () {
     applyLayout(state.layout.left, state.layout.right, false);
@@ -598,7 +599,7 @@ async function loadSources(query) {
       '<span class="meta">' +
       esc(item.domain || "") +
       "｜tier " +
-      esc(item.tier === null || item.tier === undefined ? "?" : item.tier) +
+      esc(item.tier === null || item.tier === undefined ? "未判权" : item.tier) +
       (payload.search_path ? "｜" + payload.search_path : "") +
       "</span>";
     li.addEventListener("click", function () {
@@ -617,6 +618,9 @@ async function showSource(docId) {
 
   const box = el("source-detail");
   box.innerHTML = "";
+  // 「⋯」放在最前面：它是这一块的工具栏，固定在右上，不随内容滚走
+  // （先清空再插 —— 顺序反了的话 clear 会把它一起抹掉）
+  box.appendChild(detailActions(docId, doc));
   const title = document.createElement("h3");
   title.textContent = first.title_zh || doc.title || "(无标题)";
   box.appendChild(title);
@@ -655,19 +659,34 @@ async function showSource(docId) {
     "原件 " + (paths.exists && paths.exists.raw_path ? "√ " : "× ") + paths.raw_path +
     "\n全文 " + (paths.exists && paths.exists.text_path ? "√ " : "× ") + paths.text_path;
   box.appendChild(pathInfo);
+}
 
+/* 摘要区右上角的「⋯」：三个打开方式收在同一个按钮里。
+   放在**顶部**而不是末尾 —— 放末尾时内容一长就得滚动才看得见，等于没有这个按钮。 */
+function detailActions(docId, doc) {
   const actions = document.createElement("div");
-  actions.className = "actions";
-  addButton(actions, "用系统程序打开原件", async function () {
-    await scout.call("archive.open_raw", { doc_id: docId });
+  actions.className = "detail-actions";
+  const menuButton = document.createElement("button");
+  menuButton.type = "button";
+  menuButton.className = "mini";
+  menuButton.textContent = "⋯";
+  menuButton.title = "打开文件 / 在文件管理器定位 / 打开源网站";
+  menuButton.addEventListener("click", function (event) {
+    event.stopPropagation();
+    openFloatingMenu(menuButton, [
+      ["打开文件", function () {
+        scout.call("archive.open_raw", { doc_id: docId });
+      }],
+      ["在文件管理器中定位", function () {
+        scout.call("archive.reveal", { doc_id: docId, which: "raw" });
+      }],
+      ["打开源网站", function () {
+        openExternalUrl(doc.url);
+      }],
+    ]);
   });
-  addButton(actions, "在文件夹中定位", async function () {
-    await scout.call("archive.reveal", { doc_id: docId, which: "raw" });
-  });
-  addButton(actions, "定位全文文本", async function () {
-    await scout.call("archive.reveal", { doc_id: docId, which: "text" });
-  });
-  box.appendChild(actions);
+  actions.appendChild(menuButton);
+  return actions;
 }
 
 async function showSourceBySourceId(sourceId) {
@@ -1196,6 +1215,8 @@ async function showNote(noteId) {
   box.appendChild(actions);
 }
 
+/* 跨会话产物列表。原本由「显示全部历史产物」按钮触发，那个按钮已按用户要求去掉
+   （改为按会话自动更新）。这个函数暂时没有调用点 —— 留给「个人中心」的汇总复用。 */
 async function renderHistory() {
   /* 全部会话的历史产物（后端 topic.list / route.list）。
      之前只能看本会话 refs 里带的产物，进程一退就再也点不开。 */
@@ -1271,26 +1292,11 @@ async function renderHistory() {
   });
 }
 
-async function toggleHistory() {
-  state.history = !state.history;
-  const button = el("btn-history");
-  button.textContent = state.history ? "只看本会话" : "显示全部历史产物";
-  if (state.history) {
-    await renderHistory();
-  } else {
-    await refreshSide();
-  }
-}
-
 async function refreshSide() {
   await loadSources(el("search").value.trim());
   await loadCards();
   await loadNotes();
   await loadBoard();
-  if (state.history) {
-    await renderHistory();
-    return;
-  }
   const payload = await scout.call("session.messages", {
     session_id: state.sessionId,
     limit: 200,
@@ -1691,6 +1697,114 @@ function renderBoardTimeline(board) {
       });
       list.appendChild(li);
     });
+  });
+}
+
+/* -------------------------------------------- 浮动菜单 / 打开链接 / 高度分隔条 */
+
+function openFloatingMenu(anchorEl, rows) {
+  closeRowMenus();
+  var rect = anchorEl.getBoundingClientRect();
+  var menu = document.createElement("div");
+  menu.className = "row-menu is-floating";
+  rows.forEach(function (row) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = row[0];
+    button.addEventListener("click", function (event) {
+      event.stopPropagation();
+      closeRowMenus();
+      row[1]();
+    });
+    menu.appendChild(button);
+  });
+  menu.style.top = Math.round(rect.bottom + 4) + "px";
+  menu.style.left = Math.max(8, Math.round(rect.left - 150)) + "px";
+  document.body.appendChild(menu);
+  setTimeout(function () {
+    document.addEventListener("click", closeRowMenus, { once: true });
+  }, 0);
+}
+
+function openExternalUrl(url) {
+  var target = String(url || "").trim();
+  if (!target) {
+    alert("这条资料没有记录源地址。");
+    return;
+  }
+  try {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.open_url) {
+      window.pywebview.api.open_url(target);
+      return;
+    }
+  } catch (error) {
+    /* 落到下面的兜底 */
+  }
+  window.open(target, "_blank");
+}
+
+/* 资料库摘要区高度：可拖、可双击复位、记住（localStorage，不动配置文件） */
+var SOURCE_HEIGHT_KEY = "scholarscout.sourcesDetailHeight";
+
+function applySourceHeight(pixels) {
+  var detail = el("source-detail");
+  if (!detail) return;
+  // 用 flex-basis 而不是 height：这个区域在弹性列里，height 会被 flex 规则盖掉
+  if (!pixels) {
+    detail.style.flex = "";
+    detail.style.maxHeight = "";
+    return;
+  }
+  detail.style.flex = "0 0 " + pixels + "px";
+  detail.style.maxHeight = "none";
+}
+
+function wireHeightSplitter(splitterId, targetId, key) {
+  var bar = el(splitterId);
+  var target = el(targetId);
+  if (!bar || !target) return;
+  var saved = null;
+  try {
+    saved = parseInt(localStorage.getItem(key) || "", 10);
+  } catch (error) {
+    saved = null;
+  }
+  if (saved && saved > 0) applySourceHeight(saved);
+
+  var dragging = false;
+  bar.addEventListener("mousedown", function (event) {
+    dragging = true;
+    event.preventDefault();
+    document.body.style.cursor = "row-resize";
+  });
+  window.addEventListener("mousemove", function (event) {
+    if (!dragging) return;
+    var pane = target.parentElement || target;
+    var box = pane.getBoundingClientRect();
+    // 用"离底部的距离"当高度：往下拖＝摘要区变小
+    var height = Math.round(box.bottom - event.clientY);
+    var limit = Math.max(120, Math.round(box.height - 120));
+    applySourceHeight(Math.min(Math.max(height, 120), limit));
+  });
+  window.addEventListener("mouseup", function () {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.cursor = "";
+    try {
+      var height = parseInt((target.style.flex || "").replace(/[^0-9]/g, "") || "0", 10);
+      if (height > 0) localStorage.setItem(key, String(height));
+      else localStorage.removeItem(key);
+    } catch (error) {
+      /* 隐私模式：只当次生效 */
+    }
+  });
+  bar.addEventListener("dblclick", function () {
+    applySourceHeight(null);
+    try {
+      localStorage.removeItem(key);
+    } catch (error) {
+      /* 忽略 */
+    }
   });
 }
 
@@ -2391,10 +2505,6 @@ function wire() {
     if (event.target === el("settings")) closeSettings();
   });
   el("btn-theme").addEventListener("click", cycleTheme);
-  el("btn-history").addEventListener("click", toggleHistory);
-  el("btn-board-refresh").addEventListener("click", function () {
-    loadBoard();
-  });
   el("btn-memory-add").addEventListener("click", addMemory);
   el("btn-memory-extract").addEventListener("click", extractMemory);
   el("memory-input").addEventListener("keydown", function (event) {
@@ -2482,6 +2592,14 @@ function wire() {
       document.querySelectorAll(".pane").forEach(function (pane) {
         pane.classList.toggle("is-active", pane.id === "pane-" + tab.dataset.tab);
       });
+      // 切到哪个页签就刷新哪个 —— 数据永远跟着当前会话走（用户要求去掉手动刷新按钮）
+      var loaders = {
+        sources: function () { loadSources(el("search").value.trim()); },
+        cards: loadCards,
+        notes: loadNotes,
+        board: loadBoard,
+      };
+      if (loaders[tab.dataset.tab]) loaders[tab.dataset.tab]();
     });
   });
 }

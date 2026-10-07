@@ -1208,3 +1208,76 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   font-size: 11px;
   padding: 0 6px;
 }
+
+
+/* ------------------------------------------------ 用户体验批次一（1–4） */
+
+/* 页签里的按钮要"像按钮"：细描边 + 底色 + 悬停加深，一眼看出可点 */
+.pane .ghost,
+.pane .mini,
+.detail .mini {
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  background: var(--ui-bg-elevated);
+  border-radius: var(--radius-md);
+  padding: 3px 10px;
+  color: var(--ui-text-primary);
+  cursor: pointer;
+}
+.pane .ghost:hover,
+.pane .mini:hover,
+.detail .mini:hover {
+  background: var(--ui-row-hover-background);
+  border-color: var(--ui-stroke-primary);
+}
+.pane .actions .mini {
+  padding: 3px 12px;
+  font-weight: 600;
+}
+
+/* 资料库摘要区：默认就占这一栏的一半以上（原来只有 max-height，内容一短就缩成一条），
+   拖过分隔条后按像素的 flex-basis 来 */
+#pane-sources .detail {
+  flex: 0 0 56%;
+  max-height: none;
+}
+
+/* 摘要区右上角的工具栏（「⋯」）：贴在右上，不随摘要内容滚走 */
+.detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: -2px 0 6px;
+  position: sticky;
+  top: 0;
+}
+
+/* 水平分隔条（资料库摘要区高度）：薄、悬停变色、给 row-resize 光标 */
+.splitter-h {
+  height: 7px;
+  margin: 3px 12px 1px;
+  cursor: row-resize;
+  flex: 0 0 auto;
+  position: relative;
+}
+/* 常态就画一条细线：只在悬停时才出现的话，用户不知道这里能拖 */
+.splitter-h::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 3px;
+  height: 1px;
+  background: var(--ui-stroke-tertiary);
+}
+.splitter-h:hover::before {
+  height: 3px;
+  top: 2px;
+  background: var(--ui-stroke-secondary);
+}
+
+/* 浮动菜单（资料库「⋯」）：固定定位，不会被 .detail 的滚动区裁掉 */
+.row-menu.is-floating {
+  position: fixed;
+  z-index: 60;
+  min-width: 168px;
+}
