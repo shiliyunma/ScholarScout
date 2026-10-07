@@ -1272,6 +1272,32 @@ async function loadBoard() {
   renderBoardGaps(board);
   renderBoardEvidence(board);
   renderBoardTimeline(board);
+  renderBoardArtifacts(board);
+}
+
+function renderBoardArtifacts(board) {
+  const list = el("board-artifacts");
+  list.innerHTML = "";
+  const artifacts = board.artifacts || {};
+  const rows = [];
+  (artifacts.routes || []).forEach(function (item) {
+    rows.push("学习路线：" + (item.topic || "") + "（" + item.weeks + " 周，第 " + (item.version || 1) + " 版）");
+  });
+  (artifacts.maps || []).forEach(function (item) {
+    rows.push("知识地图：" + (item.topic || ""));
+  });
+  (artifacts.notes || []).forEach(function (item) {
+    const label = item.kind === "card" ? "抽背卡" : item.kind === "summary" ? "资料摘要" : "学习笔记";
+    rows.push(label + "：" + (item.title || ""));
+  });
+  if (!rows.length) {
+    list.innerHTML =
+      '<li class="hint">本会话还没有产物。要产物就在输入框上方点对应的按钮（默认不会自动生成）。</li>';
+    return;
+  }
+  rows.forEach(function (text) {
+    list.appendChild(boardItem(esc(text)));
+  });
 }
 
 function renderBoardSummary(board) {
@@ -1385,9 +1411,15 @@ function renderBoardEvidence(board) {
   }
   rows.forEach(function (row) {
     const strong = row.strength === "强" || String(row.strength).indexOf("中") === 0;
+    const verdicts = {
+      supported: "已被支撑",
+      partial: "部分支撑",
+      unsupported: "支撑不足",
+      unknown: "未判定",
+    };
     const li = boardItem(
       '<div class="board-claim">' +
-        esc(short(row.claim || "", 80)) +
+        esc(short(row.claim || "", 110)) +
         "</div>" +
         '<span class="badge ' +
         (strong ? "badge-strong" : "badge-weak") +
@@ -1396,7 +1428,7 @@ function renderBoardEvidence(board) {
         "</span>" +
         '<span class="meta">' +
         esc(row.evidence_level === "summary" ? "有摘要" : "仅标题") +
-        (row.verdict && row.verdict !== "unknown" ? " ／ " + esc(row.verdict) : "") +
+        (row.verdict && row.verdict !== "unknown" ? " ／ " + esc(verdicts[row.verdict] || row.verdict) : "") +
         "</span>",
     );
     li.appendChild(sourceChips(row.sources));
@@ -1417,8 +1449,10 @@ function renderBoardTimeline(board) {
   const timeline = board.timeline || {};
   const groups = timeline.groups || [];
   const missing = timeline.missing_recent_years || [];
+  const internal = timeline.internal_gap_labels || [];
   const bits = [];
-  if (missing.length) bits.push("缺口年份：" + missing.join("、"));
+  if (missing.length) bits.push("最新之后缺：" + missing.join("、"));
+  if (internal.length) bits.push("区间内部空档：" + internal.join("、"));
   if (timeline.undated) bits.push(timeline.undated + " 条年份未知");
   note.textContent = bits.length ? "（" + bits.join("；") + "）" : "";
   if (!groups.length) {

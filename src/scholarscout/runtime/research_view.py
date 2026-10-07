@@ -53,33 +53,81 @@ def _load_session_sources(db: Database, session_id: str) -> list[dict[str, Any]]
     return out
 
 
+def _compress_years(years: list[int]) -> list[str]:
+    """把年份列表压成"2019–2023"这样的区间串（连着写比罗列好读）。"""
+    if not years:
+        return []
+    ordered = sorted(set(years))
+    chunks: list[str] = []
+    start = previous = ordered[0]
+    for year in ordered[1:]:
+        if year == previous + 1:
+            previous = year
+            continue
+        chunks.append(f"{start}" if start == previous else f"{start}–{previous}")
+        start = previous = year
+    chunks.append(f"{start}" if start == previous else f"{start}–{previous}")
+    return chunks
+
+
 def build_timeline(sources: list[dict[str, Any]], *, now_year: int) -> dict[str, Any]:
-    """B4：按年份分组。年份未知的单列一桶，不参与"近两年"统计。"""
+    """B4：按年份分组。
+
+    年份未知的单列一桶、不参与任何"缺哪年"的判断（取不到就不猜，与 `eval/metrics.py` 同口径）；
+    缺口分两类且都不编：
+      · `missing_recent_years`：最新一条之后到"去年"之间的空档（最要紧的那种）；
+      · `internal_gaps`：已知年份**区间内部**的空档（例如 2019–2023 一条都没有）——
+        只报区间内部，区间之外的空白不叫缺口（可能本来就没资料）。
+    """
     buckets: dict[int | None, list[dict[str, Any]]] = {}
     for item in sources:
         year = int(item["year"]) if item.get("year") else None
         buckets.setdefault(year, []).append(item)
     known_years = sorted((year for year in buckets if year is not None), reverse=True)
-    groups = [
-        {
-            "year": year,
-            "items": buckets[year],
-        }
-        for year in known_years
-    ]
+    groups = [{"year": year, "items": buckets[year]} for year in known_years]
     if None in buckets:
         groups.append({"year": None, "items": buckets[None]})
-    missing = []
+
+    missing_recent: list[int] = []
+    internal: list[int] = []
     if known_years:
-        for year in range(known_years[0] - 1, max(now_year - 1, known_years[0] - 1) + 1):
-            if year not in known_years:
-                missing.append(year)
+        newest = known_years[0]
+        missing_recent = [year for year in range(newest + 1, now_year) if year not in known_years]
+        internal = [year for year in range(min(known_years) + 1, newest) if year not in known_years]
     return {
         "groups": groups,
         "known_years": known_years,
-        "missing_recent_years": missing,
+        "missing_recent_years": missing_recent,
+        "internal_gap_labels": _compress_years(internal),
         "undated": len(buckets.get(None) or []),
     }
+
+
+def _resolve_sources(db: Database, ids: list[str]) -> dict[str, dict[str, Any]]:
+    """按 id 取来源（**跨全会话**，不限本会话）。
+
+    为什么不限本会话：引用核查记的是"这条断言引用了哪些来源"，那些来源可能是在
+    生成产物的那一轮带出来的。只在会话内找会让一多半证据行显示"没有可解析的来源"
+    （真机渲染核对时抓到：15 条弱证据行全是空的）。
+    """
+    wanted = [str(item) for item in ids if item]
+    if not wanted:
+        return {}
+    placeholders = ",".join("?" for _ in wanted)
+    rows = db.query(
+        f"""
+        SELECT s.id AS source_id, s.title, s.url, s.domain, s.source_type, s.year, s.tier,
+               (SELECT count(*) FROM summaries sm WHERE sm.source_id = s.id) AS sums
+        FROM sources s WHERE s.id IN ({placeholders})
+        """,
+        tuple(wanted),
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row)
+        item["has_summary"] = bool(item.pop("sums"))
+        out[str(item["source_id"])] = item
+    return out
 
 
 def _evidence_from_support_checks(
@@ -91,13 +139,23 @@ def _evidence_from_support_checks(
         " verdict, reason FROM support_checks WHERE session_id = ? ORDER BY artifact_kind, item_id",
         (session_id,),
     )
-    table = []
+    parsed: list[tuple[dict[str, Any], list[str]]] = []
+    all_ids: set[str] = set()
     for row in rows:
         try:
-            ids = json.loads(str(row["source_ids_json"] or "[]"))
+            ids = [str(item) for item in json.loads(str(row["source_ids_json"] or "[]"))]
         except json.JSONDecodeError:
             ids = []
-        cited = [sources_by_id[item] for item in ids if item in sources_by_id]
+        parsed.append((dict(row), ids))
+        all_ids.update(ids)
+
+    # 会话内已加载的来源优先（含"有没有正文"），缺的按 id 跨会话补查
+    missing = [item for item in all_ids if item not in sources_by_id]
+    resolved = {**sources_by_id, **_resolve_sources(db, missing)}
+
+    table = []
+    for row, ids in parsed:
+        cited = [resolved[item] for item in ids if item in resolved]
         strong = str(row["evidence_level"]) == "summary" and str(row["verdict"]) in {
             "supported",
             "partial",

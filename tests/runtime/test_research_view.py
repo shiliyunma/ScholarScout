@@ -115,9 +115,31 @@ def test_timeline_groups_by_year_and_flags_recent_gaps() -> None:
     assert [group["year"] for group in view["groups"]] == [2025, 2023, None]
     assert [item["source_id"] for item in view["groups"][0]["items"]] == ["a", "b"]
     assert view["known_years"] == [2025, 2023]
-    # 2024 缺（2025 与 2026 之间的空档），而 2026 有资料 → 只报 2024
-    assert view["missing_recent_years"] == [2024]
+    # 2023 与 2025 之间的 2024 是**区间内部**空档；2026 就是"现在"，不算缺
+    assert view["internal_gap_labels"] == ["2024"]
+    assert view["missing_recent_years"] == []
     assert view["undated"] == 1
+
+
+def test_timeline_reports_internal_gaps_as_ranges() -> None:
+    """区间内部的空档也要报（2019–2023 一条都没有，不该只字不提）。
+
+    只报**区间内部**：区间之外（比最新更早之前）的空白不叫缺口 —— 可能本来就没资料。
+    """
+    sources = [
+        {"source_id": "new", "year": 2025, "title": "N"},
+        {"source_id": "old", "year": 2018, "title": "O"},
+    ]
+    view = research_view.build_timeline(sources, now_year=2026)
+    assert view["internal_gap_labels"] == ["2019–2024"]  # 2019..2024 之间一条都没有
+    # 区间外的一律不提（比如 2017 及更早）
+    assert "2017" not in " ".join(view["internal_gap_labels"])
+
+
+def test_timeline_without_gaps_reports_none() -> None:
+    sources = [{"source_id": "a", "year": 2025}, {"source_id": "b", "year": 2024}]
+    view = research_view.build_timeline(sources, now_year=2026)
+    assert view["missing_recent_years"] == [] and view["internal_gap_labels"] == []
 
 
 def test_timeline_without_any_year_reports_nothing_missing() -> None:
@@ -192,7 +214,7 @@ def test_evidence_uses_support_checks_when_present(db: Database) -> None:
     assert by_item["1"]["strength"] == "强"
     assert by_item["2"]["strength"] == "弱"  # 只有标题
     assert by_item["3"]["strength"] == "弱"  # 摘要对不上
-    assert by_item["4"]["sources"] == []  # 不在本会话来源里的 id 不硬塞
+    assert by_item["4"]["sources"] == []  # 库里根本没这个 id → 不硬塞
     assert view["weak_count"] == 2 and view["total"] == 4
 
 
@@ -244,3 +266,26 @@ def test_board_rpc_requires_session_id(ctx: AppContext) -> None:
 
     with pytest.raises(RpcError):
         dispatch(ctx, "research.board", {})
+
+
+def test_evidence_resolves_sources_outside_this_session(db: Database) -> None:
+    """核查引用的来源可能是别的会话带出来的 —— 也要能解析出来。
+
+    真机渲染核对时抓到：只在会话内解析时，23 条证据行里有 15 条显示"没有可解析的来源"，
+    因为那些来源是生成产物那一轮带出来的、没被本会话 mention 过。
+    """
+    _add_source(db, "src_elsewhere", session_id="ses_other", year=2023, with_summary=False)
+    _add_check(
+        db,
+        item_id="1",
+        claim="引用了别会话的来源",
+        source_ids=["src_elsewhere"],
+        evidence_level="title",
+        verdict="supported",
+    )
+    sources = research_view._load_session_sources(db, "ses_view")
+    view = research_view.build_evidence(db, "ses_view", state={}, sources=sources)
+    row = view["rows"][0]
+    assert len(row["sources"]) == 1
+    assert row["sources"][0]["source_id"] == "src_elsewhere"
+    assert row["sources"][0]["year"] == 2023
