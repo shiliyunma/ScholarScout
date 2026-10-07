@@ -757,6 +757,9 @@ async function showRoute(routeId) {
   const plan = payload.plan || {};
   const box = el("route-detail");
   box.innerHTML = "";
+  // ⑧：时间线/日历视图（纯前端，数据就是这条路线的 plan）
+  const visual = document.createElement("div");
+  visual.className = "route-visual";
 
   const title = document.createElement("h3");
   title.textContent = "学习路线：" + (payload.topic || "");
@@ -807,6 +810,15 @@ async function showRoute(routeId) {
     }
     box.appendChild(wrap);
   });
+
+  // ⑧ 可视化：默认时间线，可切日历（点某天看那一周要做什么）
+  renderRouteVisual(visual, [{
+    id: routeId,
+    topic: payload.topic || "",
+    created_at: payload.created_at || "",
+    weeks: plan.weeks || [],
+  }]);
+  box.appendChild(visual);
 
   const actions = document.createElement("div");
   actions.className = "actions";
@@ -1697,6 +1709,290 @@ function renderBoardTimeline(board) {
   });
 }
 
+/* ------------------------------------------- 学习路线可视化（⑧ 时间线 + 日历） */
+
+var WEEK_MS = 7 * 24 * 3600 * 1000;
+var CAL_VIEW_KEY = "scholarscout.routeView"; // "timeline" | "calendar"
+
+function weekRanges(route) {
+  /* 路线的第 1 周从它创建那天算起，每周 7 天。
+     **按周对齐、不摊到天上**：计划本身只有周粒度，把一周的条目摊到 7 天就是编一份
+     我们并不掌握的天级计划（详见 docs/01 §5.15 的口径）。 */
+  var start = new Date(route.created_at || Date.now());
+  start.setHours(0, 0, 0, 0);
+  var weeks = (route.weeks || []).slice();
+  return weeks.map(function (week) {
+    var idx = Number(week.idx || 1);
+    var from = new Date(start.getTime() + (idx - 1) * WEEK_MS);
+    var to = new Date(from.getTime() + WEEK_MS - 1);
+    return { week: week, from: from, to: to, topic: route.topic || "", route_id: route.id };
+  });
+}
+
+function sameDay(a, b) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function fmtMonthDay(date) {
+  return date.getMonth() + 1 + "月" + date.getDate() + "日";
+}
+
+function coveredBy(ranges, day) {
+  return ranges.filter(function (range) {
+    var t = day.getTime();
+    return t >= range.from.getTime() && t <= range.to.getTime();
+  });
+}
+
+function loadRouteView() {
+  try {
+    return localStorage.getItem(CAL_VIEW_KEY) === "calendar" ? "calendar" : "timeline";
+  } catch (error) {
+    return "timeline";
+  }
+}
+
+function saveRouteView(view) {
+  try {
+    localStorage.setItem(CAL_VIEW_KEY, view);
+  } catch (error) {
+    /* 隐私模式 */
+  }
+}
+
+function viewToggle(onChange) {
+  var row = document.createElement("div");
+  row.className = "cal-toggle";
+  [["timeline", "时间线"], ["calendar", "日历"]].forEach(function (pair) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "mini" + (loadRouteView() === pair[0] ? " is-on" : "");
+    button.textContent = pair[1];
+    button.addEventListener("click", function () {
+      saveRouteView(pair[0]);
+      onChange();
+    });
+    row.appendChild(button);
+  });
+  return row;
+}
+
+function renderRouteTimeline(box, routes, rerender) {
+  routes.forEach(function (route) {
+    var wrap = document.createElement("div");
+    wrap.className = "timeline";
+    var ranges = weekRanges(route);
+    if (routes.length > 1) {
+      var name = document.createElement("h5");
+      name.textContent = route.topic || "";
+      wrap.appendChild(name);
+    }
+    ranges.forEach(function (range) {
+      var row = document.createElement("div");
+      row.className = "timeline-row";
+      var dot = document.createElement("span");
+      dot.className = "timeline-dot";
+      row.appendChild(dot);
+      var body = document.createElement("div");
+      body.className = "timeline-body";
+      var head = document.createElement("div");
+      head.className = "timeline-head";
+      head.textContent =
+        "第 " + range.week.idx + " 周 · " +
+        fmtMonthDay(range.from) + " ～ " + fmtMonthDay(range.to);
+      body.appendChild(head);
+      var goal = document.createElement("div");
+      goal.className = "timeline-goal";
+      goal.textContent = range.week.goal || "";
+      body.appendChild(goal);
+      (range.week.items || []).forEach(function (item) {
+        var line = document.createElement("div");
+        line.className = "kv";
+        line.textContent =
+          "· [" + (item.kind || "") + "] " + (item.title || "") +
+          "（约 " + (item.est_minutes || 0) + " 分钟）";
+        body.appendChild(line);
+      });
+      if (range.week.checkpoint) {
+        var check = document.createElement("div");
+        check.className = "timeline-check";
+        check.textContent = range.week.checkpoint;
+        body.appendChild(check);
+      }
+      row.appendChild(body);
+      wrap.appendChild(row);
+    });
+    box.appendChild(wrap);
+  });
+}
+
+function renderRouteCalendar(box, routes, rerender) {
+  var all = [];
+  routes.forEach(function (route) {
+    all = all.concat(weekRanges(route));
+  });
+  var cursor = box.__cursor ? new Date(box.__cursor) : new Date();
+  cursor.setDate(1);
+
+  var bar = document.createElement("div");
+  bar.className = "cal-bar";
+  var prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "mini";
+  prev.textContent = "‹";
+  prev.title = "上个月";
+  prev.addEventListener("click", function () {
+    box.__cursor = new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1);
+    rerender();
+  });
+  var label = document.createElement("span");
+  label.className = "cal-label";
+  label.textContent = cursor.getFullYear() + " 年 " + (cursor.getMonth() + 1) + " 月";
+  var today = document.createElement("button");
+  today.type = "button";
+  today.className = "mini";
+  today.textContent = "今天";
+  today.addEventListener("click", function () {
+    box.__cursor = new Date();
+    rerender();
+  });
+  var next = document.createElement("button");
+  next.type = "button";
+  next.className = "mini";
+  next.textContent = "›";
+  next.title = "下个月";
+  next.addEventListener("click", function () {
+    box.__cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    rerender();
+  });
+  bar.appendChild(prev);
+  bar.appendChild(label);
+  bar.appendChild(next);
+  bar.appendChild(today);
+  box.appendChild(bar);
+
+  var grid = document.createElement("div");
+  grid.className = "cal-grid";
+  ["一", "二", "三", "四", "五", "六", "日"].forEach(function (name) {
+    var cell = document.createElement("div");
+    cell.className = "cal-head";
+    cell.textContent = name;
+    grid.appendChild(cell);
+  });
+  var firstWeekday = (new Date(cursor.getFullYear(), cursor.getMonth(), 1).getDay() + 6) % 7;
+  for (var blank = 0; blank < firstWeekday; blank += 1) {
+    var empty = document.createElement("div");
+    empty.className = "cal-empty";
+    grid.appendChild(empty);
+  }
+  var daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+  var now = new Date();
+  for (var day = 1; day <= daysInMonth; day += 1) {
+    (function (dayNumber) {
+      var date = new Date(cursor.getFullYear(), cursor.getMonth(), dayNumber);
+      var hits = coveredBy(all, date);
+      var cell = document.createElement("div");
+      cell.className = "cal-cell";
+      if (hits.length) cell.classList.add("is-plan");
+      if (sameDay(date, now)) cell.classList.add("is-today");
+      if (box.__selected && sameDay(date, box.__selected)) cell.classList.add("is-selected");
+      var num = document.createElement("span");
+      num.className = "cal-day";
+      num.textContent = String(dayNumber);
+      cell.appendChild(num);
+      if (hits.length) {
+        var tag = document.createElement("span");
+        tag.className = "cal-tag";
+        tag.textContent = "第 " + hits[0].week.idx + " 周";
+        cell.appendChild(tag);
+      }
+      cell.title = hits.length
+        ? "第 " + hits[0].week.idx + " 周：" + (hits[0].week.goal || "")
+        : "这一天不在已纳入的路线里";
+      cell.addEventListener("click", function () {
+        box.__selected = date;
+        rerender();
+      });
+      grid.appendChild(cell);
+    })(day);
+  }
+  box.appendChild(grid);
+
+  var detail = document.createElement("div");
+  detail.className = "cal-detail";
+  if (!all.length) {
+    detail.appendChild(plainHint("还没有纳入日历的路线：在上面勾选要纳入的路线。"));
+  } else if (!box.__selected) {
+    detail.appendChild(plainHint("点日历上的任意一天，看它属于哪一周、那一周要做什么。"));
+  } else {
+    var hits = coveredBy(all, box.__selected);
+    var head = document.createElement("div");
+    head.className = "cal-detail-head";
+    head.textContent = fmtMonthDay(box.__selected) + (hits.length ? "" : "（没有安排）");
+    detail.appendChild(head);
+    hits.forEach(function (range) {
+      var line = document.createElement("div");
+      line.className = "cal-detail-week";
+      line.textContent = "第 " + range.week.idx + " 周 · " + (range.topic || "");
+      detail.appendChild(line);
+      var goal = document.createElement("div");
+      goal.className = "timeline-goal";
+      goal.textContent = range.week.goal || "";
+      detail.appendChild(goal);
+      (range.week.items || []).forEach(function (item) {
+        var itemLine = document.createElement("div");
+        itemLine.className = "kv";
+        itemLine.textContent = "· [" + (item.kind || "") + "] " + (item.title || "");
+        detail.appendChild(itemLine);
+      });
+      if (range.week.checkpoint) {
+        var check = document.createElement("div");
+        check.className = "timeline-check";
+        check.textContent = range.week.checkpoint;
+        detail.appendChild(check);
+      }
+    });
+  }
+  box.appendChild(detail);
+}
+
+/* 一份可视化组件，两个地方用：学习路线页（单条）与个人中心（勾选的多条） */
+function renderRouteVisual(box, routes) {
+  box.innerHTML = "";
+  if (!routes.length) {
+    box.appendChild(plainHint("还没有可可视化的路线。"));
+    return;
+  }
+  var rerender = function () {
+    renderRouteVisual(box, routes);
+  };
+  box.appendChild(viewToggle(rerender));
+  if (loadRouteView() === "calendar") renderRouteCalendar(box, routes, rerender);
+  else renderRouteTimeline(box, routes, rerender);
+}
+
+async function loadRoutesForVisual(ids) {
+  var out = [];
+  for (var i = 0; i < ids.length; i += 1) {
+    try {
+      var payload = await scout.call("route.get", { route_id: ids[i] });
+      out.push({
+        id: String(payload.id || ids[i]),
+        topic: payload.topic || "",
+        created_at: payload.created_at || "",
+        weeks: (payload.plan || {}).weeks || [],
+      });
+    } catch (error) {
+      /* 某条读不到就不纳入，不阻塞其余的 */
+    }
+  }
+  return out;
+}
+
 /* ---------------------------------------------------- 个人中心（⑥，内容见⑦） */
 
 var PLAN_PICK_KEY = "scholarscout.calendarRoutes";
@@ -1753,8 +2049,8 @@ async function renderProfile() {
 
 async function profileRoutes() {
   var box = profileSection(
-    "学习路线汇总",
-    "勾选要纳入日历的路线（默认不纳入）。勾选结果记在本机，日历视图下一步接上。",
+    "学习路线汇总 / 日历",
+    "勾选要纳入日历的路线（默认不纳入）。日历按周对齐：一条路线的第 1 周从它生成那天算起。",
   );
   var payload;
   try {
@@ -1776,10 +2072,10 @@ async function profileRoutes() {
     var label = document.createElement("label");
     var check = document.createElement("input");
     check.type = "checkbox";
-    check.checked = picks.indexOf(String(item.id)) >= 0;
+    check.checked = picks.indexOf(String(item.route_id)) >= 0;
     check.addEventListener("change", function () {
       var now = loadRoutePicks();
-      var id = String(item.id);
+      var id = String(item.route_id || item.id || "");
       var at = now.indexOf(id);
       if (check.checked && at < 0) now.push(id);
       if (!check.checked && at >= 0) now.splice(at, 1);
@@ -1799,7 +2095,12 @@ async function profileRoutes() {
     list.appendChild(li);
   });
   box.appendChild(list);
-  box.appendChild(plainHint("已勾选 " + loadRoutePicks().length + " 条 / 共 " + items.length + " 条"));
+  var picked = loadRoutePicks();
+  box.appendChild(plainHint("已勾选 " + picked.length + " 条 / 共 " + items.length + " 条"));
+  var visual = document.createElement("div");
+  visual.className = "route-visual";
+  box.appendChild(visual);
+  renderRouteVisual(visual, await loadRoutesForVisual(picked));
   return box;
 }
 

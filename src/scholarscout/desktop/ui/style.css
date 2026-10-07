@@ -1345,3 +1345,136 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   color: var(--ui-text-secondary);
   font-size: 12.5px;
 }
+
+
+/* ------------------------------------------- 批次二⑧：时间线 / 日历 */
+
+.route-visual {
+  margin-top: 10px;
+  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
+  padding-top: 8px;
+}
+
+.cal-toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.cal-toggle .mini.is-on {
+  background: var(--ui-row-active-background);
+  border-color: var(--ui-stroke-primary);
+  font-weight: 600;
+}
+
+/* 时间线：一根竖线 + 每周一个点 */
+.timeline {
+  margin-bottom: 10px;
+}
+.timeline h5 {
+  margin: 4px 0 6px;
+  font-size: 12.5px;
+  color: var(--ui-text-primary);
+}
+.timeline-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+}
+.timeline-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  border: 0.125rem solid var(--ui-stroke-secondary);
+  background: var(--ui-bg-elevated);
+}
+.timeline-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.timeline-head {
+  font-weight: 600;
+  color: var(--ui-text-primary);
+}
+.timeline-goal {
+  color: var(--ui-text-secondary);
+  font-size: 12.5px;
+}
+.timeline-check {
+  color: var(--ui-text-tertiary);
+  font-size: 12px;
+}
+
+/* 日历：7 列网格；有安排的格子填底色，点开看当天属于哪一周 */
+.cal-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.cal-label {
+  flex: 1 1 auto;
+  text-align: center;
+  color: var(--ui-text-primary);
+  font-weight: 600;
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.cal-head {
+  text-align: center;
+  font-size: 11px;
+  color: var(--ui-text-tertiary);
+  padding-bottom: 2px;
+}
+.cal-empty,
+.cal-cell {
+  min-height: 34px;
+  border-radius: var(--radius-sm);
+  padding: 2px 3px;
+  font-size: 11.5px;
+  color: var(--ui-text-secondary);
+  border: 0.0625rem solid transparent;
+}
+.cal-cell {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+.cal-cell:hover {
+  background: var(--ui-row-hover-background);
+  border-color: var(--ui-stroke-tertiary);
+}
+.cal-cell.is-plan {
+  background: var(--ui-row-active-background);
+  color: var(--ui-text-primary);
+}
+.cal-cell.is-today {
+  border-color: var(--ui-stroke-primary);
+}
+.cal-cell.is-selected {
+  border-color: var(--ui-stroke-primary);
+  box-shadow: var(--shadow-sm);
+}
+.cal-tag {
+  font-size: 10px;
+  color: var(--ui-text-tertiary);
+}
+.cal-detail {
+  margin-top: 8px;
+  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
+  padding-top: 6px;
+}
+.cal-detail-head {
+  font-weight: 600;
+  color: var(--ui-text-primary);
+  margin-bottom: 4px;
+}
+.cal-detail-week {
+  color: var(--ui-text-primary);
+}
