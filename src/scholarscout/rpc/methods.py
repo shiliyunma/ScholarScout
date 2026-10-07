@@ -23,7 +23,7 @@ from scholarscout.providers.settings import provider_statuses
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.runtime import loop, registry, titles
 from scholarscout.runtime.toolctx import ToolContext
-from scholarscout.state import archive, export_session, learning, sessions, traces
+from scholarscout.state import archive, export_html, export_session, learning, sessions, traces
 from scholarscout.state.db import Database
 
 Handler = Callable[["AppContext", dict[str, Any]], Any]
@@ -231,16 +231,36 @@ def session_delete(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 
 @method("session.export")
 def session_export(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
-    """导出成可复制的 Markdown：既落一份文件到 `data/exports/`，也把正文回给界面复制。"""
+    """导出会话。`fmt="md"`（默认）给可复制的 Markdown；`fmt="html"` 给**自包含单页 HTML**。
+
+    为什么两种：Markdown 适合再编辑，但发给别人常被聊天软件吃掉格式；单页 HTML 内联渲染器、
+    不引外部资源，双击就能看（答辩演示/发人都用得上）。**两者正文同源**（同一套路径打码规则）。
+    """
     params = _params(params)
     session_id = _require(params, "session_id")
+    fmt = str(params.get("fmt") or "md").strip().lower()
+    if fmt not in ("md", "html"):
+        raise RpcError(Code.INVALID_PARAMS, f"不支持的导出格式：{fmt}（可用 md / html）")
     try:
+        if fmt == "html":
+            saved = export_html.export_html_to_file(ctx.db, session_id)
+            return {
+                "ok": True,
+                "session_id": session_id,
+                "fmt": "html",
+                "path": saved["path"],
+                "chars": saved["chars"],
+                "bytes": saved["bytes"],
+                # HTML 整份回给界面没有用处（界面只显示路径），所以不回 text
+                "text": "",
+            }
         result = export_session.export_to_file(ctx.db, session_id)
     except KeyError:
         raise RpcError(Code.NOT_FOUND, f"会话不存在：{session_id}") from None
     return {
         "ok": True,
         "session_id": session_id,
+        "fmt": "md",
         "path": result["path"],
         "text": result["text"],
         "chars": len(result["text"]),

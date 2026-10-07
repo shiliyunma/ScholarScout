@@ -1762,6 +1762,7 @@ function toggleRowMenu(item, li) {
     [item.pinned ? "取消置顶" : "置顶", function () { pinSession(item); }, false],
     ["重命名", function () { closeRowMenus(); startRename(item, li); }, false],
     ["分享（导出 Markdown）", function () { exportSession(item); }, false],
+    ["导出单页 HTML（可直接打开/发送）", function () { exportSession(item, "html"); }, false],
     ["", null, false],
     ["删除会话", function () { deleteSession(item); }, true],
   ];
@@ -1805,11 +1806,20 @@ async function pinSession(item) {
   await loadSessions();
 }
 
-async function exportSession(item) {
+async function exportSession(item, fmt) {
   closeRowMenus();
   el("status").textContent = "正在导出…";
   try {
-    var result = await scout.call("session.export", { session_id: item.session_id });
+    var result = await scout.call("session.export", {
+      session_id: item.session_id,
+      fmt: fmt || "md",
+    });
+    if (result.fmt === "html") {
+      // 单页 HTML 是给人双击看的：这里只报路径，不弹正文（正文有几十万字符）
+      el("status").textContent =
+        "已导出单页 HTML：" + result.path + "（在文件夹里双击即可打开，断网也能看）";
+      return;
+    }
     showTextModal(item.title || "会话", result.text, result.path);
     el("status").textContent = "已导出 " + result.chars + " 字";
   } catch (error) {
