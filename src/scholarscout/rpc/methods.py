@@ -781,6 +781,18 @@ def note_review(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, **result, "stats": learning.card_stats(ctx.db)}
 
 
+@method("note.due")
+def note_due(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """今天该练哪些卡（B6 间隔重复）：新卡 + 到期卡。
+
+    只读、纯本地算、**不花 token** —— 排期是 SM-2 的确定性结果，问模型等于把可复算的东西
+    换成不可复算的东西。
+    """
+    params = _params(params)
+    limit = _int_param(params, "limit", 30)
+    return learning.due_cards(ctx.db, limit=limit)
+
+
 @method("note.stats")
 def note_stats(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """抽背总体情况：练过几张、各档多少、记住率（分母只算评过的卡）。"""

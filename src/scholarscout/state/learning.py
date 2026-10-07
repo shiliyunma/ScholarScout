@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 from typing import Any
 
+from scholarscout.learning import srs
 from scholarscout.state.db import Database
 from scholarscout.state.migrate import now_iso
 from scholarscout.state.sessions import new_id
@@ -410,30 +412,144 @@ def get_note(db: Database, note_id: str) -> dict[str, Any] | None:
     return payload
 
 
-def review_card(db: Database, note_id: str, card_index: int, rating: str) -> dict[str, Any]:
-    """记一次抽背评价（同一张卡重复评＝更新，并累加复习次数）。"""
+def review_card(
+    db: Database,
+    note_id: str,
+    card_index: int,
+    rating: str,
+    *,
+    now: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """记一次抽背评价，并按 SM-2 排下一次复习（同一张卡重复评＝更新）。
+
+    `now` 可注入：测试要钉住"下次是什么时候"，读真钟就钉不住。
+    """
     if rating not in CARD_RATINGS:
         raise ValueError(f"非法评价：{rating!r}（允许：{', '.join(CARD_RATINGS)}）")
     if card_index < 0:
         raise ValueError("card_index 不能为负")
+    moment = now or datetime.datetime.now().astimezone()
+    previous = db.query_one(
+        "SELECT ease, interval_days, streak, lapses FROM card_reviews"
+        " WHERE note_id = ? AND card_index = ?",
+        (note_id, card_index),
+    )
+    schedule = srs.review(
+        rating=rating,
+        ease=(previous["ease"] if previous is not None else None),
+        interval_days=(previous["interval_days"] if previous is not None else None),
+        streak=(int(previous["streak"] or 0) if previous is not None else 0),
+        lapses=(int(previous["lapses"] or 0) if previous is not None else 0),
+        now=moment,
+    )
     db.execute(
         """
-        INSERT INTO card_reviews (note_id, card_index, rating, reviews, reviewed_at)
-        VALUES (?, ?, ?, 1, ?)
+        INSERT INTO card_reviews (note_id, card_index, rating, reviews, reviewed_at,
+                                  ease, interval_days, streak, lapses, due_at)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (note_id, card_index) DO UPDATE SET
             rating = excluded.rating,
             reviews = card_reviews.reviews + 1,
-            reviewed_at = excluded.reviewed_at
+            reviewed_at = excluded.reviewed_at,
+            ease = excluded.ease,
+            interval_days = excluded.interval_days,
+            streak = excluded.streak,
+            lapses = excluded.lapses,
+            due_at = excluded.due_at
         """,
-        (note_id, card_index, rating, now_iso()),
+        (
+            note_id,
+            card_index,
+            rating,
+            moment.replace(microsecond=0).isoformat(),
+            schedule.ease,
+            schedule.interval_days,
+            schedule.streak,
+            schedule.lapses,
+            schedule.due_at,
+        ),
     )
-    return {"note_id": note_id, "card_index": card_index, "rating": rating}
+    return {
+        "note_id": note_id,
+        "card_index": card_index,
+        "rating": rating,
+        "ease": schedule.ease,
+        "interval_days": schedule.interval_days,
+        "streak": schedule.streak,
+        "lapses": schedule.lapses,
+        "due_at": schedule.due_at,
+        "interval_label": srs.describe_interval(schedule.interval_days),
+    }
 
 
 def card_review_map(db: Database, note_id: str) -> dict[int, str]:
     """这张卡片笔记里每张卡的最近评价：`{card_index: rating}`。"""
     rows = db.query("SELECT card_index, rating FROM card_reviews WHERE note_id = ?", (note_id,))
     return {int(row["card_index"]): str(row["rating"]) for row in rows}
+
+
+def due_cards(
+    db: Database,
+    *,
+    now: datetime.datetime | None = None,
+    limit: int = 30,
+) -> dict[str, Any]:
+    """今天该练哪些卡：新卡（从没排过）+ 到期卡（`due_at <= now`）。
+
+    **扫全库解析卡片正文**在这里是可接受的：卡片是本地 Markdown、几十到几百张的量级，
+    正则解析比多存一张"卡片明细表"更不容易不一致（正文是唯一真相，明细表会腐化）。
+    真要长大到几万张再谈索引，现在不做。
+    """
+    moment = now or datetime.datetime.now().astimezone()
+    rows = db.query(
+        "SELECT id, title, content, created_at FROM notes WHERE kind = 'card'"
+        " ORDER BY created_at DESC"
+    )
+    schedule_rows = {
+        (str(item["note_id"]), int(item["card_index"])): item
+        for item in db.query("SELECT note_id, card_index, due_at FROM card_reviews")
+    }
+    items: list[dict[str, Any]] = []
+    total = 0
+    fresh = 0
+    due_total = 0
+    for row in rows:
+        note_id = str(row["id"])
+        for index, card in enumerate(parse_cards(str(row["content"] or ""))):
+            total += 1
+            key = (note_id, index)
+            existing = schedule_rows.get(key)
+            if existing is None:
+                fresh += 1
+            if existing is not None and not srs.is_due(
+                None if existing["due_at"] is None else str(existing["due_at"]), now=moment
+            ):
+                continue
+            due_total += 1
+            if len(items) >= max(0, limit):
+                # 计数与返回条数是两件事：`limit` 只该影响"这次发多少张给你练"，
+                # 不该影响"到底有多少张到期"。混在一起会让界面上的数字随 limit 变（真踩过）。
+                continue
+            items.append(
+                {
+                    "note_id": note_id,
+                    "note_title": str(row["title"] or "抽背卡"),
+                    "card_index": index,
+                    "front": card.get("front", ""),
+                    "back": card.get("back", ""),
+                    "is_new": existing is None,
+                }
+            )
+    return {
+        "items": items,
+        "counts": {
+            "total_cards": total,
+            "due": due_total,
+            "new": fresh,
+            "reviewed_cards": len(schedule_rows),
+        },
+        "now": moment.replace(microsecond=0).isoformat(),
+    }
 
 
 def card_stats(db: Database) -> dict[str, Any]:
@@ -448,6 +564,11 @@ def card_stats(db: Database) -> dict[str, Any]:
             counts[str(item["rating"])] = int(item["n"])
     reviewed = int(row["reviewed"]) if row is not None else 0
     good = counts.get("good", 0)
+    timeline = due_cards(db, limit=0)["counts"]
+    upcoming = db.query_one(
+        "SELECT min(due_at) AS next_due FROM card_reviews WHERE due_at IS NOT NULL AND due_at > ?",
+        (datetime.datetime.now().astimezone().replace(microsecond=0).isoformat(),),
+    )
     return {
         "reviewed": reviewed,
         "attempts": int(row["attempts"]) if row is not None else 0,
@@ -455,6 +576,11 @@ def card_stats(db: Database) -> dict[str, Any]:
         # 记住率分母只算"评过的卡"（没评过的不该被算成不会）
         "recall_rate": (good / reviewed) if reviewed else None,
         "last_at": row["last_at"] if row is not None else None,
+        # B6：今天该练多少、其中新卡多少（界面顶部那行"今天该练 N 张"就取这里）
+        "due": timeline["due"],
+        "due_new": timeline["new"],
+        "total_cards": timeline["total_cards"],
+        "next_due_at": upcoming["next_due"] if upcoming is not None else None,
     }
 
 

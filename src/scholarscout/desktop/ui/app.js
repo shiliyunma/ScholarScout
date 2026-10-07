@@ -893,15 +893,24 @@ async function refreshCardStats() {
   if (!node) return;
   try {
     const stats = await scout.call("note.stats", {});
-    if (!stats.reviewed) {
-      node.textContent = "";
-      return;
+    const bits = [];
+    // 间隔重复（B6）：先说"今天该练多少"——这是用户唯一需要现在做决定的信息
+    if (stats.due) {
+      bits.push(
+        "今天该练 " + stats.due + " 张" + (stats.due_new ? "（新卡 " + stats.due_new + "）" : ""),
+      );
+    } else if (stats.total_cards) {
+      bits.push("今天没有到期的卡（共 " + stats.total_cards + " 张）");
     }
-    node.textContent =
-      "练过 " +
-      stats.reviewed +
-      " 张｜记住率 " +
-      (stats.recall_rate === null ? "—" : Math.round(stats.recall_rate * 100) + "%");
+    if (stats.reviewed) {
+      bits.push(
+        "练过 " +
+          stats.reviewed +
+          " 张｜记住率 " +
+          (stats.recall_rate === null ? "—" : Math.round(stats.recall_rate * 100) + "%"),
+      );
+    }
+    node.textContent = bits.join("｜");
   } catch (error) {
     node.textContent = "";
   }
@@ -922,7 +931,21 @@ async function startPractice(noteId, options) {
       });
     });
   };
-  if (noteId) {
+  if (opts.dueOnly) {
+    // B6：只练到期的。直接用 `note.due` 的结果 —— 它已经带了正反面，
+    // 不必再按笔记逐条 `note.get`（少 n 次往返，卡多时差别明显）。
+    const due = await scout.call("note.due", { limit: 50 });
+    (due.items || []).forEach(function (item) {
+      cards.push({
+        note_id: item.note_id,
+        index: item.card_index,
+        front: item.front,
+        back: item.back,
+        rating: null,
+        is_new: item.is_new,
+      });
+    });
+  } else if (noteId) {
     collect(noteId, await scout.call("note.get", { note_id: noteId }));
   } else {
     const payload = await scout.call("note.list", { kind: "card", limit: 50 });
@@ -937,7 +960,9 @@ async function startPractice(noteId, options) {
     window.alert(
       opts.onlyWeak
         ? "没有「不会 / 模糊」的卡了 —— 这一轮不用练。"
-        : "还没有抽背卡。先让它「把要点做成抽背卡」。"
+        : opts.dueOnly
+          ? "今天没有到期的卡。想全练一遍就点「开始抽背」。"
+          : "还没有抽背卡。先让它「把要点做成抽背卡」。"
     );
     return;
   }
@@ -970,6 +995,20 @@ function renderPractice() {
   }
   const card = practice.cards[practice.index];
   el("practice-progress").textContent = practice.index + 1 + " / " + practice.cards.length;
+  // B6：上一张评完后的排期一直显示，直到下一张评完 —— 让"间隔重复在起作用"看得见
+  if (practice.lastSchedule) {
+    const line = document.createElement("p");
+    line.className = "hint";
+    line.textContent =
+      "上一张「" +
+      short(practice.lastSchedule.front || "", 14) +
+      "」下次复习：" +
+      practice.lastSchedule.label +
+      (practice.lastSchedule.lapses
+        ? "（累计答错 " + practice.lastSchedule.lapses + " 次）"
+        : "");
+    body.appendChild(line);
+  }
   const front = document.createElement("div");
   front.className = "practice-front";
   front.textContent = card.front;
@@ -1028,11 +1067,20 @@ async function ratePractice(rating) {
   practice.revealed = false;
   renderPractice();
   try {
-    await scout.call("note.review", {
+    const result = await scout.call("note.review", {
       note_id: card.note_id,
       card_index: card.index,
       rating: rating,
     });
+    // B6：把 SM-2 算出来的下一次如实回显（不显示的话，用户根本不知道间隔重复有没有生效）
+    if (state.practice && result && result.interval_label) {
+      state.practice.lastSchedule = {
+        front: card.front,
+        label: result.interval_label,
+        lapses: result.lapses || 0,
+      };
+      renderPractice();
+    }
   } catch (error) {
     // 记不上要说出来：否则用户以为练过了、其实没记上
     const warn = document.createElement("p");
@@ -2205,6 +2253,9 @@ function wire() {
   // 抽背「练」模式：开始 / 关闭 / 看答案，以及键盘 1/2/3（会了/模糊/不会 的顺序见按钮）
   el("btn-practice").addEventListener("click", function () {
     startPractice(null, {});
+  });
+  el("btn-practice-due").addEventListener("click", function () {
+    startPractice(null, { dueOnly: true });
   });
   el("btn-practice-close").addEventListener("click", closePractice);
   el("btn-practice-reveal").addEventListener("click", revealPractice);
