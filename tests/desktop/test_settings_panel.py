@@ -69,6 +69,19 @@ def test_search_group_shows_provider_status() -> None:
         assert reason in text, f"界面没有把 {reason} 翻成人话"
 
 
+def test_mineru_without_token_shows_a_warning() -> None:
+    """ "开关开着 + 没配 token"必须在设置里提前警告 —— 否则扫描版失败会被误读成"文档没内容"。
+
+    背景（真机查证 2026-10-06）：`.env` 里 `MINERU_API_TOKEN` 是**空值**，
+    所以系统只能走免 token 的 Agent 通道，而该通道实测持续返回
+    `model service is temporarily unavailable`。
+    """
+    text = read_app_js()
+    assert "features.enable_mineru" in text and "mineru.api_token" in text
+    assert "model service is temporarily unavailable" in text, "没有把真实失败原因写进提示"
+    assert "mineru_failed" in text, "没有说明失败会被如实记成 mineru_failed"
+
+
 def test_index_html_has_the_panel_markup() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
     for marker in (
