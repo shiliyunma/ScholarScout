@@ -715,6 +715,31 @@ def note_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+@method("note.review")
+def note_review(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """记一次抽背评价（"练"模式的记账）。
+
+    `card_index` 是卡在这条笔记里的位置（`note.get` 返回的 `cards[].index`）——
+    一行卡片笔记通常有好几张卡，按行记等于把 10 张压成一个数，练完也说不清哪张没记住。
+    """
+    params = _params(params)
+    note_id = _require(params, "note_id")
+    card_index = _int_param(params, "card_index", -1)
+    rating = _require(params, "rating")
+    try:
+        result = learning.review_card(ctx.db, note_id, card_index, str(rating))
+    except ValueError as exc:
+        raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
+    return {"ok": True, **result, "stats": learning.card_stats(ctx.db)}
+
+
+@method("note.stats")
+def note_stats(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """抽背总体情况：练过几张、各档多少、记住率（分母只算评过的卡）。"""
+    del params
+    return learning.card_stats(ctx.db)
+
+
 # --------------------------------------------------------------------- 分发
 
 

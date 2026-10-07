@@ -10,6 +10,7 @@ var state = {
   sending: false,
   routes: [],
   cards: [],
+  practice: null,
   pending: null,
   theme: "auto",
   history: false,
@@ -848,6 +849,7 @@ async function loadCards() {
     });
     list.appendChild(li);
   });
+  refreshCardStats();
 }
 
 async function showCard(noteId) {
@@ -869,6 +871,200 @@ async function showCard(noteId) {
     await scout.call("archive.reveal", { path: note.path });
   });
   box.appendChild(actions);
+}
+
+/* ------------------------------------------------------------ 抽背「练」模式 */
+
+/*: 三档评价的中文（与后端 card_reviews.rating 的取值一一对应） */
+var RATING_LABELS = { good: "会了", fuzzy: "模糊", bad: "不会" };
+
+// 卡片栏那行小字：练过几张、记住率（分母只算评过的卡）
+async function refreshCardStats() {
+  const node = el("practice-stats");
+  if (!node) return;
+  try {
+    const stats = await scout.call("note.stats", {});
+    if (!stats.reviewed) {
+      node.textContent = "";
+      return;
+    }
+    node.textContent =
+      "练过 " +
+      stats.reviewed +
+      " 张｜记住率 " +
+      (stats.recall_rate === null ? "—" : Math.round(stats.recall_rate * 100) + "%");
+  } catch (error) {
+    node.textContent = "";
+  }
+}
+
+// 开始抽背：不给 noteId ＝ 把所有卡片行的卡串成一轮；只练「不会/模糊」是可选的第二轮
+async function startPractice(noteId, options) {
+  const opts = options || {};
+  const cards = [];
+  const collect = function (id, note) {
+    (note.cards || []).forEach(function (card) {
+      cards.push({
+        note_id: id,
+        index: card.index,
+        front: card.front,
+        back: card.back,
+        rating: card.rating,
+      });
+    });
+  };
+  if (noteId) {
+    collect(noteId, await scout.call("note.get", { note_id: noteId }));
+  } else {
+    const payload = await scout.call("note.list", { kind: "card", limit: 50 });
+    for (const item of payload.items || []) {
+      collect(item.id, await scout.call("note.get", { note_id: item.id }));
+    }
+  }
+  const pool = opts.onlyWeak
+    ? cards.filter(function (card) { return card.rating === "bad" || card.rating === "fuzzy"; })
+    : cards;
+  if (!pool.length) {
+    window.alert(
+      opts.onlyWeak
+        ? "没有「不会 / 模糊」的卡了 —— 这一轮不用练。"
+        : "还没有抽背卡。先让它「把要点做成抽背卡」。"
+    );
+    return;
+  }
+  state.practice = {
+    cards: pool,
+    index: 0,
+    revealed: false,
+    onlyWeak: !!opts.onlyWeak,
+    round: { good: 0, fuzzy: 0, bad: 0 },
+  };
+  el("practice").hidden = false;
+  renderPractice();
+}
+
+function closePractice() {
+  state.practice = null;
+  el("practice").hidden = true;
+  refreshCardStats();
+}
+
+function renderPractice() {
+  const practice = state.practice;
+  const body = el("practice-body");
+  if (!practice) return;
+  body.innerHTML = "";
+  el("btn-practice-reveal").disabled = false;
+  if (practice.index >= practice.cards.length) {
+    renderPracticeSummary();
+    return;
+  }
+  const card = practice.cards[practice.index];
+  el("practice-progress").textContent = practice.index + 1 + " / " + practice.cards.length;
+  const front = document.createElement("div");
+  front.className = "practice-front";
+  front.textContent = card.front;
+  body.appendChild(front);
+  if (practice.revealed) {
+    const back = document.createElement("div");
+    back.className = "practice-back";
+    back.textContent = card.back;
+    body.appendChild(back);
+  } else {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "先在心里回答，再点「看答案」（Enter）。";
+    body.appendChild(hint);
+  }
+  const ratings = document.createElement("div");
+  ratings.className = "practice-ratings";
+  [
+    ["bad", "不会（1）"],
+    ["fuzzy", "模糊（2）"],
+    ["good", "会了（3）"],
+  ].forEach(function (pair) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "rate-" + pair[0];
+    button.textContent = pair[1];
+    // 没看答案不许自评：否则会一路点"会了"，数据就没有意义
+    button.disabled = !practice.revealed;
+    button.addEventListener("click", function () {
+      ratePractice(pair[0]);
+    });
+    ratings.appendChild(button);
+  });
+  body.appendChild(ratings);
+  if (card.rating) {
+    const previous = document.createElement("p");
+    previous.className = "hint";
+    previous.textContent = "上次评价：" + (RATING_LABELS[card.rating] || card.rating);
+    body.appendChild(previous);
+  }
+  el("btn-practice-reveal").textContent = practice.revealed ? "隐藏答案" : "看答案";
+}
+
+function revealPractice() {
+  if (!state.practice) return;
+  state.practice.revealed = !state.practice.revealed;
+  renderPractice();
+}
+
+async function ratePractice(rating) {
+  const practice = state.practice;
+  if (!practice || !practice.revealed || practice.index >= practice.cards.length) return;
+  const card = practice.cards[practice.index];
+  practice.round[rating] = (practice.round[rating] || 0) + 1;
+  practice.index += 1;
+  practice.revealed = false;
+  renderPractice();
+  try {
+    await scout.call("note.review", {
+      note_id: card.note_id,
+      card_index: card.index,
+      rating: rating,
+    });
+  } catch (error) {
+    // 记不上要说出来：否则用户以为练过了、其实没记上
+    const warn = document.createElement("p");
+    warn.className = "hint set-bad";
+    warn.textContent = "这一张的评价没记上：" + error.message;
+    el("practice-body").appendChild(warn);
+  }
+}
+
+function renderPracticeSummary() {
+  const practice = state.practice;
+  const body = el("practice-body");
+  const total = practice.cards.length;
+  const good = practice.round.good || 0;
+  el("practice-progress").textContent = "本轮结束";
+  const line = document.createElement("div");
+  line.className = "practice-front";
+  line.textContent =
+    "本轮 " +
+    total +
+    " 张：会了 " +
+    good +
+    "／模糊 " +
+    (practice.round.fuzzy || 0) +
+    "／不会 " +
+    (practice.round.bad || 0) +
+    "（记住率 " +
+    (total ? Math.round((good / total) * 100) : 0) +
+    "%）";
+  body.appendChild(line);
+  const actions = document.createElement("div");
+  actions.className = "practice-ratings";
+  addButton(actions, "再来一轮（全部）", function () {
+    startPractice(null, {});
+  });
+  addButton(actions, "只练不会 / 模糊的", function () {
+    startPractice(null, { onlyWeak: true });
+  });
+  addButton(actions, "结束", closePractice);
+  body.appendChild(actions);
+  el("btn-practice-reveal").disabled = true;
 }
 
 async function loadNotes(kind) {
@@ -1745,6 +1941,25 @@ function wire() {
   });
 
   el("btn-stop").addEventListener("click", stopTurn);
+
+  // 抽背「练」模式：开始 / 关闭 / 看答案，以及键盘 1/2/3（会了/模糊/不会 的顺序见按钮）
+  el("btn-practice").addEventListener("click", function () {
+    startPractice(null, {});
+  });
+  el("btn-practice-close").addEventListener("click", closePractice);
+  el("btn-practice-reveal").addEventListener("click", revealPractice);
+  document.addEventListener("keydown", function (event) {
+    if (!state.practice || el("practice").hidden) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      revealPractice();
+      return;
+    }
+    if (!state.practice.revealed) return; // 没看答案不许自评（与按钮的禁用一致）
+    if (event.key === "1") ratePractice("bad");
+    else if (event.key === "2") ratePractice("fuzzy");
+    else if (event.key === "3") ratePractice("good");
+  });
 
   el("input").addEventListener("keydown", function (event) {
     if (event.key === "Enter" && !event.shiftKey) {

@@ -94,11 +94,30 @@
 
       <div class="pane" id="pane-cards">
         <p class="hint">抽背卡：正面问、背面答；可定位到本地 Markdown。</p>
+        <div class="actions">
+          <button type="button" id="btn-practice">开始抽背</button>
+          <span class="hint" id="practice-stats"></span>
+        </div>
         <ul class="list" id="card-list"></ul>
         <div class="detail" id="card-detail"></div>
       </div>
     </section>
   </main>
+
+  <div id="practice" class="overlay" hidden>
+    <div class="sheet practice-sheet">
+      <div class="sheet-head">
+        <strong id="practice-title">抽背</strong>
+        <span class="hint" id="practice-progress"></span>
+        <button id="btn-practice-close" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="sheet-body" id="practice-body"></div>
+      <div class="sheet-foot">
+        <span class="hint">先回想再看答案；会了／模糊／不会 三档（键盘 1 / 2 / 3）</span>
+        <button id="btn-practice-reveal" type="button">看答案</button>
+      </div>
+    </div>
+  </div>
 
   <div id="settings" class="overlay" hidden>
     <div class="sheet">

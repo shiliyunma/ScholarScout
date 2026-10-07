@@ -898,6 +898,35 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .provider-badge.is-ok { color: #1a7f37; border-color: #1a7f3755; background: #1a7f3711; }
 .provider-badge.is-off { color: var(--muted-foreground); }
 .provider-note { color: var(--muted-foreground); }
+
+/* ─────────────────────────────────────────────────────────── 抽背「练」模式 */
+
+.practice-sheet .sheet-body { gap: 12px; }
+.practice-front {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--foreground);
+}
+.practice-back {
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--card);
+  color: var(--foreground);
+}
+.practice-ratings {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.practice-ratings button { min-width: 96px; }
+.practice-ratings button:disabled { opacity: 0.5; cursor: not-allowed; }
+.practice-ratings button.rate-good { border-color: #1a7f3755; }
+.practice-ratings button.rate-bad { border-color: #b4231855; }
 .set-group h4 {
   margin: 12px 0 0;
   font-size: 12.5px;
