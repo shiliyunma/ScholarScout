@@ -118,12 +118,20 @@ def test_ui_references_every_panel_target() -> None:
     html = (assets.ui_dir() / "index.html").read_text(encoding="utf-8")
     for anchor in (
         'id="status"',
-        'id="btn-theme"',
+        # 顶栏按用户要求精简：浅/深色与刷新都去掉了，设置与个人中心改成图标按钮
+        'id="btn-settings"',
+        'id="btn-profile"',
+        'id="btn-profile-close"',
+        'id="profile-body"',
+        'id="btn-new"',
         'id="session-list"',
         'id="messages"',
         'id="composer"',
         'id="source-list"',
         'id="route-list"',
         'id="card-list"',
+        'id="board-questions"',
+        'id="profile-topics"',
+        'id="memory-list"',
     ):
         assert anchor in html

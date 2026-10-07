@@ -1281,3 +1281,67 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   z-index: 60;
   min-width: 168px;
 }
+
+
+/* ------------------------------------------ 批次二⑥：顶栏图标 / 左栏新建 / 个人中心 */
+
+/* 顶栏图标按钮：方形、悬停有底、按下有反馈 —— 一眼看出是可点的图标 */
+.icon-btn {
+  width: 30px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0.0625rem solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ui-text-secondary);
+  cursor: pointer;
+}
+.icon-btn:hover {
+  background: var(--ui-row-hover-background);
+  border-color: var(--ui-stroke-tertiary);
+  color: var(--ui-text-primary);
+}
+
+/* 左栏表头：标题 + 新建按钮同一行 */
+.col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-right: 10px;
+}
+
+/* 个人中心：一块一块的汇总，块之间用细线分隔 */
+.profile-block {
+  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
+  padding: 10px 0 6px;
+}
+.profile-block:first-child {
+  border-top: 0;
+}
+.profile-block h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--ui-text-primary);
+}
+.profile-list {
+  flex: none;
+  padding: 0;
+  overflow: visible;
+}
+.profile-list li {
+  cursor: default;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+}
+.profile-nums {
+  margin: 4px 0 6px;
+  color: var(--ui-text-secondary);
+  font-size: 12.5px;
+}

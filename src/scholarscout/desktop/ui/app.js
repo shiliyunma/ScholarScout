@@ -34,13 +34,10 @@ function resolveTheme(mode) {
 function applyTheme(mode) {
   state.theme = mode;
   document.documentElement.classList.toggle("dark", resolveTheme(mode) === "dark");
-  var button = el("btn-theme");
-  if (button) {
-    button.textContent = mode === "auto" ? "跟随系统" : mode === "dark" ? "深色" : "浅色";
-    button.title = "主题：" + button.textContent + "（点一下切换浅/深，再次回到跟随系统）";
-  }
+  // 主题开关在设置面板里（顶栏那个按钮已按用户要求去掉）
 }
 
+/* 主题循环：设置面板的主题分段控件在用（顶栏那个按钮已去掉） */
 function cycleTheme() {
   var next = state.theme === "auto" ? (systemPrefersDark() ? "light" : "dark") : state.theme === "dark" ? "light" : "dark";
   try {
@@ -1700,6 +1697,198 @@ function renderBoardTimeline(board) {
   });
 }
 
+/* ---------------------------------------------------- 个人中心（⑥，内容见⑦） */
+
+var PLAN_PICK_KEY = "scholarscout.calendarRoutes";
+
+function loadRoutePicks() {
+  try {
+    var raw = JSON.parse(localStorage.getItem(PLAN_PICK_KEY) || "[]");
+    return Array.isArray(raw) ? raw.map(String) : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveRoutePicks(ids) {
+  try {
+    localStorage.setItem(PLAN_PICK_KEY, JSON.stringify(ids));
+  } catch (error) {
+    /* 隐私模式：只当次生效 */
+  }
+}
+
+async function openProfile() {
+  el("profile").hidden = false;
+  await renderProfile();
+}
+
+function closeProfile() {
+  el("profile").hidden = true;
+}
+
+function profileSection(title, hint) {
+  var box = document.createElement("section");
+  box.className = "profile-block";
+  var head = document.createElement("h4");
+  head.textContent = title;
+  box.appendChild(head);
+  if (hint) {
+    var note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = hint;
+    box.appendChild(note);
+  }
+  return box;
+}
+
+async function renderProfile() {
+  var body = el("profile-body");
+  body.innerHTML = "";
+  body.appendChild(await profileRoutes());
+  body.appendChild(await profileNotes());
+  body.appendChild(await profileCards());
+  el("profile-note").textContent = "汇总跨全部会话；日历与时间线见下一步";
+}
+
+async function profileRoutes() {
+  var box = profileSection(
+    "学习路线汇总",
+    "勾选要纳入日历的路线（默认不纳入）。勾选结果记在本机，日历视图下一步接上。",
+  );
+  var payload;
+  try {
+    payload = await scout.call("route.list", { limit: 50 });
+  } catch (error) {
+    box.appendChild(plainHint("读不到路线：" + error.message));
+    return box;
+  }
+  var items = payload.items || [];
+  if (!items.length) {
+    box.appendChild(plainHint("还没有学习路线。在对话里点「生成学习路线」即可。"));
+    return box;
+  }
+  var picks = loadRoutePicks();
+  var list = document.createElement("ul");
+  list.className = "list profile-list";
+  items.forEach(function (item) {
+    var li = document.createElement("li");
+    var label = document.createElement("label");
+    var check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = picks.indexOf(String(item.id)) >= 0;
+    check.addEventListener("change", function () {
+      var now = loadRoutePicks();
+      var id = String(item.id);
+      var at = now.indexOf(id);
+      if (check.checked && at < 0) now.push(id);
+      if (!check.checked && at >= 0) now.splice(at, 1);
+      saveRoutePicks(now);
+      renderProfile();
+    });
+    label.appendChild(check);
+    label.appendChild(document.createTextNode(" " + (item.topic || "未命名")));
+    li.appendChild(label);
+    var meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent =
+      (item.weeks ? item.weeks + " 周" : "") +
+      (item.version ? "｜第 " + item.version + " 版" : "") +
+      (item.created_at ? "｜" + String(item.created_at).slice(0, 10) : "");
+    li.appendChild(meta);
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+  box.appendChild(plainHint("已勾选 " + loadRoutePicks().length + " 条 / 共 " + items.length + " 条"));
+  return box;
+}
+
+async function profileNotes() {
+  var box = profileSection("笔记汇总", "学习笔记与资料摘要（跨会话）。");
+  var payload;
+  try {
+    payload = await scout.call("note.list", { limit: 50 });
+  } catch (error) {
+    box.appendChild(plainHint("读不到笔记：" + error.message));
+    return box;
+  }
+  var items = (payload.items || []).filter(function (item) {
+    return item.kind !== "card";
+  });
+  if (!items.length) {
+    box.appendChild(plainHint("还没有笔记或摘要。"));
+    return box;
+  }
+  var list = document.createElement("ul");
+  list.className = "list profile-list";
+  items.slice(0, 20).forEach(function (item) {
+    var li = document.createElement("li");
+    li.textContent = (item.kind === "summary" ? "摘要：" : "笔记：") + (item.title || "(无标题)");
+    var meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = String(item.created_at || "").slice(0, 16).replace("T", " ");
+    li.appendChild(meta);
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+  box.appendChild(plainHint("共 " + items.length + " 条，上面显示最近 " + Math.min(items.length, 20) + " 条。"));
+  return box;
+}
+
+async function profileCards() {
+  var box = profileSection("抽背汇总", "掌握度按 SM-2 的排期算：熟＝连续答对 2 次或间隔 ≥6 天。");
+  var stats;
+  try {
+    stats = await scout.call("note.stats", {});
+  } catch (error) {
+    box.appendChild(plainHint("读不到抽背统计：" + error.message));
+    return box;
+  }
+  var line = document.createElement("p");
+  line.className = "profile-nums";
+  line.textContent =
+    "卡片 " + (stats.total_cards || 0) + " 张" +
+    "｜练过 " + (stats.reviewed || 0) + " 张" +
+    "｜今天该练 " + (stats.due || 0) + " 张" +
+    "（新卡 " + (stats.due_new || 0) + "）" +
+    "｜记住率 " + (stats.recall_rate === null || stats.recall_rate === undefined
+      ? "—"
+      : Math.round(stats.recall_rate * 100) + "%") +
+    (stats.next_due_at ? "｜下次复习 " + String(stats.next_due_at).slice(0, 16).replace("T", " ") : "");
+  box.appendChild(line);
+  var profile = null;
+  try {
+    profile = await scout.call("learner.profile", {});
+  } catch (error) {
+    profile = null;
+  }
+  var groups = (profile && profile.card_groups) || [];
+  if (groups.length) {
+    var list = document.createElement("ul");
+    list.className = "list profile-list";
+    groups.forEach(function (item) {
+      var li = document.createElement("li");
+      var rate = item.mastery_rate === null ? "—" : Math.round(item.mastery_rate * 100) + "%";
+      li.textContent = item.group;
+      var meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent =
+        "熟 " + rate + "｜熟 " + item.mastered + "／复习中 " + item.reviewing + "／薄弱 " + item.weak;
+      li.appendChild(meta);
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+  }
+  return box;
+}
+
+function plainHint(text) {
+  var p = document.createElement("p");
+  p.className = "hint";
+  p.textContent = text;
+  return p;
+}
+
 /* -------------------------------------------- 浮动菜单 / 打开链接 / 高度分隔条 */
 
 function openFloatingMenu(anchorEl, rows) {
@@ -2494,6 +2683,12 @@ function wire() {
   el("textmodal").addEventListener("click", function (event) {
     if (event.target === el("textmodal")) closeTextModal();
   });
+  el("btn-profile").addEventListener("click", function () {
+    openProfile().catch(function (error) {
+      el("status").textContent = "个人中心打开失败：" + error.message;
+    });
+  });
+  el("btn-profile-close").addEventListener("click", closeProfile);
   el("btn-settings").addEventListener("click", function () {
     openSettings().catch(function (error) {
       el("status").textContent = "打开设置失败：" + error.message;
@@ -2504,7 +2699,6 @@ function wire() {
   el("settings").addEventListener("click", function (event) {
     if (event.target === el("settings")) closeSettings();
   });
-  el("btn-theme").addEventListener("click", cycleTheme);
   el("btn-memory-add").addEventListener("click", addMemory);
   el("btn-memory-extract").addEventListener("click", extractMemory);
   el("memory-input").addEventListener("keydown", function (event) {
@@ -2568,11 +2762,6 @@ function wire() {
 
   el("btn-new").addEventListener("click", function () {
     newSession();
-  });
-  el("btn-refresh").addEventListener("click", async function () {
-    await loadSessions();
-    if (state.sessionId) await openSession(state.sessionId);
-    await refreshSide();
   });
   el("btn-search").addEventListener("click", function () {
     loadSources(el("search").value.trim());

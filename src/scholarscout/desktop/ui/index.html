@@ -7,22 +7,20 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <strong>ScholarScout</strong>
-      <span class="sub">开放世界学术调研与学习辅助</span>
-    </div>
+    <div class="brand"><strong>ScholarScout</strong></div>
     <div class="status" id="status">正在连接后端…</div>
     <div class="actions">
-      <button id="btn-theme" class="ghost" type="button" title="切换浅色/深色">跟随系统</button>
-      <button id="btn-settings" class="ghost" type="button" title="设置（模型、外观、生成策略、数据）">设置</button>
-      <button id="btn-new" type="button">新建会话</button>
-      <button id="btn-refresh" type="button">刷新</button>
+      <button id="btn-profile" class="icon-btn" type="button" title="个人中心" aria-label="个人中心"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg></button>
+      <button id="btn-settings" class="icon-btn" type="button" title="设置" aria-label="设置"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path></svg></button>
     </div>
   </header>
 
   <main class="layout">
     <aside class="col col-sessions">
-      <h2>会话</h2>
+      <div class="col-head">
+        <h2>会话</h2>
+        <button id="btn-new" class="mini" type="button" title="新建会话">＋ 新建</button>
+      </div>
       <ul class="list" id="session-list"></ul>
     </aside>
 
@@ -182,6 +180,17 @@
         <span class="hint" id="settings-path"></span>
         <button id="btn-settings-save" type="button">保存</button>
       </div>
+    </div>
+  </div>
+
+  <div id="profile" class="overlay" hidden>
+    <div class="sheet">
+      <div class="sheet-head">
+        <strong>个人中心</strong>
+        <span class="hint" id="profile-note"></span>
+        <button id="btn-profile-close" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="sheet-body" id="profile-body"></div>
     </div>
   </div>
 
