@@ -263,10 +263,19 @@ def _title_before_turn(ctx: AppContext, session_id: str, text: str) -> None:
     row = sessions.get_session(ctx.db, session_id)
     if row is not None and not sessions.is_unnamed(row["title"]):
         return  # 已经有真标题（含用户手动改名）→ 一次调用都不花
-    title = titles.suggest_title(ctx.llm, text, prompts_dir=ctx.config.summary_cfg.prompts_dir)
-    if not title:
+    suggestion = titles.suggest_title(ctx.llm, text, prompts_dir=ctx.config.summary_cfg.prompts_dir)
+    if suggestion is None:
         return
-    applied = sessions.set_title_if_unnamed(ctx.db, session_id, title)
+    # 这一次调用的钱也要记（purpose="title"）—— 否则"关掉标题总结能省多少"没人答得出来
+    traces.record_usage(
+        ctx.db,
+        model=ctx.config.chat.model,
+        purpose="title",
+        session_id=session_id,
+        prompt_tokens=suggestion.prompt_tokens,
+        completion_tokens=suggestion.completion_tokens,
+    )
+    applied = sessions.set_title_if_unnamed(ctx.db, session_id, suggestion.title)
     if applied and ctx.emit is not None:
         ctx.emit("session.updated", {"session_id": session_id, "title": applied, "source": "model"})
 

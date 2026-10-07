@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from scholarscout.providers.llm import LlmClient
@@ -35,6 +36,15 @@ _TRAILING = "。．.！!？?；;：:，,、…"
 def prompt_version(prompts_dir: Path) -> str:
     """提示词版本 = 内容哈希（改一个字版本就变，便于追溯标题是哪版提示词起的）。"""
     return PromptPack(directory=prompts_dir).version_of(PROMPT_NAME)
+
+
+@dataclass(frozen=True)
+class TitleSuggestion:
+    """模型总结出的标题 + 这次调用花掉的 token（成本要能看见，所以要带回来）。"""
+
+    title: str
+    prompt_tokens: int
+    completion_tokens: int
 
 
 def clean_title(raw: str, *, max_chars: int = TITLE_MAX_CHARS) -> str | None:
@@ -57,12 +67,11 @@ def suggest_title(
     *,
     prompts_dir: Path,
     max_chars: int = TITLE_MAX_CHARS,
-) -> str | None:
+) -> TitleSuggestion | None:
     """让模型总结标题；出错/信息不足都返回 None（调用方走本地兜底）。"""
     first_line = (text or "").strip()
     if not first_line:
         return None
-    messages = []
     try:
         # 提示词读取也在 try 里：提示词文件缺失不该让这一轮对话失败
         prompt = PromptPack(directory=prompts_dir).raw(PROMPT_NAME)
@@ -73,4 +82,11 @@ def suggest_title(
         reply = llm.chat(messages, tools=None)
     except Exception:
         return None
-    return clean_title(reply.content or "", max_chars=max_chars)
+    title = clean_title(reply.content or "", max_chars=max_chars)
+    if title is None:
+        return None
+    return TitleSuggestion(
+        title=title,
+        prompt_tokens=int(reply.usage.get("prompt_tokens") or 0),
+        completion_tokens=int(reply.usage.get("completion_tokens") or 0),
+    )

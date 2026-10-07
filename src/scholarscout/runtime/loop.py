@@ -211,6 +211,18 @@ def run_turn(
             tools_for_round = None if len(executed) >= tool_budget else tool_decls
             reply = ctx.llm.chat(messages, tools=tools_for_round)
             _accumulate_usage(usage_total, reply)
+            # **每次模型调用立即记账**：原来只在整轮结束记一次，结果是"被停止或中断的轮次
+            # 把已经花掉的 token 全丢了"（真机实测：杀掉实例后该会话用量一条不剩）。
+            # 代价敏感的用户看到的会话累计必须包含花掉的钱，哪怕这一轮被中途取消。
+            traces.record_usage(
+                ctx.db,
+                model=ctx.config.chat.model,
+                purpose="chat",
+                session_id=session_id,
+                turn_id=turn_id,
+                prompt_tokens=reply.usage.get("prompt_tokens"),
+                completion_tokens=reply.usage.get("completion_tokens"),
+            )
             final_text = reply.content or final_text
 
             if not reply.tool_calls:
@@ -307,15 +319,6 @@ def run_turn(
         content=final_text,
         token_in=usage_total.get("prompt_tokens"),
         token_out=usage_total.get("completion_tokens"),
-    )
-    traces.record_usage(
-        ctx.db,
-        model=ctx.config.chat.model,
-        purpose="chat",
-        session_id=session_id,
-        turn_id=turn_id,
-        prompt_tokens=usage_total.get("prompt_tokens"),
-        completion_tokens=usage_total.get("completion_tokens"),
     )
     _emit(emit, "chat.delta", {"turn_id": turn_id, "seq": 0, "kind": "text", "text": final_text})
     _emit(
