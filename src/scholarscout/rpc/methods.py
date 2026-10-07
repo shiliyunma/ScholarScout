@@ -781,6 +781,19 @@ def note_review(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, **result, "stats": learning.card_stats(ctx.db)}
 
 
+@method("learner.profile")
+def learner_profile_rpc(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """学习者画像（跨会话）：水平、主题、卡片组掌握度、来源偏好。
+
+    **只读、零模型调用** —— 掌握度是按确定性规则从 `card_reviews` 的排期算出来的，
+    让模型"感觉"用户水平既不可复算，也会随措辞漂移。
+    """
+    del params
+    from scholarscout.runtime import learner_profile
+
+    return learner_profile.build_profile(ctx.db)
+
+
 @method("note.due")
 def note_due(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """今天该练哪些卡（B6 间隔重复）：新卡 + 到期卡。

@@ -222,7 +222,15 @@ def run_turn(
                 state["plan_error"] = reason
         research_state.save_state(ctx.db, session_id, state)
     gaps = research_state.compute_gaps(ctx.db, session_id, state)
-    messages.append({"role": "system", "content": research_state.render_note(state, gaps)})
+    # 学习者画像（跨会话）：只放"能改变行为"的信息（水平、薄弱块、已做过的主题）。
+    # 纯本地汇总、零模型调用；没有卡片也没有产物时这一段是空串，不会白占 token。
+    from scholarscout.runtime import learner_profile
+
+    profile_note = learner_profile.render_profile_note(learner_profile.build_profile(ctx.db))
+    note = research_state.render_note(state, gaps)
+    if profile_note:
+        note = note + "\n\n" + profile_note
+    messages.append({"role": "system", "content": note})
 
     executed: list[str] = []
     usage_total: dict[str, int] = {}

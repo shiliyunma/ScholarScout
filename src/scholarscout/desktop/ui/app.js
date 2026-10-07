@@ -1321,6 +1321,79 @@ async function loadBoard() {
   renderBoardEvidence(board);
   renderBoardTimeline(board);
   renderBoardArtifacts(board);
+  loadProfile();
+}
+
+async function loadProfile() {
+  const overview = el("profile-overview");
+  if (!overview) return;
+  let profile;
+  try {
+    profile = await scout.call("learner.profile", {});
+  } catch (error) {
+    overview.textContent = "画像读取失败：" + (error && error.message ? error.message : String(error));
+    return;
+  }
+  const data = profile.overview || {};
+  const bits = [];
+  if (data.topics) bits.push("做过 " + data.topics + " 个主题");
+  if (data.routes) bits.push("路线 " + data.routes + " 条");
+  if (data.maps) bits.push("地图 " + data.maps + " 份");
+  if (data.reviewed) {
+    bits.push(
+      "练过 " +
+        data.reviewed +
+        "/" +
+        data.cards +
+        " 张" +
+        (data.mastery_rate === null ? "" : "（熟 " + Math.round(data.mastery_rate * 100) + "%）"),
+    );
+  }
+  if (data.active_days_recent) bits.push("近 " + data.window_days + " 天学了 " + data.active_days_recent + " 天");
+  overview.textContent = bits.length
+    ? bits.join("｜") + "。这份画像会随每轮请求注入，所以产物按你的水平来。"
+    : "还没有学习痕迹 —— 做完一份地图/路线、或练几张抽背卡，这里才有东西可汇总。";
+  el("profile-note").textContent = bits.length ? "（零模型调用，从库里的排期与产物算出来）" : "";
+
+  const topics = el("profile-topics");
+  topics.innerHTML = "";
+  (profile.topics || []).forEach(function (item) {
+    topics.appendChild(
+      boardItem(
+        esc(item.topic) +
+          '<span class="meta">路线 ' +
+          item.routes +
+          " ／ 地图 " +
+          item.maps +
+          (item.weeks ? " ／ 最长 " + item.weeks + " 周" : "") +
+          "</span>",
+      ),
+    );
+  });
+
+  const groups = el("profile-groups");
+  groups.innerHTML = "";
+  (profile.card_groups || []).forEach(function (item) {
+    const rate = item.mastery_rate === null ? "—" : Math.round(item.mastery_rate * 100) + "%";
+    groups.appendChild(
+      boardItem(
+        esc(item.group) +
+          ' <span class="badge ' +
+          (item.weak ? "badge-weak" : "badge-strong") +
+          '">熟 ' +
+          rate +
+          "</span>" +
+          '<span class="meta">熟 ' +
+          item.mastered +
+          " ／ 复习中 " +
+          item.reviewing +
+          " ／ 薄弱 " +
+          item.weak +
+          (item.cards - item.reviewed ? " ／ 未练 " + (item.cards - item.reviewed) : "") +
+          "</span>",
+      ),
+    );
+  });
 }
 
 function renderBoardArtifacts(board) {
