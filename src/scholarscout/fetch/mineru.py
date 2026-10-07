@@ -33,8 +33,11 @@ from typing import Any
 from scholarscout.fetch.http import FetchError, HttpClient
 
 AGENT_SUBMIT_URL = "https://mineru.net/api/v1/agent/parse/url"
+AGENT_FILE_SUBMIT_URL = "https://mineru.net/api/v1/agent/parse/file"
 AGENT_TASK_URL = "https://mineru.net/api/v1/agent/parse/{task_id}"
 PRECISE_SUBMIT_URL = "https://mineru.net/api/v4/extract/task"
+PRECISE_FILE_URLS_URL = "https://mineru.net/api/v4/file-urls/batch"
+PRECISE_BATCH_TASK_URL = "https://mineru.net/api/v4/extract-results/batch/{batch_id}"
 PRECISE_TASK_URL = "https://mineru.net/api/v4/extract/task/{task_id}"
 
 #: 仍在处理中的状态（官方口径）
@@ -187,6 +190,200 @@ def parse_pdf_url(
             sleep=sleep,
         )
         engine = actual_engine
+    except FetchError as exc:
+        return MineruText("", "failed", engine, f"{exc.kind}: {exc}")
+
+    state = str(data.get("state") or "")
+    if state != DONE_STATE:
+        detail = str(data.get("err_msg") or data.get("err_code") or state)
+        return MineruText("", state or "failed", engine, detail)
+
+    if engine == "precise":
+        zip_url = str(data.get("full_zip_url") or "")
+        text = _markdown_from_zip(http, zip_url) if zip_url else ""
+    else:
+        markdown_url = str(data.get("markdown_url") or "")
+        text = _markdown_from_url(http, markdown_url) if markdown_url else ""
+    if not text.strip():
+        return MineruText("", "failed", engine, "完成态但没有拿到 Markdown（链接为空或下载为空）")
+    return MineruText(text, DONE_STATE, engine, "")
+
+
+# ------------------------------------------------------------------ 本地文件直传
+
+
+def _agent_upload_submit(
+    http: HttpClient,
+    *,
+    content: bytes,
+    filename: str,
+    is_ocr: bool,
+    language: str,
+    min_interval_s: float,
+) -> str:
+    """Agent 轻量接口的"签名上传"：申请 task_id + 预签名 URL → PUT 字节。返回 task_id。
+
+    **免 Token、免公网 URL** —— 这是我们手里已经有本地字节时最该走的一条路
+    （官方限制：≤10MB、≤20 页；扫描件必须带 ``is_ocr=true``，默认是 false）。
+    """
+    response = http.post_json(
+        AGENT_FILE_SUBMIT_URL,
+        {"file_name": filename, "language": language, "is_ocr": bool(is_ocr)},
+        min_interval_s=min_interval_s,
+    )
+    body = _json_or_none(response)
+    if body is not None and body.get("code") not in (0, None):
+        raise FetchError(
+            "bad_request", f"MinerU 申请上传失败：{body.get('msg')}", url=AGENT_FILE_SUBMIT_URL
+        )
+    data = (body or {}).get("data") or {}
+    task_id = str(data.get("task_id") or "")
+    file_url = str(data.get("file_url") or data.get("url") or "")
+    if not task_id or not file_url:
+        raise FetchError("server", "MinerU 没有返回 task_id / file_url", url=AGENT_FILE_SUBMIT_URL)
+    # 刻意不带 Content-Type：预签名地址把它算进签名，带了就 SignatureDoesNotMatch
+    http.upload_bytes(file_url, content, min_interval_s=min_interval_s)
+    return task_id
+
+
+def _precise_upload_submit(
+    http: HttpClient, *, content: bytes, filename: str, token: str, min_interval_s: float
+) -> str:
+    """精准接口的批量上传：申请 batch_id + 预签名 URL → PUT 字节。返回 batch_id。"""
+    response = http.post_json(
+        PRECISE_FILE_URLS_URL,
+        {"files": [{"name": filename, "data_id": "scholarscout"}], "model_version": "vlm"},
+        headers={"Authorization": f"Bearer {token}"},
+        min_interval_s=min_interval_s,
+    )
+    body = _json_or_none(response)
+    if body is not None and body.get("code") not in (0, None):
+        raise FetchError(
+            "bad_request", f"MinerU 申请上传失败：{body.get('msg')}", url=PRECISE_FILE_URLS_URL
+        )
+    data = (body or {}).get("data") or {}
+    batch_id = str(data.get("batch_id") or "")
+    urls = data.get("file_urls") or []
+    if not batch_id or not urls:
+        raise FetchError(
+            "server", "MinerU 没有返回 batch_id / file_urls", url=PRECISE_FILE_URLS_URL
+        )
+    http.upload_bytes(str(urls[0]), content, min_interval_s=min_interval_s)
+    return batch_id
+
+
+def _poll_batch(
+    http: HttpClient,
+    *,
+    batch_id: str,
+    token: str,
+    poll_interval_s: float,
+    timeout_s: float,
+    sleep: Callable[[float], None],
+) -> dict[str, Any]:
+    """轮询精准接口的批次结果（``data.extract_result[0]`` 才是这一份文件的状态）。"""
+    url = PRECISE_BATCH_TASK_URL.format(batch_id=batch_id)
+    deadline = time.monotonic() + timeout_s
+    data: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        response = http.fetch(
+            url,
+            accept="application/json",
+            headers={"Authorization": f"Bearer {token}"},
+            cache=False,
+        )
+        body = _json_or_none(response)
+        results = ((body or {}).get("data") or {}).get("extract_result") or []
+        data = dict(results[0]) if results else {}
+        state = str(data.get("state") or "")
+        if state in (DONE_STATE, FAILED_STATE):
+            return data
+        sleep(poll_interval_s)
+    data.setdefault("state", "timeout")
+    data.setdefault("err_msg", f"轮询超过 {int(timeout_s)}s 仍未完成")
+    return data
+
+
+def parse_pdf_bytes(
+    http: HttpClient,
+    content: bytes,
+    *,
+    filename: str = "scan.pdf",
+    token: str | None = None,
+    is_ocr: bool = True,
+    language: str = "ch",
+    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    min_interval_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> MineruText:
+    """把**本地字节**交给 MinerU（走预签名上传），返回 Markdown 正文。
+
+    为什么必须支持这条路：老实现只认公开 URL，于是"扫描版能不能抽正文"就卡在
+    "MinerU 得能自己下载到那个 PDF"（内网地址、需要登录、CDN 抖动都会失败）。
+    而我们**手里本来就有字节**（`source.fetch` 已经下载过一次），直接传上去最稳。
+
+    Token 缺失时走 Agent 轻量接口（免登录，≤10MB/20 页）；有 Token 走精准接口（≤200MB/200 页）。
+    精准接口失败（例如 401）会自动退回 Agent —— 与 URL 那条路同一个策略。
+    """
+    if not content:
+        return MineruText("", "failed", "agent", "文件内容为空")
+    engine = "precise" if token else "agent"
+    try:
+        if token:
+            try:
+                batch_id = _precise_upload_submit(
+                    http,
+                    content=content,
+                    filename=filename,
+                    token=token,
+                    min_interval_s=min_interval_s,
+                )
+                data = _poll_batch(
+                    http,
+                    batch_id=batch_id,
+                    token=token,
+                    poll_interval_s=poll_interval_s,
+                    timeout_s=timeout_s,
+                    sleep=sleep,
+                )
+            except FetchError:
+                engine = "agent"
+                task_id = _agent_upload_submit(
+                    http,
+                    content=content,
+                    filename=filename,
+                    is_ocr=is_ocr,
+                    language=language,
+                    min_interval_s=min_interval_s,
+                )
+                data = _poll(
+                    http,
+                    task_id=task_id,
+                    token=None,
+                    engine="agent",
+                    poll_interval_s=poll_interval_s,
+                    timeout_s=timeout_s,
+                    sleep=sleep,
+                )
+        else:
+            task_id = _agent_upload_submit(
+                http,
+                content=content,
+                filename=filename,
+                is_ocr=is_ocr,
+                language=language,
+                min_interval_s=min_interval_s,
+            )
+            data = _poll(
+                http,
+                task_id=task_id,
+                token=None,
+                engine="agent",
+                poll_interval_s=poll_interval_s,
+                timeout_s=timeout_s,
+                sleep=sleep,
+            )
     except FetchError as exc:
         return MineruText("", "failed", engine, f"{exc.kind}: {exc}")
 

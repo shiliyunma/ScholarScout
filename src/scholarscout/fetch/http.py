@@ -289,6 +289,32 @@ class HttpClient:
             self._write_cache(url, accept, result)
         return result
 
+    def upload_bytes(
+        self,
+        url: str,
+        body: bytes,
+        *,
+        min_interval_s: float = 0.0,
+    ) -> FetchResult:
+        """PUT 原始字节到**预签名上传地址**（MinerU 的"签名上传"就是这么走的）。
+
+        三条都是实测得来的：
+        - **一个头都别多带**（尤其 `Content-Type`）：预签名里把它算进了签名，
+          带上就 `403 SignatureDoesNotMatch`（实测：不带 → 200，带 application/pdf 或
+          application/octet-stream → 403）。所以这里刻意不设 Content-Type；
+        - **不走缓存**：预签名 URL 是一次性的，缓存它只会让第二次上传打到失效地址；
+        - **不过 robots**：这是对象存储的上传端点，不是抓取目标（官方示例也只做 PUT）。
+        """
+        return self._request_once(
+            url,
+            "*/*",
+            urlparse(url).netloc,
+            min_interval_s,
+            method="PUT",
+            body=body,
+            omit_content_type=True,
+        )
+
     def post_json(
         self,
         url: str,
@@ -335,6 +361,8 @@ class HttpClient:
         method: str = "GET",
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
+        content_type: str | None = None,
+        omit_content_type: bool = False,
     ) -> FetchResult:
         started = self._clock()
         self._limiter.wait(rate_key, min_interval_s)
@@ -343,9 +371,12 @@ class HttpClient:
 
         for attempt in range(self.retries):
             try:
-                if method == "POST":
-                    post_headers = {"Content-Type": "application/json", **request_headers}
-                    response = self._client.post(url, headers=post_headers, content=body)
+                if method in ("POST", "PUT"):
+                    send_headers = dict(request_headers)
+                    if not omit_content_type:
+                        send_headers["Content-Type"] = content_type or "application/json"
+                    send = self._client.post if method == "POST" else self._client.put
+                    response = send(url, headers=send_headers, content=body)
                 else:
                     response = self._client.get(url, headers=request_headers)
             except httpx.TimeoutException as exc:

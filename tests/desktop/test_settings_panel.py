@@ -86,17 +86,18 @@ def test_data_group_has_maintenance_entries() -> None:
         assert forbidden not in text, "界面不该提供清理资料本体/数据库的入口"
 
 
-def test_mineru_without_token_shows_a_warning() -> None:
-    """ "开关开着 + 没配 token"必须在设置里提前警告 —— 否则扫描版失败会被误读成"文档没内容"。
+def test_mineru_without_token_explains_the_boundary() -> None:
+    """ "开关开着 + 没配 token"要说明**能力边界**，而不是说"一定失败"。
 
-    背景（真机查证 2026-10-06）：`.env` 里 `MINERU_API_TOKEN` 是**空值**，
-    所以系统只能走免 token 的 Agent 通道，而该通道实测持续返回
-    `model service is temporarily unavailable`。
+    背景：2026-10-07 实测打通了**免 Token 的预签名直传**（本地扫描版样本 10.3 秒出正文），
+    所以这里不能再写"没 token 就会失败"—— 那是过期结论。
     """
     text = read_app_js()
     assert "features.enable_mineru" in text and "mineru.api_token" in text
-    assert "model service is temporarily unavailable" in text, "没有把真实失败原因写进提示"
+    assert "10MB" in text and "20 页" in text, "没写免 Token 通道的规模上限"
+    assert "200MB" in text, "没写填 Token 后精准接口能处理更大文件"
     assert "mineru_failed" in text, "没有说明失败会被如实记成 mineru_failed"
+    assert "model service is temporarily unavailable" not in text, "这条失败结论已经过期"
 
 
 def test_index_html_has_the_panel_markup() -> None:

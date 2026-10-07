@@ -87,20 +87,41 @@ def _pdf_text(content: bytes) -> tuple[str, str, str, str]:
     return "", "no_text_layer", "local", "没有文字层（多为扫描版）→ 交给 MinerU"
 
 
-def _mineru_fallback(ctx: ToolContext, url: str) -> tuple[str, str, str, str]:
-    """落地 MinerU 兜底（决议第 8 题）：本地抽不出文字时，把公开 URL 交给官方 API。
+def _mineru_fallback(
+    ctx: ToolContext, url: str, *, content: bytes | None = None, filename: str = "scan.pdf"
+) -> tuple[str, str, str, str]:
+    """落地 MinerU 兜底（决议第 8 题）：本地抽不出文字时，交给官方 API。
 
-    失败要**如实**记 ``mineru_failed`` + 原因 —— 免 token 的 Agent 服务会间歇性返回
-    ``model service is temporarily unavailable``，这跟"文档确实没有内容"是两件事。
+    **顺序**：手里已经有字节就**优先直传**（预签名上传），失败再退回"提交 URL 让 MinerU 自己去下"。
+    为什么这么排：URL 那条要求 MinerU 能下到那个 PDF（内网地址、需要登录、CDN 抖动、
+    robots 拒爬都会失败），而我们**刚刚才把字节下载到本地** —— 直传少一个失败点，
+    而且免 Token 也能用（Agent 轻量接口 ≤10MB/≤20 页）。实测 2026-10-07：本地造的
+    无文字层扫描版样本直传 **10.3 秒**拿到中文 Markdown。
+
+    失败要**如实**记 ``mineru_failed`` + 原因 —— 服务暂不可用与"文档确实没有内容"是两件事。
     """
-    from scholarscout.fetch.mineru import parse_pdf_url
+    from scholarscout.fetch.mineru import parse_pdf_bytes, parse_pdf_url
     from scholarscout.fetch.settings import mineru_token
 
     http = ctx.require_http()
-    result = parse_pdf_url(http, url, token=mineru_token())
+    token = mineru_token()
+    direct_detail = ""
+
+    if content:
+        direct = parse_pdf_bytes(http, content, filename=filename, token=token)
+        if direct.ok:
+            return direct.text, "ok", "mineru", f"{direct.engine} 解析（本地直传）"
+        direct_detail = f"直传 {direct.state}: {direct.detail}"
+
+    if not url:
+        return "", "mineru_failed", "mineru", direct_detail or "既没有本地字节也没有 URL"
+
+    result = parse_pdf_url(http, url, token=token)
     if result.ok:
-        return result.text, "ok", "mineru", f"{result.engine} 解析"
-    return "", "mineru_failed", "mineru", f"{result.state}: {result.detail}"
+        return result.text, "ok", "mineru", f"{result.engine} 解析（URL 提交）"
+    url_detail = f"URL 提交 {result.state}: {result.detail}"
+    detail = f"{direct_detail}；{url_detail}" if direct_detail else url_detail
+    return "", "mineru_failed", "mineru", detail
 
 
 def _document_row(ctx: ToolContext, source_id: str, sha256: str) -> dict[str, Any] | None:
@@ -171,8 +192,15 @@ def source_fetch(
     if is_pdf:
         text, extract_status, engine, extract_detail = _pdf_text(content)
         if not text and ctx.config.features.enable_mineru:
-            # 扫描版/无文字层：走 MinerU 官方 API（契约与实测见 fetch/mineru.py 顶部）
-            text, extract_status, engine, mineru_detail = _mineru_fallback(ctx, url)
+            # 扫描版/无文字层：走 MinerU 官方 API（契约与实测见 fetch/mineru.py 顶部）。
+            # 优先用刚下载到手的字节直传，少一个"对方下不到"的失败点。
+            # 文件名按 URL 末段取：官方**按后缀判类型**，所以别把后缀丢了。
+            name = str(url).rsplit("/", 1)[-1].split("?")[0].strip() or "scan.pdf"
+            if "." not in name:
+                name += ".pdf"
+            text, extract_status, engine, mineru_detail = _mineru_fallback(
+                ctx, url, content=content, filename=name
+            )
             extract_detail = (
                 f"{extract_detail}；{mineru_detail}" if extract_detail else mineru_detail
             )

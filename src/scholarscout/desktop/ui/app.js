@@ -1557,15 +1557,15 @@ async function openSettings() {
 
   renderAppearance(body);
 
-  // MinerU：开关开着却没配 token ＝ 扫描版一定失败（免费通道当前不可用）。
-  // 这会让人以为是"这个 PDF 没内容"，所以必须在设置里提前讲清楚，而不是等失败。
+  // MinerU：开关开着但没配 token —— 现在**不是错误**（扫描版走免 Token 的预签名直传也能用），
+  // 但要说清能力边界：免 Token 的 Agent 通道限 ≤10MB / ≤20 页，更大或要更高精度才需要 Token。
   if (values["features.enable_mineru"] !== false && !secrets["mineru.api_token"]) {
     var warn = document.createElement("p");
-    warn.className = "hint set-bad";
+    warn.className = "hint";
     warn.textContent =
-      "注意：扫描版走 MinerU 已打开，但没有配 MinerU Token —— 免 token 的 Agent 通道" +
-      "实测当前返回 model service is temporarily unavailable，所以扫描版 PDF 会解析失败" +
-      "（并如实记成 mineru_failed）。填一个 Token 就会改走精准接口。";
+      "扫描版走免 Token 通道（官方 Agent 轻量接口，实测可用）：限单文件 ≤10MB / ≤20 页，" +
+      "直传本地字节、不需要公网 URL。超过这个规模或要更高精度（表格/公式/多格式导出），" +
+      "再填 MinerU Token 换精准接口（≤200MB / ≤200 页）。解析失败会如实记成 mineru_failed，不会假装成功。";
     body.appendChild(warn);
   }
 
