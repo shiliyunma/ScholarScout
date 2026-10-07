@@ -1238,6 +1238,7 @@ async function refreshSide() {
   await loadSources(el("search").value.trim());
   await loadCards();
   await loadNotes();
+  await loadBoard();
   if (state.history) {
     await renderHistory();
     return;
@@ -1248,6 +1249,209 @@ async function refreshSide() {
   });
   const refs = collectRefs(payload.items || []);
   await renderRoutes(refs.route_ids || []);
+}
+
+/* ------------------------------------------------- 研究看板（B2 证据表 / B4 时间线 / B7） */
+
+async function loadBoard() {
+  const summary = el("board-summary");
+  if (!summary) return;
+  if (!state.sessionId) {
+    summary.textContent = "";
+    return;
+  }
+  let board;
+  try {
+    board = await scout.call("research.board", { session_id: state.sessionId });
+  } catch (err) {
+    summary.textContent = "看板读取失败：" + (err && err.message ? err.message : String(err));
+    return;
+  }
+  renderBoardSummary(board);
+  renderBoardQuestions(board);
+  renderBoardGaps(board);
+  renderBoardEvidence(board);
+  renderBoardTimeline(board);
+}
+
+function renderBoardSummary(board) {
+  const counts = board.counts || {};
+  const evidence = board.evidence || {};
+  el("board-summary").textContent = [
+    "来源 " + (counts.sources || 0),
+    "有摘要 " + (counts.with_summary || 0),
+    "未取正文 " + (counts.without_text || 0),
+    "已搜查询 " + (counts.queries || 0),
+    "未覆盖子问题 " + (counts.open_questions || 0),
+    "弱证据 " + (evidence.weak_count || 0),
+  ].join(" ／ ");
+}
+
+function boardItem(html) {
+  const li = document.createElement("li");
+  li.innerHTML = html;
+  return li;
+}
+
+function renderBoardQuestions(board) {
+  const list = el("board-questions");
+  list.innerHTML = "";
+  const questions = board.questions || [];
+  el("board-goal").textContent = board.goal ? "目标：" + board.goal : "（还没有记录目标）";
+  if (!questions.length) {
+    list.innerHTML =
+      '<li class="hint">还没有子问题清单。开局拆解未跑到时（或关掉了 plan_by_model），' +
+      "这里会是空的，缺口清单仍按年份/来源族给出。</li>";
+    return;
+  }
+  questions.forEach(function (item) {
+    const covered = item.status === "covered";
+    list.appendChild(
+      boardItem(
+        '<span class="board-idx">' +
+          item.index +
+          ".</span> " +
+          esc(item.text) +
+          ' <span class="badge ' +
+          (covered ? "badge-strong" : "badge-weak") +
+          '">' +
+          (covered ? "已覆盖" : "缺口") +
+          "</span>",
+      ),
+    );
+  });
+}
+
+function renderBoardGaps(board) {
+  const list = el("board-gaps");
+  list.innerHTML = "";
+  const gaps = board.gaps || [];
+  if (!gaps.length) {
+    list.innerHTML = '<li class="hint">暂时没有明显缺口。</li>';
+    return;
+  }
+  gaps.forEach(function (gap) {
+    list.appendChild(
+      boardItem(
+        '<code class="board-kind">' +
+          esc(gap.kind) +
+          "</code> " +
+          esc(gap.detail) +
+          '<div class="hint board-suggest">→ ' +
+          esc(gap.suggest) +
+          "</div>",
+      ),
+    );
+  });
+}
+
+function sourceChips(sources) {
+  const wrap = document.createElement("div");
+  wrap.className = "board-srcs";
+  (sources || []).forEach(function (item) {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (item.has_summary ? " chip-strong" : "");
+    chip.textContent =
+      short(item.title || item.source_id, 26) + (item.year ? "（" + item.year + "）" : "");
+    chip.title = (item.has_summary ? "有摘要" : "只有标题") + " ／ 点击看这条来源的详情";
+    chip.addEventListener("click", function (event) {
+      event.stopPropagation();
+      showSourceBySourceId(item.source_id);
+    });
+    wrap.appendChild(chip);
+  });
+  if (!wrap.childNodes.length) {
+    wrap.innerHTML = '<span class="hint">没有可解析的来源</span>';
+  }
+  return wrap;
+}
+
+function renderBoardEvidence(board) {
+  const list = el("board-evidence");
+  const note = el("board-evidence-note");
+  list.innerHTML = "";
+  const evidence = board.evidence || {};
+  const rows = evidence.rows || [];
+  if (evidence.mode === "support_checks") {
+    note.textContent = "（来自引用核查：每条断言都审过支撑力度）";
+  } else if (evidence.mode === "ledger") {
+    note.textContent = "（本会话还没做过引用核查，这里按「子问题 × 已收集来源」聚合）";
+  } else {
+    note.textContent = "";
+  }
+  if (!rows.length) {
+    list.innerHTML = '<li class="hint">还没有可展示的证据行。</li>';
+    return;
+  }
+  rows.forEach(function (row) {
+    const strong = row.strength === "强" || String(row.strength).indexOf("中") === 0;
+    const li = boardItem(
+      '<div class="board-claim">' +
+        esc(short(row.claim || "", 80)) +
+        "</div>" +
+        '<span class="badge ' +
+        (strong ? "badge-strong" : "badge-weak") +
+        '">' +
+        esc(row.strength) +
+        "</span>" +
+        '<span class="meta">' +
+        esc(row.evidence_level === "summary" ? "有摘要" : "仅标题") +
+        (row.verdict && row.verdict !== "unknown" ? " ／ " + esc(row.verdict) : "") +
+        "</span>",
+    );
+    li.appendChild(sourceChips(row.sources));
+    if (row.reason) {
+      const why = document.createElement("div");
+      why.className = "hint";
+      why.textContent = row.reason;
+      li.appendChild(why);
+    }
+    list.appendChild(li);
+  });
+}
+
+function renderBoardTimeline(board) {
+  const list = el("board-timeline");
+  const note = el("board-timeline-note");
+  list.innerHTML = "";
+  const timeline = board.timeline || {};
+  const groups = timeline.groups || [];
+  const missing = timeline.missing_recent_years || [];
+  const bits = [];
+  if (missing.length) bits.push("缺口年份：" + missing.join("、"));
+  if (timeline.undated) bits.push(timeline.undated + " 条年份未知");
+  note.textContent = bits.length ? "（" + bits.join("；") + "）" : "";
+  if (!groups.length) {
+    list.innerHTML = '<li class="hint">这个会话还没有带出任何来源。</li>';
+    return;
+  }
+  groups.forEach(function (group) {
+    const label = group.year ? group.year + " 年" : "年份未知";
+    const head = boardItem(
+      '<span class="board-year">' +
+        esc(label) +
+        '</span><span class="meta">' +
+        group.items.length +
+        " 条</span>",
+    );
+    head.className = "is-year";
+    list.appendChild(head);
+    group.items.forEach(function (item) {
+      const li = boardItem(
+        '<span class="board-dot">·</span> ' +
+          esc(short(item.title || item.source_id, 34)) +
+          '<span class="meta">' +
+          esc(item.source_type || "") +
+          (item.tier ? " ／ tier " + item.tier : "") +
+          (item.has_summary ? " ／ 有摘要" : " ／ 仅标题") +
+          "</span>",
+      );
+      li.addEventListener("click", function () {
+        showSourceBySourceId(item.source_id);
+      });
+      list.appendChild(li);
+    });
+  });
 }
 
 /* ------------------------------------------------------------------ 启动 */
@@ -1937,6 +2141,9 @@ function wire() {
   });
   el("btn-theme").addEventListener("click", cycleTheme);
   el("btn-history").addEventListener("click", toggleHistory);
+  el("btn-board-refresh").addEventListener("click", function () {
+    loadBoard();
+  });
   el("btn-note-kind-note").addEventListener("click", function () {
     loadNotes("note");
   });

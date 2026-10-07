@@ -1085,3 +1085,119 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   border-color: var(--ui-accent, #0053fd);
   color: var(--ui-accent, #0053fd);
 }
+
+/* ------------------------------------------------------------ 研究看板（B2/B4/B7） */
+
+/* 看板本身要能滚：三节加起来比一屏高，让 .pane 里只滚这一块（其余面板不动） */
+.board-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0 6px 12px;
+}
+
+.board-block {
+  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
+  padding: 8px 6px 6px;
+}
+.board-block:first-child {
+  border-top: 0;
+}
+
+.board-title {
+  margin: 2px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ui-text-secondary);
+}
+
+.board-goal {
+  padding: 0;
+  margin: 0 0 6px;
+}
+
+.board-list {
+  flex: none;
+  padding: 0;
+  overflow: visible;
+}
+.board-list li {
+  cursor: default;
+  padding: 5px 6px;
+}
+/* 只有能看到来源/年份的行才给可点样式（点不动的行不要装成能点） */
+.board-list li.is-year,
+.board-list li:has(.board-srcs),
+.board-list li:has(.board-dot) {
+  cursor: pointer;
+}
+.board-list li.is-year {
+  cursor: default;
+  color: var(--ui-text-primary);
+  font-weight: 600;
+}
+
+.board-idx {
+  color: var(--ui-text-tertiary);
+}
+
+.board-kind {
+  font-size: 11px;
+  color: var(--ui-text-tertiary);
+}
+
+.board-suggest {
+  padding: 0;
+  margin: 2px 0 0;
+}
+
+.board-claim {
+  color: var(--ui-text-primary);
+}
+
+.board-year {
+  color: var(--ui-text-primary);
+}
+
+.board-dot {
+  color: var(--ui-text-tertiary);
+}
+
+.board-srcs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.chip {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 0.0625rem solid var(--ui-stroke-tertiary);
+  color: var(--ui-text-secondary);
+  cursor: pointer;
+}
+.chip:hover {
+  border-color: var(--ui-stroke-primary);
+  color: var(--ui-text-primary);
+}
+/* 有摘要的来源＝强证据，给一条实心描边区分"只有标题"的弱来源 */
+.chip-strong {
+  border-color: var(--ui-stroke-secondary);
+  color: var(--ui-text-primary);
+}
+
+.badge {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 0.0625rem solid var(--ui-stroke-tertiary);
+  color: var(--ui-text-secondary);
+}
+.badge-strong {
+  border-color: var(--ui-stroke-secondary);
+  color: var(--ui-text-primary);
+}
+.badge-weak {
+  color: var(--ui-text-tertiary);
+}
