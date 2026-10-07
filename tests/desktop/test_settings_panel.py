@@ -69,6 +69,23 @@ def test_search_group_shows_provider_status() -> None:
         assert reason in text, f"界面没有把 {reason} 翻成人话"
 
 
+def test_data_group_has_maintenance_entries() -> None:
+    """「数据」栏要给出缓存保留期与数据库整理入口 —— 且不能给"一键清空资料"的入口。
+
+    整理数据库只整理不删数据（与"资料本体拒绝清理"这条硬约定一致），
+    缓存则按保留期删（全清会让下次检索重新下载一遍）。
+    """
+    text = read_app_js()
+    assert 'scout.call("settings.optimize"' in text, "没有整理数据库的入口"
+    assert "older_than_days" in text, "缓存清理没有走保留期"
+    assert "整理数据库" in text
+    for forbidden in (
+        'settings.cleanup", { target: "raw"',
+        'settings.cleanup", { target: "database"',
+    ):
+        assert forbidden not in text, "界面不该提供清理资料本体/数据库的入口"
+
+
 def test_mineru_without_token_shows_a_warning() -> None:
     """ "开关开着 + 没配 token"必须在设置里提前警告 —— 否则扫描版失败会被误读成"文档没内容"。
 

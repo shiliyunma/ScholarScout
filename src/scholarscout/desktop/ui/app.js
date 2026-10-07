@@ -1392,17 +1392,45 @@ async function openSettings() {
   Object.keys(payload.cleanable || {}).forEach(function (target) {
     var button = document.createElement("button");
     button.type = "button";
-    button.textContent = target === "fetch_cache" ? "清抓取缓存" : "清 run/ 临时文件";
-    button.title = payload.cleanable[target];
+    button.textContent = target === "fetch_cache" ? "清 7 天前缓存" : "清 run/ 临时文件";
+    button.title =
+      target === "fetch_cache"
+        ? "只删够旧的缓存：全清会让下次检索重新下载一遍"
+        : payload.cleanable[target];
     button.addEventListener("click", async function () {
       if (!window.confirm("确定清理「" + button.title + "」？")) return;
-      var result = await scout.call("settings.cleanup", { target: target });
+      // 缓存按保留期删（默认 7 天）；run/ 临时文件是全清
+      var params = { target: target };
+      if (target === "fetch_cache") params.older_than_days = 7;
+      var result = await scout.call("settings.cleanup", params);
       el("settings-note").textContent =
         "已清理 " + result.removed.files + " 个文件，释放 " + fmtBytes(result.removed.bytes);
       renderUsage(dataGroup, await scout.call("settings.usage", {}));
     });
     buttons.appendChild(button);
   });
+  // 整理数据库：删会话/删资料不会让库文件变小，得显式 VACUUM（只整理、不删数据）
+  var vacuum = document.createElement("button");
+  vacuum.type = "button";
+  vacuum.textContent = "整理数据库";
+  vacuum.title = "VACUUM + PRAGMA optimize：只整理不删数据；大库会短暂锁库";
+  vacuum.addEventListener("click", async function () {
+    el("settings-note").textContent = "正在整理数据库（大库可能要几十秒）…";
+    try {
+      var result = await scout.call("settings.optimize", {});
+      var saved = result.saved || 0;
+      el("settings-note").textContent =
+        "数据库已整理：" +
+        fmtBytes(result.before) +
+        " → " +
+        fmtBytes(result.after) +
+        (saved > 0 ? "（释放 " + fmtBytes(saved) + "）" : "（本来就没有碎片可收）");
+    } catch (error) {
+      el("settings-note").textContent = "整理失败：" + error.message;
+    }
+    renderUsage(dataGroup, await scout.call("settings.usage", {}));
+  });
+  buttons.appendChild(vacuum);
   cleanRow.appendChild(buttons);
   dataGroup.appendChild(cleanRow);
   body.appendChild(dataGroup);

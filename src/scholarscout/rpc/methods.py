@@ -583,14 +583,34 @@ def settings_usage(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 
 @method("settings.cleanup")
 def settings_cleanup(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
-    """清理缓存类目录。**资料本体（data/raw、text、notes）不在可清理范围内。**"""
+    """清理**缓存类**目录。**资料本体（data/raw、text、notes）与数据库不在可清理范围内。**
+
+    `older_than_days` 给定时只删够旧的文件 —— 全清会让下次检索重新下载一遍。
+    """
     params = _params(params)
     target = str(params.get("target") or "fetch_cache")
+    raw_days = params.get("older_than_days")
+    days = (
+        float(raw_days)
+        if isinstance(raw_days, int | float) and not isinstance(raw_days, bool)
+        else None
+    )
     try:
-        removed = settings_io.cleanup(target=target)
+        removed = settings_io.cleanup(target=target, older_than_days=days)
     except settings_io.SettingsError as exc:
         raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
-    return {"ok": True, "target": target, "removed": removed}
+    return {"ok": True, "target": target, "older_than_days": days, "removed": removed}
+
+
+@method("settings.optimize")
+def settings_optimize(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """整理数据库（`VACUUM` + `PRAGMA optimize`）：**只整理、不删数据**。
+
+    为什么值得单独给个入口：删会话/删资料不会让库文件变小，用户会以为"删了没用"。
+    """
+    del params
+    result = settings_io.optimize_database(ctx.db)
+    return {"ok": True, **result, "usage": settings_io.data_usage().get("database", {})}
 
 
 # --------------------------------------------------------------------- 学习产物
