@@ -739,6 +739,20 @@ def note_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return {"items": learning.list_notes(ctx.db, kind=kind, limit=limit)}
 
 
+@method("research.board")
+def research_board(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """研究看板（B2 证据表 + B4 时间线 + B7 看板）：**只读**，零模型调用。
+
+    为什么合成一个 RPC：这三节是同一次"用户打开右栏"的动作，拆成三个方法会让前端连打三枪、
+    还可能出现"证据表是新的、时间线是旧的"这种不一致。
+    """
+    params = _params(params)
+    session_id = _require(params, "session_id")
+    from scholarscout.runtime import research_view
+
+    return research_view.build_board(ctx.db, session_id)
+
+
 @method("note.get")
 def note_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     params = _params(params)
