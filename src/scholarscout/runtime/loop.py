@@ -230,6 +230,12 @@ def run_turn(
     note = research_state.render_note(state, gaps)
     if profile_note:
         note = note + "\n\n" + profile_note
+    # 跨会话记忆（D2）：稳定事实 + "冲突以用户当前说法为准"的规矩
+    from scholarscout.runtime import memory
+
+    facts_note = memory.render_facts_note(ctx.db)
+    if facts_note:
+        note = note + "\n\n" + facts_note
     messages.append({"role": "system", "content": note})
 
     executed: list[str] = []
@@ -402,6 +408,33 @@ def run_turn(
         research_state.save_state(ctx.db, session_id, state)
     except Exception:
         pass
+
+    # ---- D2：跨会话记忆。每个会话最多抽一次，且要在"有值得记的迹象"时才抽。
+    # 失败不影响本轮结果（回答已经生成好了）；开销按 purpose="memory" 如实记账，
+    # 免得它变成看不见的暗开销（用户对成本敏感，这条尤其重要）。
+    if bool(getattr(ctx.config.generation, "memory_by_model", True)) and ctx.llm is not None:
+        try:
+            if ctx.config.summary_cfg is not None and memory.should_extract(ctx.db, session_id):
+                outcome = memory.extract_facts(
+                    ctx.llm,
+                    ctx.db,
+                    session_id,
+                    prompts_dir=ctx.config.summary_cfg.prompts_dir,
+                )
+                usage = outcome.get("usage") or {}
+                if usage:
+                    traces.record_usage(
+                        ctx.db,
+                        model=ctx.config.summary.model,
+                        purpose="memory",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        prompt_tokens=usage.get("prompt_tokens"),
+                        completion_tokens=usage.get("completion_tokens"),
+                        cached_tokens=usage.get("cached_tokens"),
+                    )
+        except Exception:
+            pass
 
     message_id = sessions.append_message(
         ctx.db,

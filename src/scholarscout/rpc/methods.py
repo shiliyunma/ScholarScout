@@ -781,6 +781,82 @@ def note_review(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, **result, "stats": learning.card_stats(ctx.db)}
 
 
+@method("memory.list")
+def memory_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """跨会话记忆列表（D2）。**能看才能改** —— 自动记忆没有出口就是污染。"""
+    del params
+    from scholarscout.runtime import memory
+
+    return {"items": memory.list_facts(ctx.db)}
+
+
+@method("memory.add")
+def memory_add(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    params = _params(params)
+    text = _require(params, "text")
+    kind = params.get("kind") if isinstance(params.get("kind"), str) else "fact"
+    from scholarscout.runtime import memory
+
+    try:
+        return memory.add_fact(ctx.db, text, kind=str(kind))
+    except ValueError as exc:
+        raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
+
+
+@method("memory.update")
+def memory_update(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    params = _params(params)
+    fact_id = _require(params, "fact_id")
+    text = _require(params, "text")
+    kind = params.get("kind") if isinstance(params.get("kind"), str) else None
+    from scholarscout.runtime import memory
+
+    try:
+        return memory.update_fact(ctx.db, fact_id, text, kind=kind)
+    except ValueError as exc:
+        raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
+
+
+@method("memory.remove")
+def memory_remove(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    params = _params(params)
+    fact_id = _require(params, "fact_id")
+    from scholarscout.runtime import memory
+
+    try:
+        return memory.remove_fact(ctx.db, fact_id)
+    except ValueError as exc:
+        raise RpcError(Code.NOT_FOUND, str(exc)) from exc
+
+
+@method("memory.extract")
+def memory_extract(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """手动整理一次记忆（每会话最多一次；空表也是正确结果）。"""
+    params = _params(params)
+    session_id = _require(params, "session_id")
+    from scholarscout.runtime import memory
+
+    if ctx.llm is None:
+        raise RpcError(Code.NOT_CONFIGURED, "未配置模型（把 LLM_API_KEY 写进 .env）")
+    if ctx.config.summary_cfg is None:
+        raise RpcError(Code.NOT_CONFIGURED, "摘要配置缺失，无法整理记忆")
+    outcome = memory.extract_facts(
+        ctx.llm, ctx.db, session_id, prompts_dir=ctx.config.summary_cfg.prompts_dir
+    )
+    usage = outcome.get("usage") or {}
+    if usage:
+        traces.record_usage(
+            ctx.db,
+            model=ctx.config.summary.model,
+            purpose="memory",
+            session_id=session_id,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            cached_tokens=usage.get("cached_tokens"),
+        )
+    return outcome
+
+
 @method("learner.profile")
 def learner_profile_rpc(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """学习者画像（跨会话）：水平、主题、卡片组掌握度、来源偏好。

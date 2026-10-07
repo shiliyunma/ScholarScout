@@ -1322,6 +1322,91 @@ async function loadBoard() {
   renderBoardTimeline(board);
   renderBoardArtifacts(board);
   loadProfile();
+  loadMemory();
+}
+
+async function loadMemory() {
+  const list = el("memory-list");
+  if (!list) return;
+  let payload;
+  try {
+    payload = await scout.call("memory.list", {});
+  } catch (error) {
+    list.innerHTML = '<li class="hint">记忆读取失败</li>';
+    return;
+  }
+  const items = payload.items || [];
+  el("memory-note").textContent = items.length
+    ? "（" + items.length + " 条；每条都能删，误抽不会一直污染下去）"
+    : "（还没有记忆。攒够几轮对话后会自动整理一次，也可以点「从现在整理」）";
+  list.innerHTML = "";
+  items.forEach(function (item) {
+    const labels = { preference: "偏好", fact: "背景", goal: "目标" };
+    const li = boardItem(
+      '<span class="badge">' +
+        esc(labels[item.kind] || item.kind) +
+        "</span> " +
+        esc(item.text),
+    );
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost board-mini";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async function (event) {
+      event.stopPropagation();
+      if (!window.confirm("删掉这条记忆？\n\n" + item.text)) return;
+      await scout.call("memory.remove", { fact_id: item.id });
+      loadMemory();
+    });
+    li.appendChild(remove);
+    list.appendChild(li);
+  });
+}
+
+async function addMemory() {
+  const input = el("memory-input");
+  const text = (input.value || "").trim();
+  if (!text) return;
+  try {
+    const result = await scout.call("memory.add", { text: text, kind: "fact" });
+    input.value = "";
+    if (!result.created) {
+      window.alert("已经有一条相近的记忆了，没重复添加。");
+    }
+    loadMemory();
+  } catch (error) {
+    window.alert("没记住：" + (error && error.message ? error.message : String(error)));
+  }
+}
+
+async function extractMemory() {
+  if (!state.sessionId) {
+    window.alert("先打开一个会话。");
+    return;
+  }
+  const button = el("btn-memory-extract");
+  button.disabled = true;
+  button.textContent = "整理中…";
+  try {
+    const result = await scout.call("memory.extract", { session_id: state.sessionId });
+    const added = (result.added || []).length;
+    const skipped = (result.skipped || []).length;
+    window.alert(
+      result.reason
+        ? "这次没整理出东西：" + result.reason
+        : "新增 " +
+            added +
+            " 条记忆" +
+            (skipped ? "，跳过 " + skipped + " 条（已有相近的）" : "") +
+            "。\n\n空表也是正常结果 —— 没有值得长期记住的东西就不该记。",
+    );
+    loadMemory();
+  } catch (error) {
+    window.alert("整理失败：" + (error && error.message ? error.message : String(error)));
+  } finally {
+    button.disabled = false;
+    button.textContent = "从现在整理";
+  }
 }
 
 async function loadProfile() {
@@ -2298,6 +2383,14 @@ function wire() {
   el("btn-history").addEventListener("click", toggleHistory);
   el("btn-board-refresh").addEventListener("click", function () {
     loadBoard();
+  });
+  el("btn-memory-add").addEventListener("click", addMemory);
+  el("btn-memory-extract").addEventListener("click", extractMemory);
+  el("memory-input").addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addMemory();
+    }
   });
   el("btn-note-kind-note").addEventListener("click", function () {
     loadNotes("note");

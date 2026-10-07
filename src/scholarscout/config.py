@@ -104,6 +104,9 @@ class Generation:
     #: 用模型把用户第一句总结成会话标题（**轮次开始前**做，标题立刻出现）。
     #: 关掉就用首句本地截断；开着每次新建会话多一次极小调用（几十 token）。
     title_by_model: bool = True
+    #: D2 跨会话记忆的自动抽取：每**会话**最多一次小调用，且要有"值得记"的迹象。
+    #: 关掉之后仍可在「研究看板 → 跨会话记忆」手动点「从现在整理」。
+    memory_by_model: bool = True
 
 
 @dataclass(frozen=True)
@@ -215,6 +218,8 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         generation=Generation(
             auto_artifacts=bool(generation_section.get("auto_artifacts", False)),
             title_by_model=bool(generation_section.get("title_by_model", True)),
+            # D2：跨会话记忆的自动抽取（每会话最多一次小调用）。关掉仍可手动整理。
+            memory_by_model=bool(generation_section.get("memory_by_model", True)),
         ),
         raw=raw,
         summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),

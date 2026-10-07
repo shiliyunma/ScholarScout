@@ -1201,3 +1201,10 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .badge-weak {
   color: var(--ui-text-tertiary);
 }
+
+/* 看板里的小按钮（如「删除」一条记忆）—— 不要抢主按钮的视觉层级 */
+.board-mini {
+  margin-left: 8px;
+  font-size: 11px;
+  padding: 0 6px;
+}

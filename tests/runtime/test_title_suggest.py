@@ -138,17 +138,35 @@ def test_title_is_generated_before_the_turn_and_emitted(ctx: AppContext) -> None
     assert len(ctx.llm.calls) == 2
 
 
+TITLE_MARKER = "总结成一个会话标题"
+
+
+def _title_call_indexes(llm: Any) -> list[int]:
+    """哪些调用是"起标题"那次 —— 按提示词内容认，不按总调用次数。"""
+    return [
+        index
+        for index, call in enumerate(llm.calls)
+        if any(TITLE_MARKER in str(m.get("content") or "") for m in call["messages"])
+    ]
+
+
 def test_title_only_generated_once_per_session(ctx: AppContext) -> None:
     """第二轮不再起标题：已有真标题（省钱，也不覆盖）。"""
     session_id = _new_session(ctx)
     ctx.emit = lambda name, payload: None
-    ctx.llm = TitleLlm(reply("第一次的标题"), reply("答复一"))
+    first_llm = TitleLlm(reply("第一次的标题"), reply("答复一"))
+    ctx.llm = first_llm
     dispatch(ctx, "chat.send", {"session_id": session_id, "text": "第一个问题"})
-    first_calls = len(ctx.llm.calls)
+    first_calls = len(first_llm.calls)
+    # 先证明这个过滤器本身有效（否则下面那条断言会"空过"）
+    assert len(_title_call_indexes(first_llm)) == 1, "第一轮应当为标题花一次调用"
 
     ctx.llm = TitleLlm(reply("答复二"))
     dispatch(ctx, "chat.send", {"session_id": session_id, "text": "第二个问题"})
-    assert len(ctx.llm.calls) == 1, "第二轮不该再花一次调用去起标题"
+    # 断言"没有再为标题花一次调用"，而不是"总共只调了一次" ——
+    # 一轮里除了回答还可能有别的后台调用（例如 D2 的记忆抽取，每会话一次）。
+    # 按总次数断言会让这类新增功能把一个好测试变成假红。
+    assert _title_call_indexes(ctx.llm) == [], "第二轮不该再花一次调用去起标题"
     assert first_calls == 2
     row = sessions.get_session(ctx.db, session_id)
     assert row is not None and row["title"] == "第一次的标题"
