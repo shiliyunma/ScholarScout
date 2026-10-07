@@ -222,3 +222,66 @@ def test_render_note_says_so_when_no_gap() -> None:
     note = rs.render_note(state, [])
     assert "暂时没有明显缺口" in note
     assert "不要换词重搜" in note or "如实说明" in note
+
+
+# --------------------------------------------------- 开局分解：失败必须带原因（不静默）
+
+
+class _StubLlm:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls: list[list[dict]] = []
+
+    def chat(self, messages, *, tools=None):
+        self.calls.append(list(messages))
+
+        class _Reply:
+            content = self.content
+
+        return _Reply()
+
+
+def test_decompose_with_reason_returns_questions(tmp_path) -> None:
+    from pathlib import Path as _Path
+
+    prompts = _Path(__file__).resolve().parents[2] / "prompts"
+    llm = _StubLlm('{"goal": "G", "questions": ["q1", "q2", "q3"]}')
+    questions, reason = rs.decompose_with_reason(llm, "调研 X", prompts_dir=prompts)
+    assert [item["text"] for item in questions] == ["q1", "q2", "q3"]
+    assert all(item["status"] == "open" for item in questions)
+    assert reason is None
+    # 用的是 prompt 文件里的模板，不是硬编码字符串
+    assert "分解器" in str(llm.calls[0][0]["content"])
+
+
+def test_decompose_with_reason_surfaces_bad_output() -> None:
+    """模型没按 JSON 回 → 空表 + **原因**（真机就是被静默吃掉才多查了一轮）。"""
+    from pathlib import Path as _Path
+
+    prompts = _Path(__file__).resolve().parents[2] / "prompts"
+    questions, reason = rs.decompose_with_reason(
+        _StubLlm("我不太确定你想问什么"), "x", prompts_dir=prompts
+    )
+    assert questions == []
+    assert reason is not None and "JSON" in reason
+
+
+def test_decompose_with_reason_surfaces_exception() -> None:
+    from pathlib import Path as _Path
+
+    prompts = _Path(__file__).resolve().parents[2] / "prompts"
+
+    class _Boom:
+        def chat(self, messages, *, tools=None):
+            raise RuntimeError("模型不可达")
+
+    questions, reason = rs.decompose_with_reason(_Boom(), "x", prompts_dir=prompts)
+    assert questions == []
+    assert reason is not None and "模型不可达" in reason
+
+
+def test_render_note_mentions_missing_plan() -> None:
+    state = rs.empty_state("目标")
+    state["plan_error"] = "模型没有按要求回 JSON"
+    note = rs.render_note(state, [])
+    assert "子问题清单缺失" in note and "模型没有按要求回 JSON" in note

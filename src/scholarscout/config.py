@@ -202,6 +202,7 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             stream=bool(runtime_section.get("stream", False)),
             allow_clarify=bool(runtime_section.get("allow_clarify", True)),
             max_history_chars=int(runtime_section.get("max_history_chars", 12000)),
+            plan_by_model=bool(runtime_section.get("plan_by_model", False)),
         ),
         features=Features(
             enable_kb=bool(feature_section.get("enable_kb", False)),

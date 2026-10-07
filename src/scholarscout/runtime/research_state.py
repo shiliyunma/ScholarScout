@@ -306,25 +306,34 @@ def parse_decompose(content: str) -> dict[str, Any] | None:
     }
 
 
-def decompose(llm: Any, request: str, *, prompts_dir: Any) -> list[dict[str, Any]]:
-    """把用户目标拆成子问题（整个会话只做一次）。失败就回空列表 —— 不阻塞这一轮。
+def decompose_with_reason(
+    llm: Any, request: str, *, prompts_dir: Any
+) -> tuple[list[dict[str, Any]], str | None]:
+    """把用户目标拆成子问题，并**把失败原因带出来**。
 
-    为什么要拆：没有子问题清单，"继续搜索"就永远是同一件事换词重搜；
-    有了它，缺口才具体（"第 3 条还没有证据"），检索才有方向。
+    为什么返回原因而不是静默回空表：拆不出来 = 缺口粒度退化，用户应当看得见。
+    真机上就是栽在这里 —— 读取处漏了一行（`runtime.plan_by_model` 没接进 load_config），
+    `except Exception` 把真相吃掉，表现只是"子问题 0 条"，查了一轮才发现。
     """
     from scholarscout.summary.prompts import PromptPack
 
     try:
         prompt = PromptPack(prompts_dir).compose(DECOMPOSE_PROMPT, request=request.strip()[:1200])
         reply = llm.chat([{"role": "user", "content": prompt}])
-        parsed = parse_decompose(str(getattr(reply, "content", "")))
-    except Exception:
-        return []
+    except Exception as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+    parsed = parse_decompose(str(getattr(reply, "content", "")))
     if parsed is None:
-        return []
+        return [], "模型没有按要求回 JSON（子问题清单缺失，缺口粒度退化为按年份/来源族判断）"
     return [
         {"text": question, "status": "open", "evidence": []} for question in parsed["questions"]
-    ]
+    ], None
+
+
+def decompose(llm: Any, request: str, *, prompts_dir: Any) -> list[dict[str, Any]]:
+    """只取子问题（失败回空表）。需要知道为什么失败时用 :func:`decompose_with_reason`。"""
+    questions, _reason = decompose_with_reason(llm, request, prompts_dir=prompts_dir)
+    return questions
 
 
 def render_note(state: dict[str, Any], gaps: list[dict[str, str]]) -> str:
@@ -340,6 +349,8 @@ def render_note(state: dict[str, Any], gaps: list[dict[str, str]]) -> str:
             status = "已覆盖" if str(question.get("status")) == "covered" else "缺口"
             marks.append(f"{index}.{question.get('text')}（{status}）")
         lines.append("子问题：" + "；".join(marks))
+    elif state.get("plan_error"):
+        lines.append(f"（子问题清单缺失：{state['plan_error']}）")
     used = state.get("used_queries") or []
     if used:
         recent = "；".join(str(item) for item in used[-6:])

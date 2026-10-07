@@ -210,9 +210,13 @@ def run_turn(
             and ctx.llm is not None
             and ctx.config.summary_cfg is not None
         ):
-            state["questions"] = research_state.decompose(
+            questions, reason = research_state.decompose_with_reason(
                 ctx.llm, text, prompts_dir=ctx.config.summary_cfg.prompts_dir
             )
+            state["questions"] = questions
+            if reason:
+                # 留痕：拆不出来时缺口粒度会退化，台账里要看得见（真机栽过一次）
+                state["plan_error"] = reason
         research_state.save_state(ctx.db, session_id, state)
     gaps = research_state.compute_gaps(ctx.db, session_id, state)
     messages.append({"role": "system", "content": research_state.render_note(state, gaps)})
