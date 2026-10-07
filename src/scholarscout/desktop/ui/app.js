@@ -2044,7 +2044,8 @@ async function renderProfile() {
   body.appendChild(await profileRoutes());
   body.appendChild(await profileNotes());
   body.appendChild(await profileCards());
-  el("profile-note").textContent = "汇总跨全部会话；日历与时间线见下一步";
+  body.appendChild(await profileBoard());
+  el("profile-note").textContent = "汇总跨全部会话";
 }
 
 async function profileRoutes() {
@@ -2180,6 +2181,58 @@ async function profileCards() {
     });
     box.appendChild(list);
   }
+  return box;
+}
+
+async function profileBoard() {
+  var box = profileSection("研究看板汇总", "按会话汇总跨全部会话的调研：目标、子问题、检索次数与已产出物。");
+  var payload;
+  try {
+    payload = await scout.call("research.overview", {});
+  } catch (error) {
+    box.appendChild(plainHint("读不到看板汇总：" + error.message));
+    return box;
+  }
+  var totals = payload.totals || {};
+  var nums = document.createElement("p");
+  nums.className = "profile-nums";
+  nums.textContent =
+    totals.sessions + " 个会话" +
+    "｜来源 " + totals.sources + "（无摘要 " + totals.without_summary + "）" +
+    "｜子问题 " + totals.covered + "/" + totals.questions +
+    (totals.coverage_rate === null || totals.coverage_rate === undefined
+      ? ""
+      : "（覆盖 " + Math.round(totals.coverage_rate * 100) + "%）") +
+    "｜检索 " + totals.queries + " 次" +
+    "｜地图 " + totals.maps + "｜路线 " + totals.routes +
+    "｜笔记 " + totals.notes + "｜卡片 " + totals.cards;
+  box.appendChild(nums);
+
+  var items = payload.sessions || [];
+  if (!items.length) {
+    box.appendChild(plainHint("还没有带来源的会话：先去调研一个题目。"));
+    return box;
+  }
+  var list = document.createElement("ul");
+  list.className = "list profile-list";
+  items.forEach(function (item) {
+    var li = document.createElement("li");
+    var name = document.createElement("span");
+    name.className = "profile-session";
+    name.textContent = item.title;
+    name.title = item.goal || "";
+    li.appendChild(name);
+    var meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent =
+      "来源 " + item.sources + "｜子问题 " + item.covered + "/" + item.questions +
+      "｜检索 " + item.queries +
+      "｜地图 " + item.maps + "｜路线 " + item.routes + "｜卡片 " + item.cards +
+      (item.updated_at ? "｜" + String(item.updated_at).slice(0, 10) : "");
+    li.appendChild(meta);
+    list.appendChild(li);
+  });
+  box.appendChild(list);
   return box;
 }
 

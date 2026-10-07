@@ -753,6 +753,20 @@ def research_board(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return research_view.build_board(ctx.db, session_id)
 
 
+@method("research.overview")
+def research_overview(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """跨会话的研究看板汇总（⑦）：**只读**，零模型调用。
+
+    为什么单独开一个方法而不是让前端循环调 research.board：前端循环 N 次就是把
+    "N 个会话各打一枪"搬到界面层，还可能出现半新半旧的混合结果。
+    """
+    params = _params(params)
+    limit = int(params.get("limit") or 30)
+    from scholarscout.runtime import research_view
+
+    return research_view.build_overview(ctx.db, limit=limit)
+
+
 @method("note.get")
 def note_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     params = _params(params)

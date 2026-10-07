@@ -336,3 +336,88 @@ def build_board(
             ),
         },
     }
+
+
+def build_overview(db: Database, *, limit: int = 30) -> dict[str, Any]:
+    """跨会话的研究看板汇总（⑦）：**只读**、零模型调用，数字全部来自库、不做估计。
+
+    口径：
+    - 只汇总"有台账或至少带出过一个来源"的会话；纯聊天会话不进汇总（否则列表全是空行）；
+    - 子问题覆盖数只数 `status == "covered"` 的（模型没回填就保持 open —— **不猜**）；
+    - `without_summary` 是"来源里还没有摘要"的条数，用来提示"这份还没读透"，不是错误。
+    """
+    from scholarscout.runtime import research_state
+
+    rows = db.query(
+        """
+        SELECT s.id AS session_id, s.title, s.updated_at
+        FROM sessions s
+        ORDER BY s.updated_at DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    sessions: list[dict[str, Any]] = []
+    for row in rows:
+        session_id = str(row["session_id"])
+        state = research_state.load_state(db, session_id)
+        sources = _load_session_sources(db, session_id)
+        if state is None and not sources:
+            continue
+        questions = [
+            item
+            for item in ((state or {}).get("questions") or [])
+            if isinstance(item, dict)
+        ]
+        covered = sum(1 for item in questions if str(item.get("status")) == "covered")
+        counts = {
+            "maps": db.scalar_int(
+                "SELECT count(*) FROM topic_maps WHERE session_id = ?", (session_id,)
+            ),
+            "routes": db.scalar_int(
+                "SELECT count(*) FROM learning_routes WHERE session_id = ?", (session_id,)
+            ),
+            "notes": db.scalar_int(
+                "SELECT count(*) FROM notes WHERE session_id = ? AND kind != 'card'",
+                (session_id,),
+            ),
+            "cards": db.scalar_int(
+                "SELECT count(*) FROM notes WHERE session_id = ? AND kind = 'card'",
+                (session_id,),
+            ),
+        }
+        sessions.append(
+            {
+                "session_id": session_id,
+                "title": str(row["title"] or "") or "（未命名会话）",
+                "updated_at": str(row["updated_at"] or ""),
+                "goal": str((state or {}).get("goal") or ""),
+                "questions": len(questions),
+                "covered": covered,
+                "queries": len([q for q in ((state or {}).get("used_queries") or [])]),
+                "sources": len(sources),
+                "without_summary": sum(1 for item in sources if not item.get("has_summary")),
+                **counts,
+            }
+        )
+
+    def total(key: str) -> int:
+        return sum(int(item[key]) for item in sessions)
+
+    totals = {
+        "sessions": len(sessions),
+        "sources": total("sources"),
+        "questions": total("questions"),
+        "covered": total("covered"),
+        "queries": total("queries"),
+        "maps": total("maps"),
+        "routes": total("routes"),
+        "notes": total("notes"),
+        "cards": total("cards"),
+        "without_summary": total("without_summary"),
+    }
+    # 覆盖率只在"真的问过子问题"时给，问都没问过时是 None（不是 0）
+    totals["coverage_rate"] = (
+        round(totals["covered"] / totals["questions"], 3) if totals["questions"] else None
+    )
+    return {"sessions": sessions, "totals": totals}

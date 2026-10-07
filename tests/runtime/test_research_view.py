@@ -289,3 +289,40 @@ def test_evidence_resolves_sources_outside_this_session(db: Database) -> None:
     assert len(row["sources"]) == 1
     assert row["sources"][0]["source_id"] == "src_elsewhere"
     assert row["sources"][0]["year"] == 2023
+
+
+def test_overview_skips_pure_chat_sessions_and_sums(db) -> None:
+    """纯聊天会话不进汇总；台账里的子问题/检索次数按会话数出来，覆盖率只在问过时给。"""
+    for session_id, title in (("ses_a", "有台账"), ("ses_b", "纯聊天")):
+        db.execute(
+            "INSERT INTO sessions (id, session_key, title, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (session_id, session_id, title, "2026-10-07T10:00:00", "2026-10-07T10:00:00"),
+        )
+    rs.save_state(
+        db,
+        "ses_a",
+        {
+            "goal": "把 GraphRAG 搞清楚",
+            "questions": [
+                {"text": "它和 RAG 差在哪", "status": "covered"},
+                {"text": "成本如何", "status": "open"},
+            ],
+            "used_queries": ["graphrag vs rag", "graphrag cost"],
+            "collected_sources": [],
+        },
+    )
+    overview = research_view.build_overview(db)
+    assert [item["session_id"] for item in overview["sessions"]] == ["ses_a"]
+    only = overview["sessions"][0]
+    assert only["questions"] == 2 and only["covered"] == 1
+    assert only["queries"] == 2 and only["sources"] == 0
+    assert overview["totals"]["sessions"] == 1
+    assert overview["totals"]["coverage_rate"] == 0.5
+
+
+def test_overview_coverage_is_none_when_no_questions(db) -> None:
+    """一次子问题都没问过 → 覆盖率是 None，不是 0（0 会被读成"一个都没覆盖"）。"""
+    overview = research_view.build_overview(db)
+    assert overview["sessions"] == []
+    assert overview["totals"]["coverage_rate"] is None
