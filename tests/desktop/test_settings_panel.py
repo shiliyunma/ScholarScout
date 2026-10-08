@@ -11,15 +11,8 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-UTILS = Path(__file__).resolve().parents[2] / "src" / "scholarscout" / "desktop" / "ui"
-APP_JS = UTILS / "app.js"
-INDEX_HTML = UTILS / "index.html"
-
-
-def read_app_js() -> str:
-    return APP_JS.read_text(encoding="utf-8")
+from ._ui import INDEX_HTML_PATH, read_app_js
 
 
 def spec_keys() -> list[str]:
@@ -101,7 +94,7 @@ def test_mineru_without_token_explains_the_boundary() -> None:
 
 
 def test_index_html_has_the_panel_markup() -> None:
-    html = INDEX_HTML.read_text(encoding="utf-8")
+    html = INDEX_HTML_PATH.read_text(encoding="utf-8")
     for marker in (
         'id="btn-settings"',
         'id="settings"',
@@ -145,5 +138,5 @@ def test_ui_scale_is_clamped() -> None:
 
 def test_settings_overlay_is_not_open_at_startup() -> None:
     """面板默认关闭（否则一进界面就被糊住）。"""
-    html = INDEX_HTML.read_text(encoding="utf-8")
+    html = INDEX_HTML_PATH.read_text(encoding="utf-8")
     assert re.search(r'id="settings"[^>]*hidden', html)

@@ -8,9 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-UTILS = Path(__file__).resolve().parents[2] / "src" / "scholarscout" / "desktop" / "ui"
-APP_JS = (UTILS / "app.js").read_text(encoding="utf-8")
-INDEX_HTML = (UTILS / "index.html").read_text(encoding="utf-8")
+from ._ui import APP_JS, INDEX_HTML, UI_DIR
 
 
 def test_row_menu_has_the_four_actions() -> None:
@@ -78,4 +76,6 @@ def test_messages_bump_only_via_real_ordering_field() -> None:
     source = Path(sessions.__file__).read_text(encoding="utf-8")
     assert "COALESCE(s.pinned, 0) DESC" in source
     assert "item.pinned" in APP_JS, "界面要能看出哪条是置顶的"
-    assert "pin-flag" in APP_JS and ".pin-flag" in (UTILS / "style.css").read_text(encoding="utf-8")
+    assert "pin-flag" in APP_JS and ".pin-flag" in (UI_DIR / "style.css").read_text(
+        encoding="utf-8"
+    )

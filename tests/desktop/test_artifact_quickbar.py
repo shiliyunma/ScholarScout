@@ -9,12 +9,8 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-UTILS = Path(__file__).resolve().parents[2] / "src" / "scholarscout" / "desktop" / "ui"
-APP_JS = (UTILS / "app.js").read_text(encoding="utf-8")
-INDEX_HTML = (UTILS / "index.html").read_text(encoding="utf-8")
-STYLE_CSS = (UTILS / "style.css").read_text(encoding="utf-8")
+from ._ui import APP_JS, INDEX_HTML, STYLE_CSS
 
 
 def test_quickbar_markup_has_three_actions() -> None:
