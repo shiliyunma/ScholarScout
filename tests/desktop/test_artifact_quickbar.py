@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from ._ui import APP_JS, INDEX_HTML, STYLE_CSS
+from ._ui import APP_JS, INDEX_HTML, STYLE_CSS, between
 
 
 def test_quickbar_markup_has_three_actions() -> None:
@@ -25,7 +25,7 @@ def test_quickbar_says_it_will_not_auto_generate() -> None:
 
 
 def test_each_action_asks_for_a_specific_tool() -> None:
-    block = APP_JS[APP_JS.index("var ASK_TEXTS") : APP_JS.index("function askArtifact")]
+    block = between(APP_JS, "var ASK_TEXTS", "function askArtifact")
     assert "topic.build_map" in block
     assert "route.plan" in block
     assert "note.save" in block and "card" in block
@@ -33,12 +33,12 @@ def test_each_action_asks_for_a_specific_tool() -> None:
 
 def test_asking_sends_a_real_user_message() -> None:
     """走 send(...)（真实对话），不是绕过会话直接调工具 —— 否则用户看不到自己点过什么。"""
-    block = APP_JS[APP_JS.index("function askArtifact") : APP_JS.index("function wire()")]
+    block = between(APP_JS, "function askArtifact", "function wire()")
     assert re.search(r"\bsend\(text\)", block)
 
 
 def test_asking_is_blocked_while_a_turn_is_running() -> None:
-    block = APP_JS[APP_JS.index("function askArtifact") : APP_JS.index("function wire()")]
+    block = between(APP_JS, "function askArtifact", "function wire()")
     assert "state.sending" in block
 
 

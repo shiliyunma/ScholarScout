@@ -12,15 +12,15 @@ from __future__ import annotations
 
 import re
 
-from ._ui import INDEX_HTML_PATH, read_app_js
+from ._ui import INDEX_HTML_PATH, between, read_app_js
 
 
 def spec_keys() -> list[str]:
     """从 SETTINGS_SPEC 里抽出所有 `key: "a.b.c"`（只取设置面板那一段）。"""
     text = read_app_js()
-    start = text.index("var SETTINGS_SPEC = [")
-    end = text.index("var THEME_CHOICES")
-    return re.findall(r'key:\s*"([a-z0-9_.]+)"', text[start:end])
+    # 顺序无关取段：SETTINGS_SPEC 在 app.js、主题档位在 profile.js，两边不再相邻
+    block = between(text, "var SETTINGS_SPEC = [", "var THEME_CHOICES")
+    return re.findall(r'key:\s*"([a-z0-9_.]+)"', block)
 
 
 def test_panel_fields_exist_in_backend_whitelist() -> None:
@@ -113,20 +113,16 @@ def test_panel_calls_only_settings_methods() -> None:
 def test_secret_inputs_are_never_prefilled() -> None:
     """密钥输入框只能是空密码框 —— 一旦有人给它塞 value，密钥就会出现在界面与截图里。"""
     text = read_app_js()
-    block = text[
-        text.index("function renderSettingsField") : text.index("function renderAppearance")
-    ]
+    block = between(text, "function renderSettingsField", "function renderAppearance")
     assert 'input.type = "password"' in block
-    secret_branch = block[block.index('field.kind === "secret"') : block.index("} else {")]
+    secret_branch = between(block, 'field.kind === "secret"', "} else {")
     assert "value" not in secret_branch, "密钥框不许预填任何值"
 
 
 def test_bool_fields_are_checked_only_on_explicit_true() -> None:
     """前端布尔框只认明确的 true —— 值缺失时必须显示未勾选，否则"默认关"的开关看起来是开的。"""
     text = read_app_js()
-    block = text[
-        text.index("function renderSettingsField") : text.index("function renderAppearance")
-    ]
+    block = between(text, "function renderSettingsField", "function renderAppearance")
     assert "input.checked = values[field.key] === true" in block
 
 

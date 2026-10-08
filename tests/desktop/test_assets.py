@@ -13,12 +13,16 @@ def _write(base: Path, name: str, text: str) -> None:
 
 def _minimal_ui(base: Path, *, js: str | None = None, html: str | None = None) -> None:
     base.mkdir(parents=True, exist_ok=True)
+    # 脚本标签按 assets.JS_FILES 生成（前端拆成多个 js 后，夹具不再手写死清单，
+    # 以后新增文件也不用改这里）
+    scripts = "".join(f'<script src="{name}"></script>' for name in assets.JS_FILES)
     _write(
         base,
         "index.html",
         html
-        or '<html><head><link rel="stylesheet" href="style.css"></head>'
-        '<body><script src="markdown.js"></script><script src="app.js"></script></body></html>',
+        if html is not None
+        else f'<html><head><link rel="stylesheet" href="style.css"></head>'
+        f"<body>{scripts}</body></html>",
     )
     _write(
         base,
@@ -27,6 +31,10 @@ def _minimal_ui(base: Path, *, js: str | None = None, html: str | None = None) -
         if js is not None
         else 'var s={call:function(m){} };s.call("system.health", {}); ScoutMarkdown.renderInto(x, y);',
     )
+    for name in assets.JS_FILES:
+        if name in ("app.js", "markdown.js"):
+            continue
+        _write(base, name, "")
     _write(base, "markdown.js", "var ScoutMarkdown={renderInto:function(){}};")
     _write(base, "style.css", "body{margin:0}")
 

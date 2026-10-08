@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._ui import APP_JS, INDEX_HTML, UI_DIR
+from ._ui import APP_JS, INDEX_HTML, UI_DIR, between
 
 
 def test_row_menu_has_the_four_actions() -> None:
-    block = APP_JS[APP_JS.index("function toggleRowMenu") : APP_JS.index("function closeRowMenus")]
+    block = between(APP_JS, "function toggleRowMenu", "function closeRowMenus")
     for label in ("置顶", "取消置顶", "重命名", "分享（导出 Markdown）", "删除会话"):
         assert label in block, f"菜单里少了「{label}」"
 
@@ -29,25 +29,21 @@ def test_row_menu_calls_only_real_methods() -> None:
 
 def test_delete_confirmation_names_what_gets_deleted() -> None:
     """删除是不可逆的：确认话术必须说清"连带删什么、不删什么"。"""
-    block = APP_JS[
-        APP_JS.index("async function deleteSession") : APP_JS.index("function showTextModal")
-    ]
+    block = between(APP_JS, "async function deleteSession", "function showTextModal")
     assert "window.confirm" in block
     assert "资料库" in block and "账本" in block
     assert "分享" in block, "要提示删之前可以导出"
 
 
 def test_delete_reports_what_was_removed() -> None:
-    block = APP_JS[
-        APP_JS.index("async function deleteSession") : APP_JS.index("function showTextModal")
-    ]
+    block = between(APP_JS, "async function deleteSession", "function showTextModal")
     assert "result.removed" in block and "条消息" in block
 
 
 def test_export_modal_is_readonly_and_copyable() -> None:
     assert 'id="textmodal-body" readonly' in INDEX_HTML
     assert 'id="btn-textmodal-copy"' in INDEX_HTML
-    block = APP_JS[APP_JS.index("async function copyTextModal") : APP_JS.index("function wire()")]
+    block = between(APP_JS, "async function copyTextModal", "function wire()")
     assert "navigator.clipboard" in block
     assert 'execCommand("copy")' in block, "没有剪贴板权限时要退回到选中复制"
     assert "area.select()" in block
@@ -55,13 +51,13 @@ def test_export_modal_is_readonly_and_copyable() -> None:
 
 def test_export_shows_where_the_file_went() -> None:
     assert 'id="textmodal-path"' in INDEX_HTML
-    block = APP_JS[APP_JS.index("function showTextModal") : APP_JS.index("function closeTextModal")]
+    block = between(APP_JS, "function showTextModal", "function closeTextModal")
     assert "已保存：" in block
 
 
 def test_menu_click_does_not_also_open_the_session() -> None:
     """点三个点不该顺手把会话切换掉（stopPropagation 漏了就是这个症状）。"""
-    block = APP_JS[APP_JS.index("function rowMenuButton") : APP_JS.index("function toggleRowMenu")]
+    block = between(APP_JS, "function rowMenuButton", "function toggleRowMenu")
     assert "stopPropagation" in block
 
 
