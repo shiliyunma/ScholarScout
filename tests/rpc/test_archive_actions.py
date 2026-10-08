@@ -49,7 +49,7 @@ def test_open_raw_launches_system_default(ctx: AppContext, monkeypatch) -> None:
     raw = _place(doc_id)
     launched: list[str] = []
     monkeypatch.setattr(
-        "scholarscout.rpc.methods._launch_with_system", lambda target: launched.append(str(target))
+        "scholarscout.rpc.archive._launch_with_system", lambda target: launched.append(str(target))
     )
 
     result = dispatch(ctx, "archive.open_raw", {"doc_id": doc_id})
@@ -69,7 +69,7 @@ def test_reveal_by_doc_id_selects_text_file(ctx: AppContext, monkeypatch) -> Non
     _place(doc_id)
     revealed: list[str] = []
     monkeypatch.setattr(
-        "scholarscout.rpc.methods._reveal_in_file_manager",
+        "scholarscout.rpc.archive._reveal_in_file_manager",
         lambda target: revealed.append(str(target)),
     )
 
@@ -84,7 +84,7 @@ def test_reveal_by_path_accepts_notes_export(ctx: AppContext, monkeypatch) -> No
     note.write_text("# 抽背卡", encoding="utf-8")
     revealed: list[str] = []
     monkeypatch.setattr(
-        "scholarscout.rpc.methods._reveal_in_file_manager",
+        "scholarscout.rpc.archive._reveal_in_file_manager",
         lambda target: revealed.append(str(target)),
     )
 
