@@ -76,57 +76,6 @@ async function loadSources(query) {
 
 
 
-/* 原文区块：按 format 决定怎么显示（markdown 渲染 / 等宽原样 / pdf 只提示打开原件） */
-function originalBlock(payload) {
-  const box = document.createElement("div");
-  box.className = "original-block";
-  const label = document.createElement("div");
-  label.className = "section-label";
-  label.textContent = "原文";
-  box.appendChild(label);
-  if (!payload || payload.available !== true) {
-    const hint = document.createElement("div");
-    hint.className = "hint";
-    hint.textContent = (payload && payload.reason) || "没有可显示的正文";
-    box.appendChild(hint);
-    return box;
-  }
-  if (payload.format === "pdf") {
-    const hint = document.createElement("div");
-    hint.className = "hint";
-    hint.textContent = "PDF 不在界面里预览 —— 点条目右边的「⋯ → 打开文件」用系统阅读器看。";
-    box.appendChild(hint);
-    return box;
-  }
-  if (!payload.text) {
-    const hint = document.createElement("div");
-    hint.className = "hint";
-    hint.textContent = "正文是空的（这一页可能没抓到内容）。";
-    box.appendChild(hint);
-    return box;
-  }
-  if (payload.format === "markdown" && typeof ScoutMarkdown !== "undefined") {
-    const target = document.createElement("div");
-    target.className = "markdown";
-    ScoutMarkdown.renderInto(target, payload.text);
-    box.appendChild(target);
-  } else {
-    const pre = document.createElement("pre");
-    pre.className = "original-text";
-    pre.textContent = payload.text;
-    box.appendChild(pre);
-  }
-  if (payload.truncated) {
-    const hint = document.createElement("div");
-    hint.className = "hint";
-    hint.textContent =
-      "正文较长，这里只显示了前 " + (payload.chars || 0) + " 字符（完整原文在「⋯ → 打开文件」里）。";
-    box.appendChild(hint);
-  }
-  return box;
-}
-
-
 /* 会话分组头：点一下折叠/展开（默认展开 —— 最近一次调研在最上面，先看的通常就是它） */
 function sourceGroupHeader(group) {
   const li = document.createElement("li");
@@ -161,6 +110,7 @@ async function showSource(docId) {
 
   const box = el("source-detail");
   box.innerHTML = "";
+  attachDetailClose(box, "从列表里点一条，看它的摘要与详情。");
   // 「⋯」按用户要求挪到列表条目那一行去了（跟着条目走，这里不再重复）
   const title = document.createElement("h3");
   title.textContent = first.title_zh || doc.title || "(无标题)";
@@ -178,17 +128,6 @@ async function showSource(docId) {
     (doc.extract_status || "") +
     (doc.truncated ? "｜超长已截断" : "");
   box.appendChild(meta);
-
-  // 「保留原文的格式」：正文早就落盘了（data/text/），这里按它的格式给人看 ——
-  // md 走 Markdown 渲染、代码与数据等宽原样显示、pdf 只提示打开原件（界面里不假装能预览）。
-  // 取不到就如实说原因，不拿摘要冒充原文。
-  const original = await scout.call("archive.text", { doc_id: docId });
-  box.appendChild(originalBlock(original));
-
-  const heading = document.createElement("div");
-  heading.className = "section-label";
-  heading.textContent = "摘要";
-  box.appendChild(heading);
 
   const body = document.createElement("div");
   body.textContent = first.summary_short || "（这条资料还没出摘要）";
@@ -271,6 +210,7 @@ function showTopic(payload) {
   const stats = graph.stats || {};
   const box = el("source-detail");
   box.innerHTML = "";
+  attachDetailClose(box, "从列表里点一条，看它的摘要与详情。");
   const title = document.createElement("h3");
   title.textContent = "主题地图：" + (payload.topic || "");
   box.appendChild(title);

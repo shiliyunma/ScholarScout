@@ -48,6 +48,7 @@ async function showRoute(routeId) {
   const plan = payload.plan || {};
   const box = el("route-detail");
   box.innerHTML = "";
+  attachDetailClose(box, "从列表里点一条，看它的摘要与详情。");
   // ⑧：时间线/日历视图（纯前端，数据就是这条路线的 plan）
   const visual = document.createElement("div");
   visual.className = "route-visual";
@@ -153,6 +154,7 @@ async function showCard(noteId) {
   const note = await scout.call("note.get", { note_id: noteId });
   const box = el("card-detail");
   box.innerHTML = "";
+  attachDetailClose(box, "从列表里点一条，看它的摘要与详情。");
   const title = document.createElement("h3");
   title.textContent = note.title || "抽背卡";
   box.appendChild(title);
@@ -391,6 +393,7 @@ async function showNote(noteId) {
   const note = await scout.call("note.get", { note_id: noteId });
   const box = el("note-detail");
   box.innerHTML = "";
+  attachDetailClose(box, "从列表里点一条，看它的摘要与详情。");
 
   const title = document.createElement("h3");
   title.textContent = note.title || "（无标题）";

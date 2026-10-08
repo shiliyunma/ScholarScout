@@ -1635,3 +1635,16 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* 摘要/详情区统一的关闭按钮（贴右上角） */
+.detail-head {
+  display: flex;
+  justify-content: flex-end;
+  margin: -2px 0 4px;
+}
+
+.detail-close {
+  padding: 0 7px;
+  line-height: 1.5;
+  font-size: 12px;
+}

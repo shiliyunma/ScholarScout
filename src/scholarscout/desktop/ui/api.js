@@ -459,3 +459,25 @@ async function copyTextModal() {
     note.className = "hint set-bad";
   }
 }
+
+/* 所有「摘要 / 详情」区的统一关闭按钮（用户要求：每一块都能关掉）。
+   放在 api.js 是因为它属于共享 DOM 工具，不属于某一个业务面板。 */
+function attachDetailClose(box, hint) {
+  const head = document.createElement("div");
+  head.className = "detail-head";
+  const closer = document.createElement("button");
+  closer.type = "button";
+  closer.className = "ghost detail-close";
+  closer.title = "关闭";
+  closer.textContent = "✕";
+  closer.addEventListener("click", function () {
+    box.innerHTML = "";
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = hint || "已关闭。";
+    box.appendChild(note);
+  });
+  head.appendChild(closer);
+  box.appendChild(head);
+  return head;
+}
