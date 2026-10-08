@@ -191,7 +191,9 @@ async function profileCards() {
       var meta = document.createElement("span");
       meta.className = "meta";
       meta.textContent =
-        "熟 " + rate + "｜熟 " + item.mastered + "／复习中 " + item.reviewing + "／薄弱 " + item.weak;
+        "熟 " + rate + "｜熟 " + item.mastered + "／复习中 " + item.reviewing + "／薄弱 " + item.weak +
+        "｜" + item.knowledge_type + " 掌握度 " + item.level + "（门槛 " + item.gate +
+        "，达标 " + item.above_gate + "）" + (item.next ? "｜下一个：" + item.next.title : "");
       li.appendChild(meta);
       list.appendChild(li);
     });

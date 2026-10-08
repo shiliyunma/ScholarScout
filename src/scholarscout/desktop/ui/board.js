@@ -180,6 +180,17 @@ async function loadProfile() {
           " ／ 薄弱 " +
           item.weak +
           (item.cards - item.reviewed ? " ／ 未练 " + (item.cards - item.reviewed) : "") +
+          // ① 类型化掌握度（口径在 learning/mastery.py，纯函数可复算）
+          " ｜ 掌握度 " +
+          item.level +
+          "（" +
+          item.knowledge_type +
+          " 门槛 " +
+          item.gate +
+          "，达标 " +
+          item.above_gate +
+          "）" +
+          (item.next ? "｜下一个：" + item.next.title : "") +
           "</span>",
       ),
     );

@@ -29,8 +29,10 @@
 from __future__ import annotations
 
 import datetime
+import json
 from typing import Any
 
+from scholarscout.learning import mastery
 from scholarscout.state.db import Database
 from scholarscout.state.learning import parse_cards
 
@@ -59,9 +61,19 @@ def _bucket(rating: str | None, streak: int, lapses: int, interval: float | None
     return "未练"
 
 
-def _card_rows(db: Database) -> list[dict[str, Any]]:
+def _tags_of(raw: object) -> list[str]:
+    """笔记 tags_json → 字符串列表。解析不了就当没有标签（不猜）。"""
+    try:
+        parsed = json.loads(str(raw or "[]"))
+    except (ValueError, TypeError):
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _card_rows(db: Database, *, now: datetime.datetime | None = None) -> list[dict[str, Any]]:
     """每张卡一行：卡片组（笔记标题）+ 它的排期状态。"""
-    notes = db.query("SELECT id, title, content FROM notes WHERE kind = 'card'")
+    moment = now or datetime.datetime.now().astimezone()
+    notes = db.query("SELECT id, title, content, tags_json FROM notes WHERE kind = 'card'")
     reviews = {
         (str(row["note_id"]), int(row["card_index"])): dict(row)
         for row in db.query(
@@ -73,6 +85,7 @@ def _card_rows(db: Database) -> list[dict[str, Any]]:
     for note in notes:
         note_id = str(note["id"])
         title = str(note["title"] or "未命名卡片组")
+        knowledge_type = mastery.type_from_tags(_tags_of(note["tags_json"]))
         for index, _card in enumerate(parse_cards(str(note["content"] or ""))):
             review = reviews.get((note_id, index))
             rows.append(
@@ -90,6 +103,18 @@ def _card_rows(db: Database) -> list[dict[str, Any]]:
                         else None
                     ),
                     "reviewed_at": str(review["reviewed_at"]) if review else None,
+                    # ① 类型化掌握度：由证据按确定性规则算（见 learning/mastery.py）
+                    "knowledge_type": knowledge_type,
+                    "level": (
+                        mastery.mastery_level(
+                            rating=str(review["rating"]) if review else None,
+                            reviews=int(review["reviews"] or 0) if review else 0,
+                            age_days=_age_days(review, moment),
+                            lapses=int(review["lapses"] or 0) if review else 0,
+                        )
+                        if review
+                        else 0.0
+                    ),
                     "bucket": (
                         _bucket(
                             str(review["rating"]) if review else None,
@@ -107,6 +132,19 @@ def _card_rows(db: Database) -> list[dict[str, Any]]:
     return rows
 
 
+def _age_days(review: dict[str, Any] | None, now: datetime.datetime) -> float:
+    """距上次复习多少天。时间戳解析不了当 0 天 —— 宁可不打折，也不凭空说人忘了。"""
+    if not review or not review.get("reviewed_at"):
+        return 0.0
+    try:
+        moment = datetime.datetime.fromisoformat(str(review["reviewed_at"]))
+    except ValueError:
+        return 0.0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=datetime.UTC)
+    return max(0.0, (now - moment).total_seconds() / 86400.0)
+
+
 def _mastery_of(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """一组卡片的掌握度。**未练的不进分母**。"""
     reviewed = [row for row in rows if row["reviewed"]]
@@ -120,6 +158,21 @@ def _mastery_of(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "reviewing": counts["复习中"],
         "weak": counts["薄弱"],
         "mastery_rate": (counts["熟"] / len(reviewed)) if reviewed else None,
+        # ---- ① 类型化掌握度（mastery.mastery_level 的口径，纯函数、可复算）----
+        "knowledge_type": (reviewed[0]["knowledge_type"] if reviewed else None)
+        or (rows[0]["knowledge_type"] if rows else None)
+        or "concept",
+        "level": (
+            round(sum(float(row["level"]) for row in reviewed) / len(reviewed), 4)
+            if reviewed
+            else 0.0
+        ),
+        "above_gate": sum(
+            1 for row in reviewed if mastery.is_mastered(float(row["level"]), row["knowledge_type"])
+        ),
+        "gate": mastery.gate_threshold(
+            (reviewed[0]["knowledge_type"] if reviewed else None) or "concept"
+        ),
     }
 
 
@@ -130,7 +183,7 @@ def build_profile(db: Database, *, now: datetime.datetime | None = None) -> dict
         (moment - datetime.timedelta(days=ACTIVITY_WINDOW_DAYS)).replace(microsecond=0).isoformat()
     )
 
-    cards = _card_rows(db)
+    cards = _card_rows(db, now=moment)
     overview = _mastery_of(cards)
 
     routes = [dict(row) for row in db.query("SELECT topic, weeks, created_at FROM learning_routes")]
@@ -163,10 +216,31 @@ def build_profile(db: Database, *, now: datetime.datetime | None = None) -> dict
             "group": name,
             **_mastery_of(rows),
             "last_at": max((r["reviewed_at"] or "" for r in rows), default=""),
+            # 门槛即游标（①）：这一组里**还没过门槛**的卡，按卡片顺序 ——
+            # next_objective 扫第一个，就是要提醒用户先练的那张。
+            "pending": [
+                {
+                    "id": f"{row['note_id']}#{row['card_index']}",
+                    "title": f"第 {row['card_index'] + 1} 张",
+                    "type": row["knowledge_type"],
+                    "level": row["level"],
+                }
+                for row in rows
+                if not mastery.is_mastered(float(row["level"]), row["knowledge_type"])
+            ],
         }
         for name, rows in groups.items()
     ]
-    card_groups.sort(key=lambda item: (-(item["weak"]), -(item["cards"] or 0)))
+    # 门槛即游标（①）：先算每个组的"下一个该学"，谁没过门槛谁排前面
+    for item in card_groups:
+        item["next"] = mastery.next_objective(item.get("pending", []))
+    card_groups.sort(
+        key=lambda item: (
+            0 if item.get("next") else 1,
+            -(item["weak"]),
+            -(item["cards"] or 0),
+        )
+    )
 
     activity = db.query_one(
         "SELECT count(*) AS reviews, count(DISTINCT substr(reviewed_at, 1, 10)) AS days"
