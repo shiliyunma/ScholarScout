@@ -195,6 +195,77 @@ class OpenAIChatClient:
         self._cache_write(payload, body)
         return self._parse(body)
 
+    # ---------------------------------------------------------------- 流式调用
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        on_delta: Any = None,
+    ) -> ChatReply:
+        """流式产出**最终回答**：边收边把累计文本交给 on_delta。
+
+        为什么只流这一轮：工具调用轮模型输出的是 tool_calls（不是给人读的正文），
+        而循环的硬规则是最后一轮tools=None —— 正好就是这里，所以只在这一轮开流。
+
+        为什么发**累计**文本而不是增量：界面收到 chat.delta 是直接替换正文（不是追加），
+        发累计值就不用改前端；中途断线也不会留下半句话。
+        """
+        url = self.base_url + "/chat/completions"
+        payload = self._payload(messages, None)
+        payload["stream"] = True
+        chunks: list[str] = []
+        usage: dict[str, Any] = {}
+        finish_reason: str | None = None
+        try:
+            with self._http().stream("POST", url, json=payload) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    raise LlmError(
+                        "bad_response",
+                        f"模型返回 {response.status_code}：{response.text[:200]}",
+                        http_status=response.status_code,
+                    )
+                for raw in response.iter_lines():
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # 心跳/非 JSON 行直接跳过，不因为一行坏数据中断整段
+                    if event.get("usage"):
+                        usage = event["usage"]
+                    for choice in event.get("choices") or []:
+                        piece = str((choice.get("delta") or {}).get("content") or "")
+                        if piece:
+                            chunks.append(piece)
+                            if on_delta is not None:
+                                on_delta("".join(chunks))
+                        if choice.get("finish_reason"):
+                            finish_reason = str(choice["finish_reason"])
+        except httpx.TimeoutException as exc:
+            raise LlmError("timeout", f"模型请求超时（{self.timeout_s}s）：{exc}") from exc
+        except httpx.HTTPError as exc:
+            raise LlmError("network", f"模型请求失败：{exc}") from exc
+
+        # 复用一次性路径的解析：把流式收下来的内容拼成同样形状的 body，
+        # 这样 tool_calls/usage/finish_reason 的解析只有一处实现，不会两套逻辑漂移。
+        body = {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "".join(chunks)},
+                    "finish_reason": finish_reason or "stop",
+                }
+            ],
+            "usage": usage,
+        }
+        return self._parse(body)
+
     # -------------------------------------------------------------- 响应缓存
 
     def _cache_path(self, payload: dict[str, Any]) -> Path | None:
