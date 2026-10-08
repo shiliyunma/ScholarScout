@@ -208,7 +208,9 @@ def note_due(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """
     params = _params(params)
     limit = _int_param(params, "limit", 30)
-    return learning.due_cards(ctx.db, limit=limit)
+    note_id = params.get("note_id")
+    note_id = str(note_id) if isinstance(note_id, str) and note_id else None
+    return learning.due_cards(ctx.db, limit=limit, note_id=note_id)
 
 
 @method("note.help")

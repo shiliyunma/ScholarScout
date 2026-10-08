@@ -316,6 +316,7 @@ def due_cards(
     *,
     now: datetime.datetime | None = None,
     limit: int = 30,
+    note_id: str | None = None,
 ) -> dict[str, Any]:
     """今天该练哪些卡：新卡（从没排过）+ 到期卡（`due_at <= now`）。
 
@@ -324,9 +325,12 @@ def due_cards(
     真要长大到几万张再谈索引，现在不做。
     """
     moment = now or datetime.datetime.now().astimezone()
+    where_note = " AND id = ?" if note_id else ""
     rows = db.query(
         "SELECT id, title, content, created_at FROM notes WHERE kind = 'card'"
-        " ORDER BY created_at DESC"
+        + where_note
+        + " ORDER BY created_at DESC",
+        (note_id,) if note_id else (),
     )
     schedule_rows = {
         (str(item["note_id"]), int(item["card_index"])): item
@@ -408,6 +412,34 @@ def card_stats(db: Database) -> dict[str, Any]:
     }
 
 
+def note_card_counts(
+    db: Database, *, now: datetime.datetime | None = None
+) -> dict[str, dict[str, int]]:
+    """每个卡组（kind='card' 的笔记）有多少张卡、今天该练几张。
+
+    口径与 due_cards 一致：**从没排过的新卡也算到期**（新建的卡组不该显示 0）。
+    正文是唯一真相（卡片明细不落表），所以这里照旧解析正文 —— 量级对，误差风险更低。
+    """
+    moment = (now or datetime.datetime.now().astimezone()).isoformat()
+    rows = db.query(
+        "SELECT note_id, COUNT(*) AS reviewed,"
+        " SUM(CASE WHEN due_at IS NULL OR due_at <= ? THEN 1 ELSE 0 END) AS due_reviewed"
+        " FROM card_reviews GROUP BY note_id",
+        (moment,),
+    )
+    reviewed = {
+        str(row["note_id"]): (int(row["reviewed"] or 0), int(row["due_reviewed"] or 0))
+        for row in rows
+    }
+    counts: dict[str, dict[str, int]] = {}
+    for note in db.query("SELECT id, content FROM notes WHERE kind = 'card'"):
+        note_id = str(note["id"])
+        total = len(parse_cards(str(note["content"] or "")))
+        seen, due_seen = reviewed.get(note_id, (0, 0))
+        counts[note_id] = {"total": total, "due": max(0, total - seen) + due_seen}
+    return counts
+
+
 def list_notes(db: Database, *, kind: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     if kind:
         rows = db.query(
@@ -415,7 +447,15 @@ def list_notes(db: Database, *, kind: str | None = None, limit: int = 50) -> lis
         )
     else:
         rows = db.query("SELECT * FROM notes ORDER BY created_at DESC LIMIT ?", (limit,))
-    return [dict(row) for row in rows]
+    items = [dict(row) for row in rows]
+    if kind == "card":
+        # 卡组列表要显示"到期 X / 共 Y"（大浩要求），不给的话列表里看不出该练哪组
+        counts = note_card_counts(db)
+        for item in items:
+            stat = counts.get(str(item.get("id")), {})
+            item["card_total"] = stat.get("total", 0)
+            item["card_due"] = stat.get("due", 0)
+    return items
 
 
 def notes_for_source(db: Database, source_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
