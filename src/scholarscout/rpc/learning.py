@@ -103,11 +103,32 @@ def note_review(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     note_id = _require(params, "note_id")
     card_index = _int_param(params, "card_index", -1)
     rating = _require(params, "rating")
+    response = params.get("response")
+    correct = params.get("correct")
     try:
-        result = learning.review_card(ctx.db, note_id, card_index, str(rating))
+        result = learning.review_card(
+            ctx.db,
+            note_id,
+            card_index,
+            str(rating),
+            response=str(response) if isinstance(response, str) and response else None,
+            correct=bool(correct) if isinstance(correct, bool) else None,
+        )
     except ValueError as exc:
         raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
     return {"ok": True, **result, "stats": learning.card_stats(ctx.db)}
+
+
+@method("note.history")
+def note_history(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """这张卡的历史作答（大浩选定：每题每次作答都留痕、可回看）。只读、零模型调用。
+
+    老数据（迁移 0015 之前）只有档位，response / correct 是 null —— 如实标出，不假装那时也记了。
+    """
+    params = _params(params)
+    note_id = _require(params, "note_id")
+    index = _int_param(params, "card_index", 1)
+    return {"items": learning.card_attempts(ctx.db, note_id, index)}
 
 
 @method("memory.list")

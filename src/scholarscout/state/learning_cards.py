@@ -215,6 +215,8 @@ def review_card(
     card_index: int,
     rating: str,
     *,
+    response: str | None = None,
+    correct: bool | None = None,
     now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     """记一次抽背评价，并按 SM-2 排下一次复习（同一张卡重复评＝更新）。
@@ -268,9 +270,17 @@ def review_card(
     )
     # ③ 追加式证据日志：汇总行是为了快，日志是为了**可回放**（排期随时能重算对账）
     db.execute(
-        "INSERT INTO card_review_log (note_id, card_index, rating, reviewed_at)"
-        " VALUES (?, ?, ?, ?)",
-        (note_id, card_index, rating, moment.replace(microsecond=0).isoformat()),
+        "INSERT INTO card_review_log"
+        " (note_id, card_index, rating, reviewed_at, response, correct)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            note_id,
+            card_index,
+            rating,
+            moment.replace(microsecond=0).isoformat(),
+            response,
+            None if correct is None else (1 if correct else 0),
+        ),
     )
 
     return {
@@ -526,3 +536,17 @@ def replay_card(db: Database, note_id: str, card_index: int) -> dict[str, Any]:
         "lapses": lapses,
         "due_at": due_at,
     }
+
+
+def card_attempts(db: Database, note_id: str, card_index: int) -> list[dict[str, Any]]:
+    """这张卡的历史作答（大浩选定「每题每次作答都留痕」）。
+
+    按时间正序：档位、当时的作答、对不对。老数据（本迁移之前）只有 rating，
+    response / correct 会是 None —— 如实标出来，不假装那时也记了。
+    """
+    rows = db.query(
+        "SELECT rating, response, correct, reviewed_at FROM card_review_log"
+        " WHERE note_id = ? AND card_index = ? ORDER BY id",
+        (note_id, card_index),
+    )
+    return [dict(row) for row in rows]

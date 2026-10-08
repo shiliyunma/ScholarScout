@@ -885,7 +885,7 @@ async function gradePractice(card, response, box) {
       verdict.textContent = (result.correct ? "✓ 对了" : "✗ 不对") + "｜参考答案：" + (result.expected || "");
       verdict.className = "hint practice-verdict " + (result.correct ? "is-right" : "is-wrong");
       // 判分结果自动记一次复习（自测已去掉，排期不能因此断掉）
-      await autoReview(card, result.correct ? "good" : "bad");
+      await autoReview(card, result.correct ? "good" : "bad", response, result.correct);
     } else {
       verdict.textContent = (result.reason || "这道题本地判不了") + "——可以点「不会，讲一下」让模型看看。";
     }
@@ -964,7 +964,7 @@ async function runPracticeHelp(card, box, button) {
       (stage === "hint" ? "【思路提示】" : "【完整讲解】") +
       (result.text || result.reason || "（模型没有返回内容）");
     // 求助过 = 这张卡不会：排期记一次 fuzzy（没自测按钮之后，靠这个保证复习计划不断）
-    await autoReview(card, "fuzzy");
+    await autoReview(card, "fuzzy", practiceResponses()[key] || "", null);
   } catch (error) {
     out.textContent = "问模型失败：" + error.message;
   } finally {
@@ -1103,7 +1103,7 @@ function practiceDone() {
 
 
 /* 判分结果 → 记一次复习（排期不再问用户，但记录不能断） */
-async function autoReview(card, rating) {
+async function autoReview(card, rating, response, correct) {
   if (!state.practice) return;
   const key = cardKey(card);
   if (practiceDone()[key]) return;      // 同一张卡一次练习里只记一次，避免反复回车刷多笔
@@ -1113,6 +1113,9 @@ async function autoReview(card, rating) {
       note_id: card.note_id,
       card_index: card.card_index,
       rating: rating,
+      // 每题每次作答都留痕（大浩选定）：把当时答了什么、对不对一起记下来
+      response: response === undefined || response === null ? "" : String(response),
+      correct: typeof correct === "boolean" ? correct : null,
     });
   } catch (error) {
     practiceDone()[key] = "";
