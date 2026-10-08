@@ -212,6 +212,10 @@ function renderPractice() {
   front.className = "practice-front";
   front.textContent = card.front;
   body.appendChild(front);
+  // ③ 按题型给作答方式：选择题点字母、填空题填词 —— 都走本地判分（note.grade，零模型调用）
+  if (card.type === "choice" || card.type === "blank") {
+    body.appendChild(practiceAnswerInput(card));
+  }
   if (practice.revealed) {
     const back = document.createElement("div");
     back.className = "practice-back";
@@ -249,6 +253,8 @@ function renderPractice() {
     previous.textContent = "上次评价：" + (RATING_LABELS[card.rating] || card.rating);
     body.appendChild(previous);
   }
+  // ③ 「不会」与「主动延伸」——只有这两个按钮会产生模型费用
+  body.appendChild(practiceHelpPanel(card));
   el("btn-practice-reveal").textContent = practice.revealed ? "隐藏答案" : "看答案";
 }
 
@@ -762,3 +768,177 @@ async function loadRoutesForVisual(ids) {
 }
 
 /* ---------------------------------------------------- 个人中心（⑥，内容见⑦） */
+
+/* ③ 抽背的作答方式与模型求助。分层：渲染与本地判分在这里，判分逻辑在后端
+   （state/learning_cards.grade_card），模型编排在 runtime/practice.py —— 界面只负责调用与展示。 */
+
+/* 选择题点字母 / 填空题填词 */
+function practiceAnswerInput(card) {
+  const box = document.createElement("div");
+  box.className = "practice-answer";
+  const store = practiceResponses();
+  const key = cardKey(card);
+  if (card.type === "choice") {
+    const row = document.createElement("div");
+    row.className = "practice-options";
+    choiceLetters(card).forEach(function (letter) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost";
+      button.textContent = letter;
+      button.addEventListener("click", function () {
+        store[key] = letter;
+        gradePractice(card, letter, box);
+      });
+      row.appendChild(button);
+    });
+    box.appendChild(row);
+  } else {
+    const input = document.createElement("input");
+    input.placeholder = "填答案（回车判定）";
+    input.value = store[key] || "";
+    input.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      store[key] = input.value;
+      gradePractice(card, input.value, box);
+    });
+    box.appendChild(input);
+  }
+  return box;
+}
+
+
+/* 题干里认选项字母（A. / B、）；认不出就给 A–D 兜底 */
+function choiceLetters(card) {
+  const found = [];
+  String(card.front || "").replace(/(^|\s)([A-D])[.、)）]/, function (whole, space, letter) {
+    if (found.indexOf(letter) < 0) found.push(letter);
+    return whole;
+  });
+  return found.length ? found : ["A", "B", "C", "D"];
+}
+
+
+async function gradePractice(card, response, box) {
+  let verdict = box.querySelector(".practice-verdict");
+  if (!verdict) {
+    verdict = document.createElement("p");
+    verdict.className = "hint practice-verdict";
+    box.appendChild(verdict);
+  }
+  verdict.className = "hint practice-verdict";
+  verdict.textContent = "判定中…";
+  try {
+    const result = await scout.call("note.grade", {
+      note_id: card.note_id,
+      card_index: card.card_index,
+      response: response,
+    });
+    if (result.graded) {
+      verdict.textContent = (result.correct ? "✓ 对了" : "✗ 不对") + "｜参考答案：" + (result.expected || "");
+      verdict.className = "hint practice-verdict " + (result.correct ? "is-right" : "is-wrong");
+    } else {
+      verdict.textContent = (result.reason || "这道题本地判不了") + "——可以点「不会，讲一下」让模型看看。";
+    }
+  } catch (error) {
+    verdict.textContent = "判定失败：" + error.message;
+  }
+}
+
+
+function practiceResponses() {
+  if (!state.practice) return {};
+  state.practice.responses = state.practice.responses || {};
+  return state.practice.responses;
+}
+
+
+/* 「不会」与「主动延伸」；只有这两个按钮会产生模型费用 */
+function practiceHelpPanel(card) {
+  const box = document.createElement("div");
+  box.className = "practice-help";
+  const row = document.createElement("div");
+  row.className = "practice-help-buttons";
+  const ask = document.createElement("button");
+  ask.type = "button";
+  ask.textContent = "不会，讲一下";
+  ask.addEventListener("click", function () {
+    runPracticeHelp(card, box, ask);
+  });
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "ghost";
+  more.textContent = "主动延伸（2 道）";
+  more.addEventListener("click", function () {
+    runPracticeExtension(card, box, more);
+  });
+  row.appendChild(ask);
+  row.appendChild(more);
+  box.appendChild(row);
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent = "这两个按钮会调用模型（带上这张卡的复习记录与该会话资料）；判分不会。";
+  box.appendChild(note);
+  return box;
+}
+
+
+function practiceHelpOutput(box, placeholder) {
+  let out = box.querySelector(".practice-help-out");
+  if (!out) {
+    out = document.createElement("div");
+    out.className = "practice-help-out";
+    box.appendChild(out);
+  }
+  out.textContent = placeholder;
+  return out;
+}
+
+
+async function runPracticeHelp(card, box, button) {
+  button.disabled = true;
+  const out = practiceHelpOutput(box, "正在问模型…");
+  try {
+    const result = await scout.call("note.help", {
+      note_id: card.note_id,
+      card_index: card.card_index,
+      response: practiceResponses()[cardKey(card)] || "",
+    });
+    out.textContent = result.text || result.reason || "（模型没有返回内容）";
+  } catch (error) {
+    out.textContent = "问模型失败：" + error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+
+async function runPracticeExtension(card, box, button) {
+  button.disabled = true;
+  const out = practiceHelpOutput(box, "正在出延伸题…");
+  try {
+    const result = await scout.call("note.extend", {
+      note_id: card.note_id,
+      card_index: card.card_index,
+      response: practiceResponses()[cardKey(card)] || "",
+    });
+    const questions = result.questions || [];
+    if (!questions.length) {
+      out.textContent = "模型这次没有按格式出题（没有往库里塞废卡），可以再试一次。";
+      return;
+    }
+    out.textContent =
+      "已出 " + questions.length + " 道延伸题" +
+      (result.stored ? "，并已存成新卡（在卡片页能看到）" : "") + "：\n" +
+      questions.map(function (item, index) {
+        return (index + 1) + ". " + item.front;
+      }).join("
+");
+  } catch (error) {
+    out.textContent = "延伸失败：" + error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
