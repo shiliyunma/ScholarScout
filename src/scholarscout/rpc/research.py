@@ -98,6 +98,28 @@ def research_board(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return research_view.build_board(ctx.db, session_id)
 
 
+@method("research.set_question")
+def research_set_question(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """勾选子问题是否已覆盖（看板可编辑）。**只写状态，不调模型**。
+
+    编号从 1 开始，与界面上的序号一致；越界或非法状态直接报错，不静默改。
+    """
+    params = _params(params)
+    session_id = _require(params, "session_id")
+    try:
+        index = int(params.get("index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    status = str(params.get("status") or "")
+    from scholarscout.runtime import research_state
+
+    try:
+        state = research_state.set_question_status(ctx.db, session_id, index, status)
+    except ValueError as exc:
+        raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
+    return {"ok": True, "questions": state.get("questions") or []}
+
+
 @method("research.overview")
 def research_overview(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """跨会话的研究看板汇总（⑦）：**只读**，零模型调用。

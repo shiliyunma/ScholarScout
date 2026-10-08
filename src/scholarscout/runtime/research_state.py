@@ -363,3 +363,23 @@ def render_note(state: dict[str, Any], gaps: list[dict[str, str]]) -> str:
         lines.append("缺口清单：暂时没有明显缺口（若本轮仍搜不到新东西，就如实说明并停止）。")
     lines.append("要求：先处理缺口清单；本轮若无新增来源，直接如实说明并停止，不要换词重搜。")
     return "\n".join(lines)
+
+
+def set_question_status(db: Database, session_id: str, index: int, status: str) -> dict[str, Any]:
+    """改一个子问题的覆盖状态（大浩选定：看板可编辑、改动落库）。
+
+    index 是**从 1 开始**的序号（与界面上的编号一致）；status 只认 covered / open ——
+    其余值直接拒绝，不写库。返回改好后的整份 state，界面直接重渲染。
+    """
+    if status not in ("covered", "open"):
+        raise ValueError("status 只支持 covered / open")
+    state = load_state(db, session_id)
+    if state is None:  # 这个会话还没有研究状态：从空的一份开始，别让类型检查裸奔
+        state = {"questions": []}
+    questions = [item for item in (state.get("questions") or []) if isinstance(item, dict)]
+    if index < 1 or index > len(questions):
+        raise ValueError("没有第 " + str(index) + " 个子问题")
+    questions[index - 1]["status"] = status
+    state["questions"] = questions
+    save_state(db, session_id, state)
+    return state
