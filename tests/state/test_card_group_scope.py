@@ -38,7 +38,7 @@ def test_reviewed_and_not_due_leaves_the_group_alone(db):
 def test_list_notes_carries_counts_for_card_kind(db):
     note_id = _note(db, "## Q1. [简答] 一" + chr(10) + "答一")
     items = learning.list_notes(db, kind="card")
-    row = [item for item in items if item["id"] == note_id][0]
+    row = next(item for item in items if item["id"] == note_id)
     assert row["card_total"] == 1 and row["card_due"] == 1
 
 
