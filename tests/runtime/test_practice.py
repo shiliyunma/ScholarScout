@@ -95,3 +95,18 @@ def test_extension_does_not_store_garbage(db) -> None:  # type: ignore[no-untype
     outcome = practice.build_extension(llm, db, session_id=None, card=card, response="不会")
 
     assert outcome["questions"] == [] and outcome["stored"] is False and outcome["note_id"] is None
+
+
+def test_help_has_two_stages_and_the_hint_does_not_give_the_answer() -> None:
+    """大浩选定「分两步」：先思路提示（不给答案），再点一次才完整讲解。
+
+    这条断言的是**提示词确实分了两套**，而不是只看返回值长得不一样 ——
+    hint 档必须明确要求模型不要说出答案，否则"两步"就等于把答案先说一遍。
+    """
+    card = {"type": "choice", "front": "题干", "answer": "B", "back": "B. 对的"}
+    hint = practice.help_prompt(card, "不知道", "（无）", [], stage="hint")
+    full = practice.help_prompt(card, "不知道", "（无）", [], stage="full")
+    assert "不要给答案" in hint and "详细讲解" in hint
+    assert hint != full
+    assert "逐个说清其它选项错在哪" in full
+    assert "复习记录" in hint and "复习记录" in full

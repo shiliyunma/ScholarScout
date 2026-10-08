@@ -242,6 +242,7 @@ def note_help(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         session_id=str(session_id) if session_id else None,
         card=card,
         response=str(params.get("response") or ""),
+        stage="hint" if params.get("stage") == "hint" else "full",
     )
     usage = outcome.get("usage") or {}
     if usage:

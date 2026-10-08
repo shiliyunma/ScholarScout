@@ -93,8 +93,29 @@ def _source_block(sources: list[dict[str, str]]) -> str:
 
 
 def help_prompt(
-    card: dict[str, str], response: str, history: str, sources: list[dict[str, str]]
+    card: dict[str, str],
+    response: str,
+    history: str,
+    sources: list[dict[str, str]],
+    *,
+    stage: str = "full",
 ) -> str:
+    """两种情况两套提示词（大浩选定「分两步」）：
+
+    - stage="hint"：**不给答案**，只给一小段思路或回忆线索，把人往正确答案上推 ——
+      直接给答案等于替他做了这道题；
+    - stage="full"：完整讲解（正确项为什么对、其它选项错在哪、考点、建议、该补哪条资料）。
+    """
+    if stage == "hint":
+        return (
+            "学生做这张抽背卡时卡住了，**先不要给答案**，只给一小段思路提示把他推向正确答案。\n\n"
+            f"{_card_block(card)}\n\n"
+            f"【学生的作答】{response.strip() or '（没作答 —— 就是不会）'}\n\n"
+            f"【学生的复习记录】{history}\n\n"
+            "要求（用中文，80 字以内，最多 2 句）：\n"
+            "1) 指一个方向或让他回忆相关的那个概念，不要直接说出答案；\n"
+            "2) 结尾给一句「先自己试，不行再看详细讲解」。"
+        )
     return (
         "学生做这张抽背卡时不会，请把它讲明白。\n\n"
         f"{_card_block(card)}\n\n"
@@ -133,15 +154,17 @@ def build_help(
     session_id: str | None,
     card: dict[str, str],
     response: str,
+    stage: str = "full",
 ) -> dict[str, Any]:
     """一次模型调用：答案 + 讲解 + 该补哪条资料。usage 一并带回给 RPC 记账。"""
     history = review_history(db, str(card.get("note_id") or ""), int(card.get("card_index") or 0))
     sources = gather_sources(db, session_id)
-    prompt = help_prompt(card, response, history, sources)
+    prompt = help_prompt(card, response, history, sources, stage=stage)
     reply = llm.chat([{"role": "user", "content": prompt}])
     text = str(getattr(reply, "content", "") or "").strip()
     return {
         "text": text,
+        "stage": stage,
         "truncated": bool(getattr(reply, "truncated", False)),
         "sources": sources,
         "usage": getattr(reply, "usage", None) or {},

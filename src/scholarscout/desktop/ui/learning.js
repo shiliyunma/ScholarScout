@@ -926,15 +926,26 @@ function practiceHelpOutput(box, placeholder) {
 
 
 async function runPracticeHelp(card, box, button) {
+  // 大浩选定「分两步」：第一次点给**思路提示**（不给答案），再点一次才给完整讲解
+  const key = cardKey(card);
+  const stages = practiceHelpStage();
+  stages[key] = stages[key] === "hint" ? "full" : "hint";
+  const stage = stages[key];
   button.disabled = true;
-  const out = practiceHelpOutput(box, "正在问模型…");
+  button.textContent = stage === "hint" ? "还是不会，详细讲" : "再看一遍思路";
+  const out = practiceHelpOutput(box, stage === "hint" ? "正在给思路提示…" : "正在给完整讲解…");
   try {
     const result = await scout.call("note.help", {
       note_id: card.note_id,
       card_index: card.card_index,
-      response: practiceResponses()[cardKey(card)] || "",
+      response: practiceResponses()[key] || "",
+      stage: stage,
     });
-    out.textContent = result.text || result.reason || "（模型没有返回内容）";
+    out.textContent =
+      (stage === "hint" ? "【思路提示】" : "【完整讲解】") +
+      (result.text || result.reason || "（模型没有返回内容）");
+    // 求助过 = 这张卡不会：排期记一次 fuzzy（没自测按钮之后，靠这个保证复习计划不断）
+    await autoReview(card, "fuzzy");
   } catch (error) {
     out.textContent = "问模型失败：" + error.message;
   } finally {
@@ -1017,6 +1028,14 @@ function practiceNav() {
   row.appendChild(next);
   box.appendChild(row);
   return box;
+}
+
+
+/* 两步求助走到哪一档了（按卡片记住：第一档思路、第二档完整讲解） */
+function practiceHelpStage() {
+  if (!state.practice) return {};
+  state.practice.helpStage = state.practice.helpStage || {};
+  return state.practice.helpStage;
 }
 
 
