@@ -66,6 +66,19 @@ def archive_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return {"items": rows, "total": total}
 
 
+@method("archive.text")
+def archive_text(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """读一份资料的正文（按原格式展示用）。**只读**、零模型调用。
+
+    返回 format 字段告诉界面怎么渲染：markdown / plain / pdf / other ——
+    md 走 Markdown 渲染，代码与数据等宽显示，pdf 只能"打开原件"（不在界面里假装能预览）。
+    """
+    params = _params(params)
+    doc_id = _require(params, "doc_id")
+    limit = _int_param(params, "limit", archive.TEXT_PREVIEW_LIMIT)
+    return archive.read_text(ctx.db, doc_id, limit=limit)
+
+
 @method("archive.get")
 def archive_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     params = _params(params)
