@@ -96,7 +96,7 @@ def test_broken_file_reports_failure_instead_of_empty_text() -> None:
 
 
 def test_unknown_extension_is_not_guessed() -> None:
-    ok, text, detail = office.office_text("doc", b"whatever")
+    ok, _text, detail = office.office_text("doc", b"whatever")
     assert ok is False and "不支持" in detail
 
 
