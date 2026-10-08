@@ -20,8 +20,6 @@ async function loadBoard() {
   renderBoardQuestions(board);
   renderBoardGaps(board);
   renderBoardEvidence(board);
-  renderBoardTimeline(board);
-  renderBoardArtifacts(board);
   loadProfile();
   loadMemory();
 }
@@ -198,33 +196,6 @@ async function loadProfile() {
 }
 
 
-function renderBoardArtifacts(board) {
-  const list = el("board-artifacts");
-  if (!list) return;   // 产物块与左栏重复（大浩决定），看板不再渲染这块
-  list.innerHTML = "";
-  const artifacts = board.artifacts || {};
-  const rows = [];
-  (artifacts.routes || []).forEach(function (item) {
-    rows.push("学习路线：" + (item.topic || "") + "（" + item.weeks + " 周，第 " + (item.version || 1) + " 版）");
-  });
-  (artifacts.maps || []).forEach(function (item) {
-    rows.push("知识地图：" + (item.topic || ""));
-  });
-  (artifacts.notes || []).forEach(function (item) {
-    const label = item.kind === "card" ? "抽背卡" : item.kind === "summary" ? "资料摘要" : "学习笔记";
-    rows.push(label + "：" + (item.title || ""));
-  });
-  if (!rows.length) {
-    list.innerHTML =
-      '<li class="hint">本会话还没有产物。要产物就在输入框上方点对应的按钮（默认不会自动生成）。</li>';
-    return;
-  }
-  rows.forEach(function (text) {
-    list.appendChild(boardItem(esc(text)));
-  });
-}
-
-
 function renderBoardSummary(board) {
   const counts = board.counts || {};
   const evidence = board.evidence || {};
@@ -372,52 +343,5 @@ function renderBoardEvidence(board) {
   });
 }
 
-
-function renderBoardTimeline(board) {
-  const list = el("board-timeline");
-  if (!list) return;   // 时间线已并入资料库筛选（大浩决定），看板不再渲染这块
-  const note = el("board-timeline-note");
-  list.innerHTML = "";
-  const timeline = board.timeline || {};
-  const groups = timeline.groups || [];
-  const missing = timeline.missing_recent_years || [];
-  const internal = timeline.internal_gap_labels || [];
-  const bits = [];
-  if (missing.length) bits.push("最新之后缺：" + missing.join("、"));
-  if (internal.length) bits.push("区间内部空档：" + internal.join("、"));
-  if (timeline.undated) bits.push(timeline.undated + " 条年份未知");
-  note.textContent = bits.length ? "（" + bits.join("；") + "）" : "";
-  if (!groups.length) {
-    list.innerHTML = '<li class="hint">这个会话还没有带出任何来源。</li>';
-    return;
-  }
-  groups.forEach(function (group) {
-    const label = group.year ? group.year + " 年" : "年份未知";
-    const head = boardItem(
-      '<span class="board-year">' +
-        esc(label) +
-        '</span><span class="meta">' +
-        group.items.length +
-        " 条</span>",
-    );
-    head.className = "is-year";
-    list.appendChild(head);
-    group.items.forEach(function (item) {
-      const li = boardItem(
-        '<span class="board-dot">·</span> ' +
-          esc(short(item.title || item.source_id, 34)) +
-          '<span class="meta">' +
-          esc(item.source_type || "") +
-          (item.tier ? " ／ tier " + item.tier : "") +
-          (item.has_summary ? " ／ 有摘要" : " ／ 仅标题") +
-          "</span>",
-      );
-      li.addEventListener("click", function () {
-        showSourceBySourceId(item.source_id);
-      });
-      list.appendChild(li);
-    });
-  });
-}
 
 /* ------------------------------------------- 学习路线可视化（⑧ 时间线 + 日历） */
