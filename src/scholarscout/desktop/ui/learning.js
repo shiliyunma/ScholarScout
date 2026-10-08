@@ -187,6 +187,22 @@ async function showCard(noteId) {
   addButton(actions, "定位 Markdown", async function () {
     await scout.call("archive.reveal", { path: note.path });
   });
+  // 老卡补选项（大浩选定）：选题没写 A/B/C/D 时，用模型补上并写回这张笔记
+  addButton(actions, "补选项（模型）", async function () {
+    const line = document.createElement("p");
+    line.className = "hint";
+    line.textContent = "正在让模型补选项（要花一次调用）…";
+    box.appendChild(line);
+    try {
+      const result = await scout.call("note.repair_options", { note_id: noteId });
+      line.textContent = result.ok
+        ? "已补好 " + result.fixed + " 道选择题（共 " + result.after + " 张），内容已写回这张笔记。"
+        : (result.reason || "这次没补成，原卡未改动。");
+      if (result.ok) await showCard(noteId);
+    } catch (error) {
+      line.textContent = "补选项失败：" + error.message;
+    }
+  });
   box.appendChild(actions);
 }
 
