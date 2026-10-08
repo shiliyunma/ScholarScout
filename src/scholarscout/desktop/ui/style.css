@@ -6732,3 +6732,36 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   min-height: 100%;
   max-height: none;
 }
+
+/* 抽背：题号条 + 上一题/下一题；做过的题打勾、当前题高亮 */
+.practice-nav {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.practice-index {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.practice-jump {
+  min-width: 30px;
+  padding: 2px 6px;
+}
+
+.practice-jump.is-done {
+  border-color: var(--ui-accent, var(--accent));
+}
+
+.practice-jump.is-current {
+  background: var(--ui-row-active-background);
+  color: var(--ui-text-primary);
+}
+
+.practice-nav-buttons {
+  display: flex;
+  gap: 8px;
+}

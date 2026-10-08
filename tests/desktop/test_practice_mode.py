@@ -33,11 +33,17 @@ def test_practice_calls_the_review_rpcs() -> None:
         assert f'"{rating}"' in text, f"缺少评价档位 {rating}"
 
 
-def test_practice_requires_revealing_before_rating() -> None:
-    """没看答案不许自评 —— 否则会一路点"会了"，那数据就没有意义。"""
-    text = APP_JS
-    assert "button.disabled = !practice.revealed" in text
-    assert "if (!state.practice.revealed) return;" in text, "键盘路径也要拦"
+def test_practice_answers_in_an_input_box_not_by_self_rating() -> None:
+    """用户要求：去掉「会/模糊/不会」自测，默认在输入区域作答。
+
+    抽背的排期改由判分结果自动推导（autoReview），所以这里必须同时钉住：
+    输入框在、自测按钮不在、note.review 仍被调用（排期没断）。
+    """
+    text = APP_JS  # _ui.py 里 APP_JS 已是字符串（B6 改的）
+    assert "在输入框里作答" in text or "在这里作答" in text, "没有输入区"
+    assert "rate-good" not in text and "rate-bad" not in text, "自测按钮还在"
+    assert "autoReview" in text and 'scout.call("note.review"' in text, "排期没记上"
+    assert "practice-jump" in text and "上一题" in text and "下一题" in text, "缺选题/翻页"
 
 
 def test_practice_has_styles() -> None:

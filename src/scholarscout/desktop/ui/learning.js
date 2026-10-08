@@ -213,9 +213,8 @@ function renderPractice() {
   front.textContent = card.front;
   body.appendChild(front);
   // ③ 按题型给作答方式：选择题点字母、填空题填词 —— 都走本地判分（note.grade，零模型调用）
-  if (card.type === "choice" || card.type === "blank") {
-    body.appendChild(practiceAnswerInput(card));
-  }
+  // 所有题型都留输入区域（选择题另有选项按钮，点选项=填入并判定）
+  body.appendChild(practiceAnswerInput(card));
   if (practice.revealed) {
     const back = document.createElement("div");
     back.className = "practice-back";
@@ -228,25 +227,9 @@ function renderPractice() {
     hint.textContent = "先在心里回答，再点「看答案」（Enter）。";
     body.appendChild(hint);
   }
-  const ratings = document.createElement("div");
-  ratings.className = "practice-ratings";
-  [
-    ["bad", "不会"],
-    ["fuzzy", "模糊"],
-    ["good", "会了"],
-  ].forEach(function (pair) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "rate-" + pair[0];
-    button.textContent = pair[1];
-    // 没看答案不许自评：否则会一路点"会了"，数据就没有意义
-    button.disabled = !practice.revealed;
-    button.addEventListener("click", function () {
-      ratePractice(pair[0]);
-    });
-    ratings.appendChild(button);
-  });
-  body.appendChild(ratings);
+  // 大浩要求去掉「会/模糊/不会」自测：默认在输入框里作答即可。
+  // 复习排期改由**判分结果自动推导**（见 autoReview），不再打扰用户。
+  body.appendChild(practiceNav());
   if (card.rating) {
     const previous = document.createElement("p");
     previous.className = "hint";
@@ -789,23 +772,24 @@ function practiceAnswerInput(card) {
       button.textContent = option.text ? option.letter + ". " + option.text : option.letter;
       button.addEventListener("click", function () {
         store[key] = option.letter; // 交上去的仍是字母，判分在后端本地做
+        const field = box.querySelector("input");
+        if (field) field.value = option.letter;
         gradePractice(card, option.letter, box);
       });
       row.appendChild(button);
     });
     box.appendChild(row);
-  } else {
-    const input = document.createElement("input");
-    input.placeholder = "填答案（回车判定）";
-    input.value = store[key] || "";
-    input.addEventListener("keydown", function (event) {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      store[key] = input.value;
-      gradePractice(card, input.value, box);
-    });
-    box.appendChild(input);
   }
+  const input = document.createElement("input");
+  input.placeholder = card.type === "choice" ? "也可以直接输入选项字母（回车判定）" : "在这里作答，回车判定";
+  input.value = store[key] || "";
+  input.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    store[key] = input.value;
+    gradePractice(card, input.value, box);
+  });
+  box.appendChild(input);
   return box;
 }
 
@@ -863,6 +847,8 @@ async function gradePractice(card, response, box) {
     if (result.graded) {
       verdict.textContent = (result.correct ? "✓ 对了" : "✗ 不对") + "｜参考答案：" + (result.expected || "");
       verdict.className = "hint practice-verdict " + (result.correct ? "is-right" : "is-wrong");
+      // 判分结果自动记一次复习（自测已去掉，排期不能因此断掉）
+      await autoReview(card, result.correct ? "good" : "bad");
     } else {
       verdict.textContent = (result.reason || "这道题本地判不了") + "——可以点「不会，讲一下」让模型看看。";
     }
@@ -963,6 +949,81 @@ async function runPracticeExtension(card, box, button) {
     out.textContent = "延伸失败：" + error.message;
   } finally {
     button.disabled = false;
+  }
+}
+
+/* 上一题 / 下一题 / 点击题号跳转；做过的题有标识（本次会话内） */
+function practiceNav() {
+  const practice = state.practice;
+  const box = document.createElement("div");
+  box.className = "practice-nav";
+  const index = document.createElement("div");
+  index.className = "practice-index";
+  practice.cards.forEach(function (item, position) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost practice-jump";
+    button.textContent = String(position + 1);
+    if (practiceDone()[cardKey(item)]) button.classList.add("is-done");
+    if (position === practice.index) button.classList.add("is-current");
+    button.addEventListener("click", function () {
+      practice.index = position;
+      practice.revealed = false;
+      renderPractice();
+    });
+    index.appendChild(button);
+  });
+  box.appendChild(index);
+  const row = document.createElement("div");
+  row.className = "practice-nav-buttons";
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "ghost";
+  prev.textContent = "上一题";
+  prev.disabled = practice.index <= 0;
+  prev.addEventListener("click", function () {
+    practice.index = Math.max(0, practice.index - 1);
+    practice.revealed = false;
+    renderPractice();
+  });
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "ghost";
+  next.textContent = practice.index + 1 >= practice.cards.length ? "完成" : "下一题";
+  next.addEventListener("click", function () {
+    practice.index = Math.min(practice.cards.length, practice.index + 1);
+    practice.revealed = false;
+    renderPractice();
+  });
+  row.appendChild(prev);
+  row.appendChild(next);
+  box.appendChild(row);
+  return box;
+}
+
+
+/* 本次练习里"做过的题"：判过分 / 求助过都算 —— 题号上给个标识，跳回去也知道哪些碰过 */
+function practiceDone() {
+  if (!state.practice) return {};
+  state.practice.done = state.practice.done || {};
+  return state.practice.done;
+}
+
+
+/* 判分结果 → 记一次复习（排期不再问用户，但记录不能断） */
+async function autoReview(card, rating) {
+  if (!state.practice) return;
+  const key = cardKey(card);
+  if (practiceDone()[key]) return;      // 同一张卡一次练习里只记一次，避免反复回车刷多笔
+  practiceDone()[key] = rating;
+  try {
+    await scout.call("note.review", {
+      note_id: card.note_id,
+      card_index: card.card_index,
+      rating: rating,
+    });
+  } catch (error) {
+    practiceDone()[key] = "";
   }
 }
 
