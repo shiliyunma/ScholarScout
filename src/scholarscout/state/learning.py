@@ -469,6 +469,13 @@ def review_card(
             schedule.due_at,
         ),
     )
+    # ③ 追加式证据日志：汇总行是为了快，日志是为了**可回放**（排期随时能重算对账）
+    db.execute(
+        "INSERT INTO card_review_log (note_id, card_index, rating, reviewed_at)"
+        " VALUES (?, ?, ?, ?)",
+        (note_id, card_index, rating, moment.replace(microsecond=0).isoformat()),
+    )
+
     return {
         "note_id": note_id,
         "card_index": card_index,
@@ -635,3 +642,50 @@ def notes_for_source(db: Database, source_id: str, *, limit: int = 50) -> list[d
                 hits.append(dict(row))
                 break
     return hits
+
+
+def replay_card(db: Database, note_id: str, card_index: int) -> dict[str, Any]:
+    """从追加式日志**重放**这张卡的排期（③）。
+
+    口径与 `review_card` 完全一致（同一个 srs.review 链），所以重算结果必须等于汇总行 ——
+    `tests/state/test_card_review_replay.py` 就是钉这一条：**重算 == 现状**。
+    汇总行是"为了快"，日志是"为了可审计"；两者不一致就说明某次写入漏了日志。
+
+    `logged` 只数日志条数：迁移之前的老数据没有日志，logged < reviews 是如实暴露，不是错。
+    """
+    rows = db.query(
+        "SELECT rating, reviewed_at FROM card_review_log"
+        " WHERE note_id = ? AND card_index = ? ORDER BY id",
+        (note_id, card_index),
+    )
+    ease: float | None = None
+    interval_days: float | None = None
+    streak, lapses = 0, 0
+    due_at: str | None = None
+    rating: str | None = None
+    for row in rows:
+        rating = str(row["rating"])
+        schedule = srs.review(
+            rating=rating,
+            ease=ease,
+            interval_days=interval_days,
+            streak=streak,
+            lapses=lapses,
+            now=datetime.datetime.fromisoformat(str(row["reviewed_at"])),
+        )
+        ease = schedule.ease
+        interval_days = schedule.interval_days
+        streak = schedule.streak
+        lapses = schedule.lapses
+        due_at = schedule.due_at
+    return {
+        "note_id": note_id,
+        "card_index": int(card_index),
+        "logged": len(rows),
+        "rating": rating,
+        "ease": ease,
+        "interval_days": interval_days,
+        "streak": streak,
+        "lapses": lapses,
+        "due_at": due_at,
+    }
