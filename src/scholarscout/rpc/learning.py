@@ -211,6 +211,102 @@ def note_due(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return learning.due_cards(ctx.db, limit=limit)
 
 
+@method("note.help")
+def note_help(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """抽背卡「不会」时问模型：结合复习记录 + 该会话已入库资料，给答案、讲解与该补哪条资料。
+
+    **这一步要花钱**（一次模型调用），所以只有用户主动点才会走到这里 ——
+    选项渲染、选择/填空判分全在本地，不产生费用。
+    """
+    params = _params(params)
+    note_id = _require(params, "note_id")
+    try:
+        index = int(params.get("card_index") or 1) - 1
+    except (TypeError, ValueError):
+        index = -1
+    row = learning.get_note(ctx.db, note_id) or {}
+    cards = learning.parse_cards(str(row.get("content") or ""))
+    if index < 0 or index >= len(cards):
+        return {"text": "", "reason": "这张卡不在了", "sources": []}
+    if ctx.llm is None:
+        raise RpcError(Code.NOT_CONFIGURED, "未配置模型（把 LLM_API_KEY 写进 .env）")
+    from scholarscout.runtime import practice
+
+    card = {**cards[index], "note_id": note_id, "card_index": index + 1}
+    session_id = row.get("session_id")
+    outcome = practice.build_help(
+        ctx.llm,
+        ctx.db,
+        session_id=str(session_id) if session_id else None,
+        card=card,
+        response=str(params.get("response") or ""),
+    )
+    usage = outcome.get("usage") or {}
+    if usage:
+        traces.record_usage(
+            ctx.db,
+            model=ctx.config.summary.model,
+            purpose="practice_help",
+            session_id=str(session_id) if session_id else None,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            cached_tokens=usage.get("cached_tokens"),
+        )
+    return {
+        "text": outcome["text"],
+        "sources": outcome["sources"],
+        "truncated": outcome["truncated"],
+    }
+
+
+@method("note.extend")
+def note_extend(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """主动延伸：按原卡出 2 道更深的题，并**存成一张新卡笔记**（这样它会进复习计划）。
+
+    模型没按格式输出时如实返回空题、**不建空笔记**（库里不留废卡）。
+    """
+    params = _params(params)
+    note_id = _require(params, "note_id")
+    try:
+        index = int(params.get("card_index") or 1) - 1
+    except (TypeError, ValueError):
+        index = -1
+    row = learning.get_note(ctx.db, note_id) or {}
+    cards = learning.parse_cards(str(row.get("content") or ""))
+    if index < 0 or index >= len(cards):
+        return {"questions": [], "note_id": None, "reason": "这张卡不在了"}
+    if ctx.llm is None:
+        raise RpcError(Code.NOT_CONFIGURED, "未配置模型（把 LLM_API_KEY 写进 .env）")
+    from scholarscout.runtime import practice
+
+    card = {**cards[index], "note_id": note_id, "card_index": index + 1}
+    session_id = row.get("session_id")
+    outcome = practice.build_extension(
+        ctx.llm,
+        ctx.db,
+        session_id=str(session_id) if session_id else None,
+        card=card,
+        response=str(params.get("response") or ""),
+        count=2,
+    )
+    usage = outcome.get("usage") or {}
+    if usage:
+        traces.record_usage(
+            ctx.db,
+            model=ctx.config.summary.model,
+            purpose="practice_extend",
+            session_id=str(session_id) if session_id else None,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            cached_tokens=usage.get("cached_tokens"),
+        )
+    return {
+        "questions": outcome["questions"],
+        "note_id": outcome["note_id"],
+        "stored": outcome["stored"],
+    }
+
+
 @method("note.grade")
 def note_grade(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """本地判分（③ 抽背卡）：选择题按字母、填空题精确比对 —— **零模型调用**。
