@@ -923,6 +923,15 @@ function practiceHelpPanel(card) {
   });
   row.appendChild(ask);
   row.appendChild(more);
+  const history = document.createElement("button");
+  history.type = "button";
+  history.className = "ghost";
+  history.textContent = "作答历史";
+  history.title = "看这张卡每次答了什么、对不对（不花 token）";
+  history.addEventListener("click", function () {
+    runPracticeHistory(card, box, history);
+  });
+  row.appendChild(history);
   box.appendChild(row);
   const note = document.createElement("p");
   note.className = "hint";
@@ -967,6 +976,38 @@ async function runPracticeHelp(card, box, button) {
     await autoReview(card, "fuzzy", practiceResponses()[key] || "", null);
   } catch (error) {
     out.textContent = "问模型失败：" + error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+
+/* 作答历史（大浩选定：每题每次作答都留痕、可回看）。只读接口，零模型调用。 */
+async function runPracticeHistory(card, box, button) {
+  button.disabled = true;
+  const out = practiceHelpOutput(box, "正在读历史…");
+  try {
+    const payload = await scout.call("note.history", {
+      note_id: card.note_id,
+      card_index: card.card_index,
+    });
+    const items = payload.items || [];
+    if (!items.length) {
+      out.textContent = "这张卡还没有作答记录。";
+      return;
+    }
+    out.textContent =
+      "共 " + items.length + " 次（按时间正序，最早在前）：" +
+      items
+        .map(function (item, index) {
+          const when = String(item.reviewed_at || "").slice(0, 16).replace("T", " ");
+          const verdict = item.correct === 1 ? "✓ 对" : item.correct === 0 ? "✗ 错" : "— 未判对错";
+          const answer = item.response ? "答：" + item.response : "答：（这条老记录没留作答）";
+          return index + 1 + ". " + when + "｜" + item.rating + "｜" + verdict + "｜" + answer;
+        })
+        .join(String.fromCharCode(10));
+  } catch (error) {
+    out.textContent = "读历史失败：" + error.message;
   } finally {
     button.disabled = false;
   }
