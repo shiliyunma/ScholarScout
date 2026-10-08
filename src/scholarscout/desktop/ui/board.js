@@ -256,17 +256,27 @@ function renderBoardGaps(board) {
     return;
   }
   gaps.forEach(function (gap) {
-    list.appendChild(
-      boardItem(
-        '<code class="board-kind">' +
-          esc(gap.kind) +
-          "</code> " +
-          esc(gap.detail) +
-          '<div class="hint board-suggest">→ ' +
-          esc(gap.suggest) +
-          "</div>",
-      ),
+    const item = boardItem(
+      '<code class="board-kind">' +
+        esc(gap.kind) +
+        "</code> " +
+        esc(gap.detail) +
+        '<div class="hint board-suggest">→ ' +
+        esc(gap.suggest) +
+        "</div>",
     );
+    // 「拿去搜」（大浩选定：缺口要可执行）—— 点了就用这条缺口的建议直接开一轮检索。
+    // 复用聊天发送通路 send()，不新开接口：用户看到的就是一次普通提问，能接着追问、能停。
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "ghost mini";
+    go.textContent = "拿去搜";
+    go.title = "用这条缺口的建议开一轮检索";
+    go.addEventListener("click", function () {
+      send(String(gap.suggest || gap.detail || "").trim());
+    });
+    item.appendChild(go);
+    list.appendChild(item);
   });
 }
 
