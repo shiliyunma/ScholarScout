@@ -80,7 +80,10 @@
       </div>
 
       <div class="pane" id="pane-routes">
-        <p class="hint">本会话生成的路线；点开看每周目标与检查点。（跨会话汇总在「个人中心」）</p>
+        <p class="hint">本会话生成的路线（只有一个，直接占满本栏看）；点「放大」可单独展开成浮层。（跨会话汇总在「个人中心」）</p>
+        <div class="actions">
+          <button type="button" id="btn-route-zoom">放大（单独窗口）</button>
+        </div>
         <ul class="list" id="route-list"></ul>
         <div class="detail" id="route-detail"></div>
       </div>
@@ -170,6 +173,17 @@
         <span class="hint">先回想再看答案；会了／模糊／不会 三档（键盘 1 / 2 / 3）</span>
         <button id="btn-practice-reveal" type="button">看答案</button>
       </div>
+    </div>
+  </div>
+
+  <div id="route-zoom" class="overlay" hidden>
+    <div class="sheet route-sheet">
+      <div class="sheet-head">
+        <strong>学习路线</strong>
+        <span class="hint">放大查看（与面板里是同一份内容）</span>
+        <button id="btn-route-zoom-close" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="sheet-body" id="route-zoom-body"></div>
     </div>
   </div>
 

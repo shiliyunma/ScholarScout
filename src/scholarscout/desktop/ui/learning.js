@@ -521,6 +521,47 @@ function viewToggle(onChange) {
 }
 
 
+/* ② 学习路线只有一个 → 「放大」时把已经渲染好的详情区**整个 DOM 搬进浮层**，关闭时搬回原位。
+   不重新取数、不重建视图 —— 面板里是时间线还是日历，浮层里就是同一份，零形状假设。 */
+function zoomRoute() {
+  const overlay = el("route-zoom");
+  const body = el("route-zoom-body");
+  const detail = el("route-detail");
+  if (!overlay || !body || !detail) return;
+  detail.dataset.homeIndex = String(Array.prototype.indexOf.call(detail.parentNode.children, detail));
+  body.appendChild(detail);
+  overlay.hidden = false;
+}
+
+
+function closeRouteZoom() {
+  const overlay = el("route-zoom");
+  const pane = el("pane-routes");
+  const detail = el("route-detail");
+  if (overlay) overlay.hidden = true;
+  if (!pane || !detail) return;
+  const index = Number(detail.dataset.homeIndex || 0);
+  const siblings = Array.prototype.slice.call(pane.children).filter(function (node) {
+    return node !== detail && node.id !== "route-zoom-body";
+  });
+  const before = siblings[index] || null;
+  if (before && before.nextSibling) pane.insertBefore(detail, before.nextSibling);
+  else pane.appendChild(detail);
+}
+
+
+function wireRouteZoom() {
+  const zoom = el("btn-route-zoom");
+  if (zoom) zoom.addEventListener("click", zoomRoute);
+  const closer = el("btn-route-zoom-close");
+  if (closer) closer.addEventListener("click", closeRouteZoom);
+}
+
+
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wireRouteZoom);
+else wireRouteZoom();
+
+
 function renderRouteTimeline(box, routes, rerender) {
   routes.forEach(function (route) {
     var wrap = document.createElement("div");
