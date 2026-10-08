@@ -230,19 +230,42 @@ function renderBoardQuestions(board) {
   }
   questions.forEach(function (item) {
     const covered = item.status === "covered";
-    list.appendChild(
-      boardItem(
-        '<span class="board-idx">' +
-          item.index +
-          ".</span> " +
-          esc(item.text) +
-          ' <span class="badge ' +
-          (covered ? "badge-strong" : "badge-weak") +
-          '">' +
-          (covered ? "已覆盖" : "缺口") +
-          "</span>",
-      ),
+    const row = boardItem(
+      '<span class="board-idx">' +
+        item.index +
+        ".</span> " +
+        esc(item.text) +
+        ' <span class="badge ' +
+        (covered ? "badge-strong" : "badge-weak") +
+        '">' +
+        (covered ? "已覆盖" : "缺口") +
+        "</span>",
     );
+    // 可编辑（大浩选定）：点一下切换覆盖状态并**落库**。
+    // session_id 用 state.sessionId —— 与上面读看板用的是同一个来源（查出来的，不是猜的）。
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ghost mini";
+    toggle.textContent = covered ? "标为未覆盖" : "标为已覆盖";
+    toggle.title = "改完立刻写回研究状态（不调模型、不花 token）";
+    toggle.addEventListener("click", async function () {
+      toggle.disabled = true;
+      try {
+        await scout.call("research.set_question", {
+          session_id: state.sessionId,
+          index: item.index,
+          status: covered ? "open" : "covered",
+        });
+        await loadBoard();
+      } catch (error) {
+        const summary = el("board-summary");
+        if (summary) summary.textContent = "改状态失败：" + error.message;
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+    row.appendChild(toggle);
+    list.appendChild(row);
   });
 }
 
