@@ -182,7 +182,27 @@
         <span class="hint" id="profile-note"></span>
         <button id="btn-profile-close" class="ghost" type="button">关闭</button>
       </div>
-      <div class="sheet-body" id="profile-body"></div>
+      <div class="sheet-body" id="profile-body">
+          <div class="board-block">
+            <h4 class="board-title">
+              学习者画像（跨会话）<span class="hint" id="profile-note"></span>
+            </h4>
+            <p class="hint board-goal" id="profile-overview"></p>
+            <ul class="list board-list" id="profile-topics"></ul>
+            <ul class="list board-list" id="profile-groups"></ul>
+          </div>
+          <div class="board-block">
+            <h4 class="board-title">
+              跨会话记忆<span class="hint" id="memory-note"></span>
+            </h4>
+            <div class="row">
+              <input id="memory-input" placeholder="记住一条（例如：我偏好中文、别用深蓝色）" />
+              <button id="btn-memory-add" class="ghost" type="button">添加</button>
+              <button id="btn-memory-extract" class="ghost" type="button">从现在整理</button>
+            </div>
+            <ul class="list board-list" id="memory-list"></ul>
+          </div>
+</div>
     </div>
   </div>
 
@@ -211,25 +231,7 @@
   <script src="learning.js?v=2"></script>
   <script src="board.js?v=2"></script>
  
-          <div class="board-block">
-            <h4 class="board-title">
-              学习者画像（跨会话）<span class="hint" id="profile-note"></span>
-            </h4>
-            <p class="hint board-goal" id="profile-overview"></p>
-            <ul class="list board-list" id="profile-topics"></ul>
-            <ul class="list board-list" id="profile-groups"></ul>
-          </div>
-          <div class="board-block">
-            <h4 class="board-title">
-              跨会话记忆<span class="hint" id="memory-note"></span>
-            </h4>
-            <div class="row">
-              <input id="memory-input" placeholder="记住一条（例如：我偏好中文、别用深蓝色）" />
-              <button id="btn-memory-add" class="ghost" type="button">添加</button>
-              <button id="btn-memory-extract" class="ghost" type="button">从现在整理</button>
-            </div>
-            <ul class="list board-list" id="memory-list"></ul>
-          </div>
+
  <script src="profile.js?v=2"></script>
   <script src="app.js?v=2"></script>
 </body>
