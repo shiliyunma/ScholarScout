@@ -211,6 +211,27 @@ def note_due(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return learning.due_cards(ctx.db, limit=limit)
 
 
+@method("note.grade")
+def note_grade(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """本地判分（③ 抽背卡）：选择题按字母、填空题精确比对 —— **零模型调用**。
+
+    判不了就如实回 `graded=false` + 原因（简答 / 答案里认不出字母 / 没作答），
+    不猜对错：抽背里"猜错判"比"不判"更伤，用户会照错误反馈去复习。
+    """
+    params = _params(params)
+    note_id = _require(params, "note_id")
+    try:
+        index = int(params.get("card_index") or 1) - 1
+    except (TypeError, ValueError):
+        index = -1
+    response = str(params.get("response") or "")
+    row = learning.get_note(ctx.db, note_id) or {}
+    cards = learning.parse_cards(str(row.get("content") or ""))
+    if index < 0 or index >= len(cards):
+        return {"graded": False, "reason": "这张卡不在了"}
+    return learning.grade_card(cards[index], response)
+
+
 @method("note.reveal")
 def note_reveal(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """取某张抽背卡的答案（② 答案谜底分离）。

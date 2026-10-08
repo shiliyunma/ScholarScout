@@ -8,12 +8,16 @@ from __future__ import annotations
 
 # 笔记、抽背卡与复习
 from scholarscout.state.learning_cards import (
+    CARD_TYPE_CHOICE,
+    CARD_TYPE_FILL,
+    CARD_TYPE_SHORT,
     _clean_cards,
     _has_content,
     card_review_map,
     card_stats,
     due_cards,
     get_note,
+    grade_card,
     list_notes,
     notes_for_source,
     parse_cards,
@@ -44,6 +48,9 @@ from scholarscout.state.learning_topics import (
 )
 
 __all__ = [
+    "CARD_TYPE_CHOICE",
+    "CARD_TYPE_FILL",
+    "CARD_TYPE_SHORT",
     "_clean_cards",
     "_has_content",
     "archive_version",
@@ -54,6 +61,7 @@ __all__ = [
     "get_route",
     "get_topic_map",
     "get_version",
+    "grade_card",
     "latest_route",
     "latest_topic_map",
     "list_notes",

@@ -61,6 +61,65 @@ def save_note(
     return new_id_value
 
 
+#: 三种题型。**默认简答**：没有标记的旧卡一律按简答走，不会因为加了题型就失效。
+CARD_TYPE_CHOICE = "choice"
+CARD_TYPE_FILL = "blank"
+CARD_TYPE_SHORT = "short"
+
+_TYPE_MARKER = re.compile(r"^\[\s*(选择|单选|多选|填空|简答|问答)\s*\]\s*")
+_TYPE_NAMES = {
+    "选择": CARD_TYPE_CHOICE,
+    "单选": CARD_TYPE_CHOICE,
+    "多选": CARD_TYPE_CHOICE,
+    "填空": CARD_TYPE_FILL,
+    "简答": CARD_TYPE_SHORT,
+    "问答": CARD_TYPE_SHORT,
+}
+_ANSWER_PREFIX = re.compile(r"^\*{0,2}(?:答案|参考答案|答)\*{0,2}\s*[:：]\s*")
+_CHOICE_LETTER = re.compile(r"^\s*[（(]?\s*([A-Ha-h])\s*[）).、,，:：]?")
+
+
+def grade_card(card: dict[str, str], response: str) -> dict[str, object]:
+    """本地判分。**能本地判的就不调模型**（省钱、即时、可复算）。
+
+    - 选择题：按字母判（答案里的首字母 vs 作答里的首字母），认不出字母就如实说判不了；
+    - 填空题：去空白与常见标点后**精确**比对。近义说法本地判不了 —— 这时回
+      ``graded=false`` + 原因，让界面能引导"让模型看看"，而不是硬判成错；
+    - 简答题：一律 ``graded=false``（要模型判）。
+    """
+    kind = (card.get("type") or CARD_TYPE_SHORT).strip()
+    answer = (card.get("answer") or card.get("back") or "").strip()
+    given = (response or "").strip()
+    if kind == CARD_TYPE_CHOICE:
+        want = _CHOICE_LETTER.match(answer)
+        got = _CHOICE_LETTER.match(given)
+        if not want:
+            return {"graded": False, "reason": "答案里认不出选项字母，交给模型判"}
+        if not got:
+            return {"graded": False, "reason": "没有选任何选项"}
+        return {
+            "graded": True,
+            "correct": want.group(1).upper() == got.group(1).upper(),
+            "expected": want.group(1).upper(),
+            "detail": "本地按选项字母判定",
+        }
+    if kind == CARD_TYPE_FILL:
+        if not given:
+            return {"graded": False, "reason": "还没填"}
+        expected = answer.splitlines()[0].strip()
+        return {
+            "graded": True,
+            "correct": _normalize_fill(expected) == _normalize_fill(given),
+            "expected": expected,
+            "detail": "本地精确比对（近义说法请让模型判）",
+        }
+    return {"graded": False, "reason": "简答题要交给模型判"}
+
+
+def _normalize_fill(text: str) -> str:
+    return re.sub(r"[\s，。、；：！？,.;:!?（）()【】\[\]「」“”\"'']", "", (text or "").lower())
+
+
 def parse_cards(content: str) -> list[dict[str, str]]:
     """把抽背卡的 Markdown 正文拆成 `[{front, back}]`。
 
@@ -78,12 +137,14 @@ def parse_cards(content: str) -> list[dict[str, str]]:
     cards: list[dict[str, str]] = []
     front: str | None = None
     answer: list[str] = []
+    kind = CARD_TYPE_SHORT
 
     def flush() -> None:
-        nonlocal front, answer
+        nonlocal front, answer, kind
         if front and answer:
-            cards.append({"front": front, "back": "\n".join(answer).strip()})
+            cards.append({"front": front, "back": "\n".join(answer).strip(), "type": kind})
         front, answer = None, []
+        kind = CARD_TYPE_SHORT
 
     for raw in (content or "").splitlines():
         line = raw.strip()
@@ -92,6 +153,11 @@ def parse_cards(content: str) -> list[dict[str, str]]:
             text = line[3:].strip()
             # 去掉 "Q1." / "Q1、" 这类编号前缀
             text = re.sub(r"^Q\s*\d+\s*[.、:：)]?\s*", "", text, flags=re.IGNORECASE)
+            # 题型标记：[选择] / [填空] / [简答]，认不出就是简答（兼容没有标记的旧卡）
+            marker = _TYPE_MARKER.match(text)
+            if marker:
+                kind = _TYPE_NAMES.get(marker.group(1), CARD_TYPE_SHORT)
+                text = text[marker.end() :].strip()
             front = text or None
             continue
         if front is None:
@@ -111,7 +177,13 @@ def _clean_cards(cards: list[dict[str, str]]) -> list[dict[str, str]]:
         back = re.sub(r"^[*\s]+", "", back).strip()
         if not _has_content(back):
             continue
-        cleaned.append({"front": card["front"], "back": back})
+        kind = card.get("type") or CARD_TYPE_SHORT
+        # 「答案：X」这种显式一行，单独抽出来做判分基准（正文里怎么排版都不影响）
+        answer = back
+        explicit = _ANSWER_PREFIX.match(back)
+        if explicit:
+            answer = back[explicit.end() :].strip()
+        cleaned.append({"front": card["front"], "back": back, "type": kind, "answer": answer})
     return cleaned
 
 
