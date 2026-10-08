@@ -92,7 +92,9 @@ function sourceGroupHeader(group) {
       (folded ? "▸ " : "▾ ") + group.title + "（" + group.items.length + " 条）";
     let node = li.nextElementSibling;
     while (node && node.classList.contains("source-row")) {
-      node.hidden = folded;
+      // 用 class 而不是 hidden 属性：.source-row 自己带 display，CSS 的 display 会盖过 [hidden]，
+      // 于是"点了三角没反应"—— 三角明明切换了状态，行却照样显示。
+      node.classList.toggle("is-folded-row", folded);
       node = node.nextElementSibling;
     }
   });

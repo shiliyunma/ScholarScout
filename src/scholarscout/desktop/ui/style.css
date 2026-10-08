@@ -1636,11 +1636,17 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.5;
 }
 
-/* 摘要/详情区统一的关闭按钮（贴右上角） */
+/* 摘要/详情区统一的关闭按钮：吸顶，滚动内容时它不动（用户要求"位置不变"） */
 .detail-head {
   display: flex;
   justify-content: flex-end;
-  margin: -2px 0 4px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ui-bg-elevated);
+  margin: -9px -11px 6px;
+  padding: 6px 8px 4px;
+  border-bottom: 1px solid var(--ui-stroke-tertiary);
 }
 
 .detail-close {
@@ -3286,11 +3292,17 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.5;
 }
 
-/* 摘要/详情区统一的关闭按钮（贴右上角） */
+/* 摘要/详情区统一的关闭按钮：吸顶，滚动内容时它不动（用户要求"位置不变"） */
 .detail-head {
   display: flex;
   justify-content: flex-end;
-  margin: -2px 0 4px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ui-bg-elevated);
+  margin: -9px -11px 6px;
+  padding: 6px 8px 4px;
+  border-bottom: 1px solid var(--ui-stroke-tertiary);
 }
 
 .detail-close {
@@ -4966,11 +4978,17 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.5;
 }
 
-/* 摘要/详情区统一的关闭按钮（贴右上角） */
+/* 摘要/详情区统一的关闭按钮：吸顶，滚动内容时它不动（用户要求"位置不变"） */
 .detail-head {
   display: flex;
   justify-content: flex-end;
-  margin: -2px 0 4px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ui-bg-elevated);
+  margin: -9px -11px 6px;
+  padding: 6px 8px 4px;
+  border-bottom: 1px solid var(--ui-stroke-tertiary);
 }
 
 .detail-close {
@@ -6616,11 +6634,17 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.5;
 }
 
-/* 摘要/详情区统一的关闭按钮（贴右上角） */
+/* 摘要/详情区统一的关闭按钮：吸顶，滚动内容时它不动（用户要求"位置不变"） */
 .detail-head {
   display: flex;
   justify-content: flex-end;
-  margin: -2px 0 4px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ui-bg-elevated);
+  margin: -9px -11px 6px;
+  padding: 6px 8px 4px;
+  border-bottom: 1px solid var(--ui-stroke-tertiary);
 }
 
 .detail-close {
@@ -6693,4 +6717,18 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.6;
   max-height: 260px;
   overflow: auto;
+}
+
+/* 资料库分组折叠：用 class 控制显隐 —— .source-row 自带 display，CSS 的 display 会盖过 [hidden]，
+   所以之前"点三角没反应"。 */
+.source-row.is-folded-row {
+  display: none;
+}
+
+/* 路线「放大」浮层里也要占满：详情区搬进浮层后不再是 #pane-routes 的后代，
+   面板里那条占满规则对它就不生效了（这就是"放大后仍占一半"的原因）。 */
+.route-sheet #route-zoom-body #route-detail {
+  flex: 1 1 auto;
+  min-height: 100%;
+  max-height: none;
 }
