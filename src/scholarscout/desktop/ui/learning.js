@@ -230,22 +230,11 @@ function renderPractice() {
   }
   const ratings = document.createElement("div");
   ratings.className = "practice-ratings";
-  // 选择题已经本地判过对错了，再让人自评"会/不会"没有信息量 —— 换成四档精细描述，
-  // 映射到 SM-2 的三档（选错但看懂了 = 模糊，既不会让它排得太远，也不冤枉成完全不会）。
-  const fine = card.type === "choice";
-  (fine
-    ? [
-        ["good", "选对了·很确定"],
-        ["fuzzy", "选对了·靠排除"],
-        ["fuzzy", "选错了·看懂了"],
-        ["bad", "选错了·不明白"],
-      ]
-    : [
-        ["bad", "不会"],
-        ["fuzzy", "模糊"],
-        ["good", "会了"],
-      ]
-  ).forEach(function (pair) {
+  [
+    ["bad", "不会"],
+    ["fuzzy", "模糊"],
+    ["good", "会了"],
+  ].forEach(function (pair) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "rate-" + pair[0];
@@ -792,14 +781,15 @@ function practiceAnswerInput(card) {
   if (card.type === "choice") {
     const row = document.createElement("div");
     row.className = "practice-options";
-    choiceLetters(card).forEach(function (letter) {
+    choiceOptions(card).forEach(function (option) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "ghost";
-      button.textContent = letter;
+      button.className = "ghost practice-option";
+      // 选项按钮显示**真实选项文字**（用户：要给正确答案和错误答案里面选一个）
+      button.textContent = option.text ? option.letter + ". " + option.text : option.letter;
       button.addEventListener("click", function () {
-        store[key] = letter;
-        gradePractice(card, letter, box);
+        store[key] = option.letter; // 交上去的仍是字母，判分在后端本地做
+        gradePractice(card, option.letter, box);
       });
       row.appendChild(button);
     });
@@ -820,14 +810,38 @@ function practiceAnswerInput(card) {
 }
 
 
-/* 题干里认选项字母（A. / B、）；认不出就给 A–D 兜底 */
-function choiceLetters(card) {
+/* 从题干里把选项拆出来（A. 文本／B、文本）—— **让用户在正确与错误选项里挑一个**。
+   题干里认不出选项才退回字母按钮（那说明这张卡的题干没按格式写）。 */
+function choiceOptions(card) {
+  const text = String(card.front || "")
+    .split("\r")
+    .join(" ")
+    .split("\n")
+    .join(" ");
+  const marks = [];
+  const marker = /\s*([A-D])[.、)）]\s*/g;
+  let hit = marker.exec(text);
+  while (hit !== null) {
+    marks.push({ letter: hit[1], start: hit.index, end: marker.lastIndex });
+    hit = marker.exec(text);
+  }
   const found = [];
-  String(card.front || "").replace(/(^|\s)([A-D])[.、)）]/g, function (whole, space, letter) {
-    if (found.indexOf(letter) < 0) found.push(letter);
-    return whole;
+  marks.forEach(function (mark, index) {
+    const stop = index + 1 < marks.length ? marks[index + 1].start : text.length;
+    const label = text.slice(mark.end, stop).trim().split(/\s+/).join(" ");
+    if (!label) return;
+    if (
+      found.some(function (item) {
+        return item.letter === mark.letter;
+      })
+    )
+      return;
+    found.push({ letter: mark.letter, text: label });
   });
-  return found.length ? found : ["A", "B", "C", "D"];
+  if (found.length) return found;
+  return ["A", "B", "C", "D"].map(function (letter) {
+    return { letter: letter, text: "" };
+  });
 }
 
 
