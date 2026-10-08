@@ -230,11 +230,22 @@ function renderPractice() {
   }
   const ratings = document.createElement("div");
   ratings.className = "practice-ratings";
-  [
-    ["bad", "不会（1）"],
-    ["fuzzy", "模糊（2）"],
-    ["good", "会了（3）"],
-  ].forEach(function (pair) {
+  // 选择题已经本地判过对错了，再让人自评"会/不会"没有信息量 —— 换成四档精细描述，
+  // 映射到 SM-2 的三档（选错但看懂了 = 模糊，既不会让它排得太远，也不冤枉成完全不会）。
+  const fine = card.type === "choice";
+  (fine
+    ? [
+        ["good", "选对了·很确定"],
+        ["fuzzy", "选对了·靠排除"],
+        ["fuzzy", "选错了·看懂了"],
+        ["bad", "选错了·不明白"],
+      ]
+    : [
+        ["bad", "不会"],
+        ["fuzzy", "模糊"],
+        ["good", "会了"],
+      ]
+  ).forEach(function (pair) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "rate-" + pair[0];

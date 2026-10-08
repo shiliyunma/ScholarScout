@@ -3308,9 +3308,12 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   min-height: 0;
 }
 
+/* 学习路线占满本栏。.pane 已经是 flex 列，所以这里只要让详情区真的把剩余高度吃掉；
+   min-height 是兜底 —— 父级高度链里只要有一处 auto，纯 flex 就吃不饱（真机上只占了一半）。 */
 #pane-routes #route-detail {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 62vh;
+  max-height: none;
   overflow: auto;
 }
 
