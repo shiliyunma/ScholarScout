@@ -812,7 +812,7 @@ function practiceAnswerInput(card) {
 /* 题干里认选项字母（A. / B、）；认不出就给 A–D 兜底 */
 function choiceLetters(card) {
   const found = [];
-  String(card.front || "").replace(/(^|\s)([A-D])[.、)）]/, function (whole, space, letter) {
+  String(card.front || "").replace(/(^|\s)([A-D])[.、)）]/g, function (whole, space, letter) {
     if (found.indexOf(letter) < 0) found.push(letter);
     return whole;
   });
