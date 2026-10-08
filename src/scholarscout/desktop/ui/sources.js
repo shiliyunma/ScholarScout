@@ -13,6 +13,10 @@ function normalize(item) {
     year: item.year,
     domain: item.domain,
     url: item.url,
+    // 资料库按会话分组要用：所属会话与它的标题（后端 archive.list 已经给了，
+    // 之前这里做白名单映射时把它们漏掉了 —— 结果 34 条全挤进"（未记录会话）"一组）
+    sessionId: item.session_id || "",
+    sessionTitle: item.session_title || "",
   };
 }
 
@@ -28,31 +32,123 @@ async function loadSources(query) {
     list.innerHTML = '<li class="hint">库里还没有资料。先在左边让它去搜一轮。</li>';
     return;
   }
+  // 按会话分组：同一会话的资料聚在一起，可折叠（用户要求不再一锅平铺）
+  const groups = [];
+  const seen = {};
   items.forEach(function (item) {
-    const li = document.createElement("li");
-    li.className = "source-row";
-    // 标题不再按字符数截断（原来 short(title, 22) 会把长标题砍一半），
-    // 改成占满剩余宽度、窄了才由 CSS 省略 —— 面板变宽它就跟着变宽。
-    const title = document.createElement("span");
-    title.className = "row-title";
-    title.textContent = item.title || "(无标题)";
-    title.title = item.title || "";
-    li.appendChild(title);
-    const meta = document.createElement("span");
-    meta.className = "meta row-meta";
-    meta.textContent =
-      (item.domain || "") +
-      "｜tier " +
-      (item.tier === null || item.tier === undefined ? "未判权" : item.tier) +
-      (payload.search_path ? "｜" + payload.search_path : "");
-    li.appendChild(meta);
-    // 「⋯」按用户要求跟着条目走（原来放在摘要区右上）：打开文件 / 在文件管理器定位 / 打开源网站
-    li.appendChild(detailActions(item.docId, item));
-    li.addEventListener("click", function () {
-      showSource(item.docId);
-    });
-    list.appendChild(li);
+    const key = String(item.sessionId || "");
+    if (seen[key] === undefined) {
+      seen[key] = groups.length;
+      groups.push({ title: item.sessionTitle || "（未记录会话）", items: [] });
+    }
+    groups[seen[key]].items.push(item);
   });
+  groups.forEach(function (group) {
+    list.appendChild(sourceGroupHeader(group));
+    group.items.forEach(function (item) {
+      const li = document.createElement("li");
+      li.className = "source-row";
+      // 标题不再按字符数截断（原来 short(title, 22) 会把长标题砍一半），
+      // 改成占满剩余宽度、窄了才由 CSS 省略 —— 面板变宽它就跟着变宽。
+      const title = document.createElement("span");
+      title.className = "row-title";
+      title.textContent = item.title || "(无标题)";
+      title.title = item.title || "";
+      li.appendChild(title);
+      const meta = document.createElement("span");
+      meta.className = "meta row-meta";
+      meta.textContent =
+        (item.domain || "") +
+        "｜tier " +
+        (item.tier === null || item.tier === undefined ? "未判权" : item.tier) +
+        (payload.search_path ? "｜" + payload.search_path : "");
+      li.appendChild(meta);
+      // 「⋯」按用户要求跟着条目走（原来放在摘要区右上）：打开文件 / 在文件管理器定位 / 打开源网站
+      li.appendChild(detailActions(item.docId, item));
+      li.addEventListener("click", function () {
+        showSource(item.docId);
+      });
+      list.appendChild(li);
+    });
+  });
+}
+
+
+
+
+/* 原文区块：按 format 决定怎么显示（markdown 渲染 / 等宽原样 / pdf 只提示打开原件） */
+function originalBlock(payload) {
+  const box = document.createElement("div");
+  box.className = "original-block";
+  const label = document.createElement("div");
+  label.className = "section-label";
+  label.textContent = "原文";
+  box.appendChild(label);
+  if (!payload || payload.available !== true) {
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = (payload && payload.reason) || "没有可显示的正文";
+    box.appendChild(hint);
+    return box;
+  }
+  if (payload.format === "pdf") {
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = "PDF 不在界面里预览 —— 点条目右边的「⋯ → 打开文件」用系统阅读器看。";
+    box.appendChild(hint);
+    return box;
+  }
+  if (!payload.text) {
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = "正文是空的（这一页可能没抓到内容）。";
+    box.appendChild(hint);
+    return box;
+  }
+  if (payload.format === "markdown" && typeof ScoutMarkdown !== "undefined") {
+    const target = document.createElement("div");
+    target.className = "markdown";
+    ScoutMarkdown.renderInto(target, payload.text);
+    box.appendChild(target);
+  } else {
+    const pre = document.createElement("pre");
+    pre.className = "original-text";
+    pre.textContent = payload.text;
+    box.appendChild(pre);
+  }
+  if (payload.truncated) {
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent =
+      "正文较长，这里只显示了前 " + (payload.chars || 0) + " 字符（完整原文在「⋯ → 打开文件」里）。";
+    box.appendChild(hint);
+  }
+  return box;
+}
+
+
+/* 会话分组头：点一下折叠/展开（默认展开 —— 最近一次调研在最上面，先看的通常就是它） */
+function sourceGroupHeader(group) {
+  const li = document.createElement("li");
+  li.className = "source-group";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "group-toggle";
+  button.textContent = "▾ " + group.title + "（" + group.items.length + " 条）";
+  button.title = "点一下折叠/展开这一组";
+  button.addEventListener("click", function (event) {
+    event.stopPropagation();
+    const folded = li.classList.toggle("is-folded");
+    button.textContent =
+      (folded ? "▸ " : "▾ ") + group.title + "（" + group.items.length + " 条）";
+    let node = li.nextElementSibling;
+    while (node && node.classList.contains("source-row")) {
+      node.hidden = folded;
+      node = node.nextElementSibling;
+    }
+  });
+  li.appendChild(button);
+  return li;
 }
 
 
@@ -82,6 +178,17 @@ async function showSource(docId) {
     (doc.extract_status || "") +
     (doc.truncated ? "｜超长已截断" : "");
   box.appendChild(meta);
+
+  // 「保留原文的格式」：正文早就落盘了（data/text/），这里按它的格式给人看 ——
+  // md 走 Markdown 渲染、代码与数据等宽原样显示、pdf 只提示打开原件（界面里不假装能预览）。
+  // 取不到就如实说原因，不拿摘要冒充原文。
+  const original = await scout.call("archive.text", { doc_id: docId });
+  box.appendChild(originalBlock(original));
+
+  const heading = document.createElement("div");
+  heading.className = "section-label";
+  heading.textContent = "摘要";
+  box.appendChild(heading);
 
   const body = document.createElement("div");
   body.textContent = first.summary_short || "（这条资料还没出摘要）";
