@@ -471,12 +471,11 @@ function attachDetailClose(box, hint) {
   closer.title = "关闭";
   closer.textContent = "✕";
   closer.addEventListener("click", function () {
+    // 大浩选定：关闭 = **整块收起**（详情区隐藏、列表占满高度），点列表条目时自动再展开
     box.innerHTML = "";
-    const note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = hint || "已关闭。";
-    box.appendChild(note);
+    box.classList.add("is-collapsed");
   });
+  box.classList.remove("is-collapsed");   // 每次渲染（点条目）都先展开
   head.appendChild(closer);
   box.appendChild(head);
   return head;

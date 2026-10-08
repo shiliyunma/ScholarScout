@@ -1636,17 +1636,33 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.5;
 }
 
-/* 摘要/详情区统一的关闭按钮：吸顶，滚动内容时它不动（用户要求"位置不变"） */
+/* 摘要/详情区统一的关闭按钮：**悬浮在框右上角、不占内容、滚动时不动**（大浩选定方案）。
+   做法：sticky + height:0 的定位层贴在滚动容器顶端（因此不占高度），按钮再绝对定位到它的右上角 ——
+   纯 CSS 就能同时满足"不随滚动"与"不占一行"。 */
 .detail-head {
-  display: flex;
-  justify-content: flex-end;
   position: sticky;
   top: 0;
-  z-index: 2;
-  background: var(--ui-bg-elevated);
-  margin: -9px -11px 6px;
-  padding: 6px 8px 4px;
-  border-bottom: 1px solid var(--ui-stroke-tertiary);
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  z-index: 3;
+  overflow: visible;
+}
+
+.detail-head .detail-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.detail {
+  position: relative;
+}
+
+/* 关闭 = 整块收起（大浩选定）：详情区隐藏、列表占满，点列表条目时再展开 */
+.detail.is-collapsed {
+  display: none;
 }
 
 .detail-close {
@@ -3292,17 +3308,33 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.5;
 }
 
-/* 摘要/详情区统一的关闭按钮：吸顶，滚动内容时它不动（用户要求"位置不变"） */
+/* 摘要/详情区统一的关闭按钮：**悬浮在框右上角、不占内容、滚动时不动**（大浩选定方案）。
+   做法：sticky + height:0 的定位层贴在滚动容器顶端（因此不占高度），按钮再绝对定位到它的右上角 ——
+   纯 CSS 就能同时满足"不随滚动"与"不占一行"。 */
 .detail-head {
-  display: flex;
-  justify-content: flex-end;
   position: sticky;
   top: 0;
-  z-index: 2;
-  background: var(--ui-bg-elevated);
-  margin: -9px -11px 6px;
-  padding: 6px 8px 4px;
-  border-bottom: 1px solid var(--ui-stroke-tertiary);
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  z-index: 3;
+  overflow: visible;
+}
+
+.detail-head .detail-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.detail {
+  position: relative;
+}
+
+/* 关闭 = 整块收起（大浩选定）：详情区隐藏、列表占满，点列表条目时再展开 */
+.detail.is-collapsed {
+  display: none;
 }
 
 .detail-close {
@@ -4978,17 +5010,33 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.5;
 }
 
-/* 摘要/详情区统一的关闭按钮：吸顶，滚动内容时它不动（用户要求"位置不变"） */
+/* 摘要/详情区统一的关闭按钮：**悬浮在框右上角、不占内容、滚动时不动**（大浩选定方案）。
+   做法：sticky + height:0 的定位层贴在滚动容器顶端（因此不占高度），按钮再绝对定位到它的右上角 ——
+   纯 CSS 就能同时满足"不随滚动"与"不占一行"。 */
 .detail-head {
-  display: flex;
-  justify-content: flex-end;
   position: sticky;
   top: 0;
-  z-index: 2;
-  background: var(--ui-bg-elevated);
-  margin: -9px -11px 6px;
-  padding: 6px 8px 4px;
-  border-bottom: 1px solid var(--ui-stroke-tertiary);
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  z-index: 3;
+  overflow: visible;
+}
+
+.detail-head .detail-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.detail {
+  position: relative;
+}
+
+/* 关闭 = 整块收起（大浩选定）：详情区隐藏、列表占满，点列表条目时再展开 */
+.detail.is-collapsed {
+  display: none;
 }
 
 .detail-close {
@@ -6634,17 +6682,33 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   line-height: 1.5;
 }
 
-/* 摘要/详情区统一的关闭按钮：吸顶，滚动内容时它不动（用户要求"位置不变"） */
+/* 摘要/详情区统一的关闭按钮：**悬浮在框右上角、不占内容、滚动时不动**（大浩选定方案）。
+   做法：sticky + height:0 的定位层贴在滚动容器顶端（因此不占高度），按钮再绝对定位到它的右上角 ——
+   纯 CSS 就能同时满足"不随滚动"与"不占一行"。 */
 .detail-head {
-  display: flex;
-  justify-content: flex-end;
   position: sticky;
   top: 0;
-  z-index: 2;
-  background: var(--ui-bg-elevated);
-  margin: -9px -11px 6px;
-  padding: 6px 8px 4px;
-  border-bottom: 1px solid var(--ui-stroke-tertiary);
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  z-index: 3;
+  overflow: visible;
+}
+
+.detail-head .detail-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.detail {
+  position: relative;
+}
+
+/* 关闭 = 整块收起（大浩选定）：详情区隐藏、列表占满，点列表条目时再展开 */
+.detail.is-collapsed {
+  display: none;
 }
 
 .detail-close {
