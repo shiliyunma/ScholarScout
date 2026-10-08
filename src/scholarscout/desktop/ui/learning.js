@@ -205,6 +205,8 @@ function renderPractice() {
   const body = el("practice-body");
   if (!practice) return;
   body.innerHTML = "";
+  // 大浩选定：保存进度 —— 上次练到第几张，这次接着练（按卡组分别记）
+  restorePracticeProgress();
   el("btn-practice-reveal").disabled = false;
   if (practice.index >= practice.cards.length) {
     renderPracticeSummary();
@@ -257,6 +259,7 @@ function renderPractice() {
   // ③ 「不会」与「主动延伸」——只有这两个按钮会产生模型费用
   body.appendChild(practiceHelpPanel(card));
   el("btn-practice-reveal").textContent = practice.revealed ? "隐藏答案" : "看答案";
+  savePracticeProgress();
 }
 
 
@@ -357,6 +360,22 @@ function renderPracticeSummary() {
     "%）";
   body.appendChild(line);
   const actions = document.createElement("div");
+  // 练完小结（大浩选定）：练了几张、对几个、下次复习时间 —— 只是"到此为止"太干巴
+  const done = practiceDone();
+  const answered = Object.keys(done).filter(function (key) {
+    return done[key];
+  });
+  const right = answered.filter(function (key) {
+    return done[key] === "good";
+  }).length;
+  const stat = document.createElement("p");
+  stat.className = "practice-summary";
+  stat.textContent =
+    "本轮 " + (state.practice ? state.practice.cards.length : 0) + " 张｜作答 " + answered.length + "｜答对 " + right +
+    (state.practice && state.practice.lastSchedule
+      ? "｜最近一张下次复习：" + state.practice.lastSchedule.label
+      : "");
+  body.appendChild(stat);
   actions.className = "practice-ratings";
   addButton(actions, "再来一轮（全部）", function () {
     startPractice(null, {});
@@ -1028,6 +1047,42 @@ function practiceNav() {
   row.appendChild(next);
   box.appendChild(row);
   return box;
+}
+
+
+/* 抽背进度：按卡组记住练到第几张（localStorage），下次打开接着练。
+   用第一张卡的 note_id 当键 —— 一组卡共享一个 note_id，跨会话也不会串。 */
+function practiceProgressKey() {
+  const practice = state.practice;
+  const first = practice && practice.cards && practice.cards[0];
+  return "scout.practice.progress." + ((first && first.note_id) || "all");
+}
+
+
+function restorePracticeProgress() {
+  const practice = state.practice;
+  if (!practice || practice.restored) return;
+  practice.restored = true;
+  try {
+    const saved = Number(window.localStorage.getItem(practiceProgressKey()) || "0");
+    // 只在没动过的时候恢复：用户自己翻过页就别把他拽回去
+    if (saved > 0 && practice.index === 0 && saved < practice.cards.length) {
+      practice.index = saved;
+    }
+  } catch (error) {
+    /* localStorage 不可用就当没存过 —— 不该因为记进度失败而打不开抽背 */
+  }
+}
+
+
+function savePracticeProgress() {
+  const practice = state.practice;
+  if (!practice || !practice.cards) return;
+  try {
+    window.localStorage.setItem(practiceProgressKey(), String(practice.index));
+  } catch (error) {
+    /* 同上：记不上就算了 */
+  }
 }
 
 
