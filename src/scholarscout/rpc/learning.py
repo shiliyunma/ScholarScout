@@ -234,6 +234,33 @@ def note_due(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return learning.due_cards(ctx.db, limit=limit, note_id=note_id)
 
 
+@method("note.repair_options")
+def note_repair_options(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """老卡补选项（大浩选定）：选择题没写选项时，用模型补上 A/B/C/D 并写回这张笔记。
+
+    这是**要花钱**的一步（一次模型调用），但只补选项、不改题意与答案；模型没给出带选项的卡片时
+    **原卡不动**（宁可没补成，也不能把用户的卡改坏）。
+    """
+    params = _params(params)
+    note_id = _require(params, "note_id")
+    if ctx.llm is None:
+        raise RpcError(Code.NOT_CONFIGURED, "未配置模型（把 LLM_API_KEY 写进 .env）")
+    from scholarscout.runtime import practice
+
+    outcome = practice.build_option_repair(ctx.llm, ctx.db, note_id=note_id)
+    usage = outcome.get("usage") or {}
+    if usage:
+        traces.record_usage(
+            ctx.db,
+            model=ctx.config.summary.model,
+            purpose="practice_repair_options",
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            cached_tokens=usage.get("cached_tokens"),
+        )
+    return outcome
+
+
 @method("note.help")
 def note_help(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """抽背卡「不会」时问模型：结合复习记录 + 该会话已入库资料，给答案、讲解与该补哪条资料。

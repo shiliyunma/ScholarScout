@@ -171,6 +171,73 @@ def build_help(
     }
 
 
+def repair_options_prompt(content: str) -> str:
+    """老卡补选项（大浩选定）：把没有选项的选择题重写成带 A/B/C/D 的版本。
+
+    硬要求：**只补选项、不改题意、不改答案**。模型顺手改写答案是最糟的结果 ——
+    用户会照着一份被改过的答案复习。
+    """
+    return (
+        "下面是一组抽背卡。其中**选择题没有写出选项**，导致界面上没法选。\n\n"
+        f"{content}\n\n"
+        "请输出**同样数量的卡片**，保持原来的题干与答案不变，只给选择题补上 A/B/C/D 四个选项"
+        "（选项写进题干，答案写成选项字母），填空题保持「答案：<词>」写法。\n"
+        "格式：\n"
+        "## Q1. [选择] 题干\n"
+        "A. …\n"
+        "B. …\n"
+        "C. …\n"
+        "D. …\n"
+        "答案：B\n"
+        "**只输出卡片，不要解释。题意和正确答案都不许改。**"
+    )
+
+
+def build_option_repair(llm: Any, db: Database, *, note_id: str) -> dict[str, Any]:
+    """给老卡补选项：一次模型调用，改好写回原笔记（正文是唯一真相，选项必须进正文）。"""
+    note = learning.get_note(db, note_id) or {}
+    content = str(note.get("content") or "")
+    if not content:
+        return {"ok": False, "reason": "这张笔记没有正文", "fixed": 0}
+    reply = llm.chat([{"role": "user", "content": repair_options_prompt(content)}])
+    text = str(getattr(reply, "content", "") or "").strip()
+    cards = learning.parse_cards(text)
+    before = learning.parse_cards(content)
+    with_options = [
+        card
+        for card in cards
+        if card.get("type") == learning.CARD_TYPE_CHOICE
+        and any(
+            part.strip().upper().startswith(("A.", "A、", "B.", "B、"))
+            for part in (card.get("front") or "").splitlines()
+        )
+    ]
+    if not cards or not with_options:
+        return {
+            "ok": False,
+            "reason": "模型这次没有给出带选项的卡片（原卡未改动）",
+            "fixed": 0,
+            "usage": getattr(reply, "usage", None) or {},
+        }
+    body = "\n\n".join(
+        "## Q{i}. [{tag}] {front}\n{back}".format(
+            i=index + 1,
+            tag={"choice": "选择", "blank": "填空"}.get(str(card.get("type") or ""), "简答"),
+            front=card.get("front") or "",
+            back=card.get("back") or "",
+        )
+        for index, card in enumerate(cards)
+    )
+    learning.save_note(db, kind="card", content=body, note_id=note_id)
+    return {
+        "ok": True,
+        "fixed": len(with_options),
+        "before": len(before),
+        "after": len(cards),
+        "usage": getattr(reply, "usage", None) or {},
+    }
+
+
 def build_extension(
     llm: Any,
     db: Database,
