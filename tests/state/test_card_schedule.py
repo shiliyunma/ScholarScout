@@ -131,7 +131,9 @@ def test_due_rpc(ctx: AppContext) -> None:
     learning.review_card(ctx.db, note_id, 0, "good", now=datetime.datetime.now().astimezone())
     payload = dispatch(ctx, "note.due", {"limit": 10})
     assert payload["counts"]["total_cards"] == 2
-    assert all("front" in item and "back" in item for item in payload["items"])
+    # ② 答案谜底分离：题目投影只有 front + card_id，**没有 back**（答案要单独调 note.reveal）
+    assert all("front" in item and "card_id" in item for item in payload["items"])
+    assert all("back" not in item for item in payload["items"])
 
 
 def test_migration_adds_schedule_columns(db: Database) -> None:

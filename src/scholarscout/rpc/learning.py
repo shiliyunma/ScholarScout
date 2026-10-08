@@ -211,6 +211,18 @@ def note_due(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return learning.due_cards(ctx.db, limit=limit)
 
 
+@method("note.reveal")
+def note_reveal(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """取某张抽背卡的答案（② 答案谜底分离）。
+
+    为什么单独一个方法：`note.due` 只发题目。如果把答案一起发下去，"看答案"就只是前端的一个显示开关，考生（或任何打开开发者工具的人）随时能看到 —— 那就不叫抽背了。
+    """
+    params = _params(params)
+    note_id = _require(params, "note_id")
+    card_index = _int_param(params, "card_index", 0)
+    return learning.reveal_card(ctx.db, note_id, card_index)
+
+
 @method("note.stats")
 def note_stats(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """抽背总体情况：练过几张、各档多少、记住率（分母只算评过的卡）。"""

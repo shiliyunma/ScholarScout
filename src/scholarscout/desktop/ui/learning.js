@@ -213,7 +213,8 @@ function renderPractice() {
   if (practice.revealed) {
     const back = document.createElement("div");
     back.className = "practice-back";
-    back.textContent = card.back;
+    // ② 答案不随题下发：只有点过「看答案」才会在本地缓存里出现
+    back.textContent = practiceAnswer(card) || "（点「看答案」取答案）";
     body.appendChild(back);
   } else {
     const hint = document.createElement("p");
@@ -250,9 +251,44 @@ function renderPractice() {
 }
 
 
-function revealPractice() {
-  if (!state.practice) return;
-  state.practice.revealed = !state.practice.revealed;
+/* ② 抽背卡的稳定编号与答案缓存（答案只在看过之后才在本地存在） */
+function cardKey(card) {
+  return String(card.card_id || card.note_id + "#" + card.card_index);
+}
+
+
+function practiceAnswer(card) {
+  const practice = state.practice;
+  if (!practice || !practice.answers) return "";
+  return practice.answers[cardKey(card)] || "";
+}
+
+
+async function revealPractice() {
+  const practice = state.practice;
+  if (!practice) return;
+  if (practice.revealed) {
+    practice.revealed = false;
+    renderPractice();
+    return;
+  }
+  const card = practice.cards[practice.index];
+  const key = card ? cardKey(card) : "";
+  practice.answers = practice.answers || {};
+  if (card && !practice.answers[key]) {
+    try {
+      // ② 答案谜底分离：点「看答案」时单独取一次，题目里从来没有它
+      const payload = await scout.call("note.reveal", {
+        note_id: card.note_id,
+        card_index: card.card_index,
+      });
+      practice.answers[key] = payload.back || "";
+    } catch (error) {
+      el("status").textContent = "取答案失败：" + error.message;
+      return;
+    }
+  }
+  practice.revealed = true;
   renderPractice();
 }
 

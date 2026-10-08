@@ -482,6 +482,25 @@ def review_card(
     }
 
 
+def reveal_card(db: Database, note_id: str, card_index: int) -> dict[str, Any]:
+    """取某一张卡的答案（②）。抽背页点「看答案」时才调它 —— 答案不随题下发。
+
+    越界/不存在的卡返回空 back，不抛错：界面据此显示"这张卡不见了"，而不是整页崩掉。
+    """
+    note = get_note(db, note_id)
+    if note is None or str(note.get("kind") or "") != "card":
+        return {"note_id": note_id, "card_index": int(card_index), "back": ""}
+    cards = parse_cards(str(note.get("content") or ""))
+    card = cards[card_index] if 0 <= int(card_index) < len(cards) else {}
+    return {
+        "note_id": note_id,
+        "card_index": int(card_index),
+        "note_title": str(note.get("title") or ""),
+        "front": str(card.get("front") or ""),
+        "back": str(card.get("back") or ""),
+    }
+
+
 def card_review_map(db: Database, note_id: str) -> dict[int, str]:
     """这张卡片笔记里每张卡的最近评价：`{card_index: rating}`。"""
     rows = db.query("SELECT card_index, rating FROM card_reviews WHERE note_id = ?", (note_id,))
@@ -535,8 +554,9 @@ def due_cards(
                     "note_id": note_id,
                     "note_title": str(row["title"] or "抽背卡"),
                     "card_index": index,
+                    # ② 只发题目：**答案不随题下发**（原样下发等于把谜底交给考生）
                     "front": card.get("front", ""),
-                    "back": card.get("back", ""),
+                    "card_id": f"{note_id}#{index}",
                     "is_new": existing is None,
                 }
             )
