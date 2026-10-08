@@ -18,6 +18,7 @@ def list_documents(
     source_type: str | None = None,
     tier: int | None = None,
     year_from: int | None = None,
+    source_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -33,6 +34,10 @@ def list_documents(
     if year_from is not None:
         clauses.append("s.year >= ?")
         params.append(year_from)
+    if source_id:
+        # 定向取一条：界面按 source_id 找资料时不必把整库拉回来再筛（原来 limit=200 全表扫）
+        clauses.append("s.id = ?")
+        params.append(source_id)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     total = db.scalar_int(

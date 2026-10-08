@@ -411,6 +411,9 @@ def archive_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         source_type=params.get("source_type")
         if isinstance(params.get("source_type"), str)
         else None,
+        source_id=params.get("source_id")
+        if isinstance(params.get("source_id"), str) and params.get("source_id")
+        else None,
         tier=int(tier) if isinstance(tier, int | float) else None,
         year_from=(
             int(params["year_from"]) if isinstance(params.get("year_from"), int | float) else None

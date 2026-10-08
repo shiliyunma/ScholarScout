@@ -205,19 +205,6 @@ class Bridge:
             return error_payload(-32603, f"移动窗口失败：{exc}")
         return ok_payload({"x": int(float(x or 0)), "y": int(float(y or 0))})
 
-    def win_geometry(self) -> str:
-        """当前窗口的位置与大小。拖动/缩放开始时取一次基准，之后都按屏幕坐标算增量。"""
-        window = self._window
-        if window is None:
-            return error_payload(-32000, "窗口还没就绪")
-        payload: dict[str, Any] = {}
-        for key in ("x", "y", "width", "height"):
-            value = getattr(window, key, None)
-            payload[key] = int(value) if isinstance(value, (int, float)) else None
-        payload["min_width"] = MIN_WINDOW_SIZE[0]
-        payload["min_height"] = MIN_WINDOW_SIZE[1]
-        return ok_payload(payload)
-
     def win_resize(self, width: str = "0", height: str = "0") -> str:
         """右下角自绘把手用。
 

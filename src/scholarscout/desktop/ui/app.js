@@ -840,10 +840,9 @@ function detailActions(docId, doc) {
 }
 
 async function showSourceBySourceId(sourceId) {
-  const payload = await scout.call("archive.list", { limit: 200 });
-  const hit = (payload.items || []).find(function (item) {
-    return item.source_id === sourceId;
-  });
+  // 定向查这一条（原来拉 200 条回来再 find，库一大就是白扫）
+  const payload = await scout.call("archive.list", { source_id: sourceId, limit: 1 });
+  const hit = (payload.items || [])[0];
   if (hit && hit.doc_id) await showSource(hit.doc_id);
   else alert("这条资料还没有抓取正文（只有 source_id：" + sourceId + "）");
 }
@@ -1386,80 +1385,6 @@ async function showNote(noteId) {
 
 /* 跨会话产物列表。原本由「显示全部历史产物」按钮触发，那个按钮已按用户要求去掉
    （改为按会话自动更新）。这个函数暂时没有调用点 —— 留给「个人中心」的汇总复用。 */
-async function renderHistory() {
-  /* 全部会话的历史产物（后端 topic.list / route.list）。
-     之前只能看本会话 refs 里带的产物，进程一退就再也点不开。 */
-  const list = el("route-list");
-  list.innerHTML = '<li class="hint">加载历史产物…</li>';
-  let topics = [];
-  let routes = [];
-  try {
-    const [topicPayload, routePayload] = await Promise.all([
-      scout.call("topic.list", { limit: 30 }),
-      scout.call("route.list", { limit: 30 }),
-    ]);
-    topics = topicPayload.items || [];
-    routes = routePayload.items || [];
-  } catch (error) {
-    list.innerHTML = '<li class="hint is-bad">读历史产物失败：' + esc(error.message) + "</li>";
-    return;
-  }
-  list.innerHTML = "";
-  if (!topics.length && !routes.length) {
-    list.innerHTML = '<li class="hint">库里还没有产物。让它「给我画一张主题地图」。</li>';
-    return;
-  }
-  if (topics.length) {
-    const head = document.createElement("li");
-    head.className = "hint";
-    head.textContent = "主题地图（" + topics.length + "）";
-    list.appendChild(head);
-  }
-  topics.forEach(function (item) {
-    const li = document.createElement("li");
-    li.innerHTML =
-      esc(short(item.topic, 18)) +
-      '<span class="meta">' +
-      item.nodes +
-      " 节点｜" +
-      esc(item.mode || "") +
-      "｜" +
-      esc(short(item.created_at, 16)) +
-      "</span>";
-    li.addEventListener("click", async function () {
-      try {
-        showTopic(await scout.call("topic.get", { topic_id: item.topic_id }));
-      } catch (error) {
-        /* 失败就保持原样，不静默换成别的产物 */
-      }
-    });
-    list.appendChild(li);
-  });
-  if (routes.length) {
-    const head = document.createElement("li");
-    head.className = "hint";
-    head.textContent = "学习路线（" + routes.length + "）";
-    list.appendChild(head);
-  }
-  routes.forEach(function (item) {
-    const li = document.createElement("li");
-    li.innerHTML =
-      esc(short(item.topic, 18)) +
-      '<span class="meta">' +
-      esc(item.level || "") +
-      "｜" +
-      (item.weeks || 0) +
-      " 周｜" +
-      item.entries +
-      " 条｜" +
-      esc(short(item.created_at, 16)) +
-      "</span>";
-    li.addEventListener("click", function () {
-      showRoute(item.route_id);
-    });
-    list.appendChild(li);
-  });
-}
 
 async function refreshSide() {
   await loadSources(el("search").value.trim());
