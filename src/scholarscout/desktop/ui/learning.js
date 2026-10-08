@@ -138,12 +138,30 @@ async function loadCards() {
   }
   items.forEach(function (item) {
     const li = document.createElement("li");
+    li.className = "card-row";
+    const due = Number(item.card_due || 0);
+    const total = Number(item.card_total || 0);
+    // 组上显示到期张数（大浩要求）：看不出该练哪组，列表就只是个目录
     li.innerHTML =
       esc(short(item.title || "抽背卡", 22)) +
-      '<span class="meta">' + esc(short(item.created_at || "", 16)) + "</span>";
+      '<span class="meta">' +
+      (total ? "到期 " + due + " / 共 " + total : "无卡片") +
+      "｜" + esc(short(item.created_at || "", 10)) +
+      "</span>";
+    // 点一组就练那一组（大浩选定）：有到期只练到期的，没到期就练整组
     li.addEventListener("click", function () {
+      startPractice(item.id, { dueOnly: due > 0 });
+    });
+    const peek = document.createElement("button");
+    peek.type = "button";
+    peek.className = "ghost mini";
+    peek.textContent = "看内容";
+    peek.title = "只看这组卡片内容，不开练";
+    peek.addEventListener("click", function (event) {
+      event.stopPropagation();
       showCard(item.id);
     });
+    li.appendChild(peek);
     list.appendChild(li);
   });
   refreshCardStats();

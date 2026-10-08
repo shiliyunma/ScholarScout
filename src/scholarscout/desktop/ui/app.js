@@ -767,7 +767,7 @@ async function startPractice(noteId, options) {
   if (opts.dueOnly) {
     // B6：只练到期的。直接用 `note.due` 的结果 —— 它已经带了正反面，
     // 不必再按笔记逐条 `note.get`（少 n 次往返，卡多时差别明显）。
-    const due = await scout.call("note.due", { limit: 50 });
+    const due = await scout.call("note.due", { note_id: noteId, limit: 50 });
     (due.items || []).forEach(function (item) {
       cards.push({
         note_id: item.note_id,
