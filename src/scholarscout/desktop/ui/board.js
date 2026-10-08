@@ -200,6 +200,7 @@ async function loadProfile() {
 
 function renderBoardArtifacts(board) {
   const list = el("board-artifacts");
+  if (!list) return;   // 产物块与左栏重复（大浩决定），看板不再渲染这块
   list.innerHTML = "";
   const artifacts = board.artifacts || {};
   const rows = [];
@@ -374,6 +375,7 @@ function renderBoardEvidence(board) {
 
 function renderBoardTimeline(board) {
   const list = el("board-timeline");
+  if (!list) return;   // 时间线已并入资料库筛选（大浩决定），看板不再渲染这块
   const note = el("board-timeline-note");
   list.innerHTML = "";
   const timeline = board.timeline || {};
