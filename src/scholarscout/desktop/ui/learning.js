@@ -933,8 +933,7 @@ async function runPracticeExtension(card, box, button) {
       (result.stored ? "，并已存成新卡（在卡片页能看到）" : "") + "：\n" +
       questions.map(function (item, index) {
         return (index + 1) + ". " + item.front;
-      }).join("
-");
+      }).join(String.fromCharCode(10));
   } catch (error) {
     out.textContent = "延伸失败：" + error.message;
   } finally {
