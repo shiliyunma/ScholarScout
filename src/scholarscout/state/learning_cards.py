@@ -390,8 +390,12 @@ def due_cards(
     }
 
 
-def card_stats(db: Database) -> dict[str, Any]:
-    """抽背总体情况（界面顶部与笔记页显示）：练过几张、各档多少、最近一次什么时候。"""
+def card_stats(db: Database, *, now: datetime.datetime | None = None) -> dict[str, Any]:
+    """抽背总体情况（界面顶部与笔记页显示）：练过几张、各档多少、最近一次什么时候。
+
+    ``now`` 可注入：到期队列与\"下一次到期\"都按它算 —— 不注入就读真钟，测试只能\"跑到哪算哪\"。
+    """
+    moment = now or datetime.datetime.now().astimezone()
     row = db.query_one(
         "SELECT count(*) AS reviewed, coalesce(sum(reviews), 0) AS attempts,"
         " max(reviewed_at) AS last_at FROM card_reviews"
@@ -402,10 +406,10 @@ def card_stats(db: Database) -> dict[str, Any]:
             counts[str(item["rating"])] = int(item["n"])
     reviewed = int(row["reviewed"]) if row is not None else 0
     good = counts.get("good", 0)
-    timeline = due_cards(db, limit=0)["counts"]
+    timeline = due_cards(db, now=moment, limit=0)["counts"]
     upcoming = db.query_one(
         "SELECT min(due_at) AS next_due FROM card_reviews WHERE due_at IS NOT NULL AND due_at > ?",
-        (datetime.datetime.now().astimezone().replace(microsecond=0).isoformat(),),
+        (moment.replace(microsecond=0).isoformat(),),
     )
     return {
         "reviewed": reviewed,

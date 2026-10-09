@@ -109,7 +109,7 @@ def test_limit_only_truncates_items_not_counts(db: Database) -> None:
 def test_card_stats_reports_due_and_next_due(db: Database) -> None:
     note_id = _card_note(db)
     learning.review_card(db, note_id, 0, "good", now=NOW)
-    stats = learning.card_stats(db)
+    stats = learning.card_stats(db, now=NOW)
     assert stats["due"] == 1  # 卡片 1 是新卡
     assert stats["due_new"] == 1
     assert stats["total_cards"] == 2
