@@ -101,6 +101,13 @@ class RuntimeProfile:
     #: 只并行**出网**（provider.search），绝不并发调模型；实际限速仍由 `fetch/http.py`
     #: 按 host 串行化，所以这里调大不会绕过任何来源的 `min_interval_s`。
     max_parallel_fetches: int = 3
+    #: 飞书渠道回调监听开关（入口层，docs/17 §3）。**默认关**：开启后才用标准库
+    #: `http.server` 监听本地端口等飞书 POST 事件（只绑 127.0.0.1，公网交给穿透/反代）。
+    #: 放在 RuntimeProfile 里（而不是新开一个档）是为了让 `tests/test_config_runtime_keys.py`
+    #: 的守卫覆盖到它 —— 否则 YAML 里写这个键会被 `load_config` 静默忽略（D3 踩过同款坑）。
+    feishu_listener_enabled: bool = False
+    #: 回调监听端口（照 Hermes 适配器默认 8765；enabled=false 时不起服务，端口无意义）。
+    feishu_listener_port: int = 8765
 
 
 @dataclass(frozen=True)
@@ -128,6 +135,11 @@ class Generation:
     #: D2 跨会话记忆的自动抽取：每**会话**最多一次小调用，且要有"值得记"的迹象。
     #: 关掉之后仍可在「研究看板 → 跨会话记忆」手动点「从现在整理」。
     memory_by_model: bool = True
+    #: 记忆抽取的**按轮触发**（nudge，照 Hermes 的 `nudge_interval`，docs/16 §2 P1-1）。
+    #: `0`（**默认**）＝关：仍是"每会话最多一次"，成本口径与引入前完全一致；
+    #: `>0`＝距上次抽取的用户轮数 ≥ 该值就再抽一次（续写式，复用上次素材）。
+    #: 开启后约每 n 轮多一次小调用（`purpose="memory"` 已记账，可在 `session.usage` 看到）。
+    memory_nudge_turns: int = 0
     #: D4 人格/风格档：default | academic | tutor | concise。
     #: **默认档不加任何字符**，所以不改它就不影响实验臂哈希（E3 那批数字仍可比）。
     style: str = "default"
@@ -258,6 +270,9 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             plan_by_model=bool(runtime_section.get("plan_by_model", False)),
             # 子 Agent P0：并行抓取的并发上限（D3 同款坑：加了字段必须接这一行，否则静默失效）
             max_parallel_fetches=int(runtime_section.get("max_parallel_fetches", 3)),
+            # 飞书渠道回调监听（入口层，docs/17 §3）。默认关；同款坑：必须接这一行。
+            feishu_listener_enabled=bool(runtime_section.get("feishu_listener_enabled", False)),
+            feishu_listener_port=int(runtime_section.get("feishu_listener_port", 8765)),
         ),
         features=Features(
             enable_kb=bool(feature_section.get("enable_kb", False)),
@@ -272,6 +287,8 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             title_by_model=bool(generation_section.get("title_by_model", True)),
             # D2：跨会话记忆的自动抽取（每会话最多一次小调用）。关掉仍可手动整理。
             memory_by_model=bool(generation_section.get("memory_by_model", True)),
+            # P1-1：记忆按轮 nudge（0=默认关，成本口径不变）。必须接这一行否则静默失效。
+            memory_nudge_turns=int(generation_section.get("memory_nudge_turns", 0)),
             # 认识的风格档才认；不认识就**报错**（静默回默认＝用户以为改了其实没改）
             style=normalize_style(generation_section.get("style", "default")),
             compact_by_model=bool(generation_section.get("compact_by_model", True)),

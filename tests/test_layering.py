@@ -35,6 +35,17 @@ RULES: dict[str, tuple[str, ...]] = {
     "tools": ("rpc", "desktop"),
     # 协议层：当然不能反过来依赖界面
     "rpc": ("desktop",),
+    # 渠道层（入口，与 desktop/ 同级）：只经 rpc/ 说话，不读库、不出网、不碰运行时/工具/界面
+    "channels": (
+        "runtime",
+        "tools",
+        "state",
+        "providers",
+        "fetch",
+        "grading",
+        "learning",
+        "desktop",
+    ),
     # 桌面外壳：只通过 RPC 跟后端说话，不该伸手进运行时
     "desktop": ("runtime",),
     # 上面这些的"顶层"：入口与叶子工具，可以依赖下层一切

@@ -31,6 +31,11 @@ runtime:
   # 子 Agent P0（docs/16 §3.3）：并行抓取来源的并发上限。
   # 只并行出网（各来源同时检索），绝不并发调模型；限速仍由出网层按 host 串行化。
   max_parallel_fetches: 3
+  # 飞书渠道回调监听（入口层，docs/17 §3）：**默认关**。
+  # 开启后用标准库 http.server 监听本地端口等飞书 POST 事件（只绑 127.0.0.1）。
+  # 没有 .env 密钥（FEISHU_VERIFICATION_TOKEN / FEISHU_ENCRYPT_KEY）时不校签并明确告警。
+  feishu_listener_enabled: false
+  feishu_listener_port: 8765      # 照 Hermes 适配器默认；enabled=false 时不起服务
 
 # ===== 摘要流水线（照 AIHOT 的"截断 + 一次调用"，见 docs/04）=====
 summary:
@@ -121,3 +126,8 @@ generation:
   # 产物（知识地图 / 学习路线 / 抽背卡）是否每轮自动生成。
   # false = 先问用户（默认）：由用户主动选择时才生成 —— 省 token，也把选择权还给用户。
   auto_artifacts: false
+  # 跨会话记忆的**按轮触发**（nudge，照 Hermes 的 nudge_interval，docs/16 §2 P1-1）。
+  #   0（默认）= 关：仍是"每会话最多一次"，成本口径与引入前完全一致；
+  #   >0 = 距上次抽取的用户轮数 ≥ 该值就再抽一次（续写式）。
+  # 开启后约每 n 轮多一次小调用（purpose="memory" 已记账，session.usage 里能看到）。
+  memory_nudge_turns: 0

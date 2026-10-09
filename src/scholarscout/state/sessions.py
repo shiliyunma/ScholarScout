@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 from typing import Any
 
@@ -91,6 +92,57 @@ def create_session(
 def get_session(db: Database, session_id: str) -> dict[str, Any] | None:
     row = db.query_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
     return dict(row) if row is not None else None
+
+
+def get_session_by_key(db: Database, session_key: str) -> dict[str, Any] | None:
+    """按 `session_key` 找会话（渠道层用外部 chat_id 当 key，好让同一会话连续）。"""
+    row = db.query_one("SELECT * FROM sessions WHERE session_key = ?", (session_key,))
+    return dict(row) if row is not None else None
+
+
+def ensure_session(
+    db: Database,
+    *,
+    session_key: str,
+    title: str | None = None,
+    source: str = "cli",
+    model: str | None = None,
+) -> tuple[str, bool]:
+    """按 `session_key` **幂等**拿到会话：存在就返回它，不存在才建。返回 `(session_id, created)`。
+
+    为什么需要它（而不是直接用 `create_session`）：`sessions.session_key` 是 `UNIQUE`，
+    渠道层每条消息都用同一个外部 chat_id 当 key，直接 `create_session` 第二条就会撞唯一约束。
+    幂等入口把"换/建"合并成一次判断，调用方不必自己读库（渠道层也不许读库）。
+    """
+    existing = get_session_by_key(db, session_key)
+    if existing is not None:
+        return str(existing["id"]), False
+    return (
+        create_session(db, title=title, session_key=session_key, source=source, model=model),
+        True,
+    )
+
+
+def session_meta(db: Database, session_id: str) -> dict[str, Any]:
+    """读会话的 `meta_json`（缺省/损坏都当空字典）。"""
+    row = db.query_one("SELECT meta_json FROM sessions WHERE id = ?", (session_id,))
+    if row is None or not row["meta_json"]:
+        return {}
+    try:
+        parsed = json.loads(row["meta_json"])
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def set_session_meta(db: Database, session_id: str, values: dict[str, Any]) -> None:
+    """按键合并写入 `meta_json`（不动其它键）。"""
+    meta = session_meta(db, session_id)
+    meta.update(values)
+    db.execute(
+        "UPDATE sessions SET meta_json = ? WHERE id = ?",
+        (json.dumps(meta, ensure_ascii=False), session_id),
+    )
 
 
 def list_sessions(db: Database, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:

@@ -301,3 +301,75 @@ def test_memory_rpc_rejects_bad_target(ctx: AppContext) -> None:
 
     with pytest.raises(RpcError):
         dispatch(ctx, "memory.add", {"text": "用户在写毕设", "target": "nope"})
+
+
+# ------------------------------------------------------------------ P1-1：按轮 nudge
+
+
+def _add_user_turn(db: Database, session_id: str, idx: int) -> None:
+    db.execute(
+        "INSERT INTO messages (id, session_id, idx, role, content, created_at) VALUES (?,?,?,?,?,?)",
+        (
+            f"msg_{session_id}_{idx}",
+            session_id,
+            idx,
+            "user",
+            f"第 {idx + 1} 句",
+            "2026-10-07T00:00:01+08:00",
+        ),
+    )
+
+
+def test_nudge_off_by_default_matches_old_behavior(db: Database) -> None:
+    """`nudge_turns=0`（默认）＝关：与引入前逐字一致 —— 每会话最多一次 + 要有迹象。"""
+    quiet = _session(db, "ses_quiet2", ["只问一句"])
+    assert memory.should_extract(db, quiet) is False
+    assert memory.should_extract(db, quiet, nudge_turns=0) is False
+
+    chatty = _session(db, "ses_chatty2", ["第一句", "第二句"])
+    assert memory.should_extract(db, chatty) is True
+    memory.add_fact(db, "用户在写毕设", kind="fact", source_session=chatty)
+    assert memory.should_extract(db, chatty) is False  # 抽过就封口（成本口径不变）
+
+
+def test_nudge_fires_every_n_turns_after_marking(db: Database) -> None:
+    """`nudge_turns=3`：第 3 轮触发 → 记基准 → 第 6 轮再触发（续写式）。"""
+    session_id = _session(db, "ses_nudge", ["第 1 句"])
+    assert memory.should_extract(db, session_id, nudge_turns=3) is False  # 1 - 0 < 3
+    _add_user_turn(db, session_id, 1)
+    assert memory.should_extract(db, session_id, nudge_turns=3) is False  # 2 < 3
+    _add_user_turn(db, session_id, 2)
+    assert memory.should_extract(db, session_id, nudge_turns=3) is True  # 3 >= 3 → 触发
+
+    memory.mark_extracted(db, session_id)  # 记下基准 = 第 3 轮
+    _add_user_turn(db, session_id, 3)
+    assert memory.should_extract(db, session_id, nudge_turns=3) is False  # 4 - 3 < 3
+    _add_user_turn(db, session_id, 4)
+    assert memory.should_extract(db, session_id, nudge_turns=3) is False  # 5 - 3 < 3
+    _add_user_turn(db, session_id, 5)
+    assert memory.should_extract(db, session_id, nudge_turns=3) is True  # 6 - 3 >= 3 → 再触发
+
+
+def test_nudge_mark_prevents_repeat_when_nothing_extracted(db: Database) -> None:
+    """抽到空表也要 mark —— 否则下一轮又触发一次（白花钱）。"""
+    session_id = _session(db, "ses_nudge_empty", ["第一句", "第二句", "第三句"])
+    assert memory.should_extract(db, session_id, nudge_turns=3) is True
+    memory.extract_facts(StubLlm('{"facts": []}'), db, session_id, prompts_dir=PROMPTS)
+    memory.mark_extracted(db, session_id)
+    assert memory.should_extract(db, session_id, nudge_turns=3) is False
+
+
+def test_nudge_extraction_still_keeps_600_budget(db: Database) -> None:
+    """nudge 只是"多抽几次"，注入预算仍是 600（两本账合占），不因多抽而膨胀。"""
+    session_id = _session(db, "ses_nudge_budget", ["第一句", "第二句", "第三句"])
+    for index in range(8):
+        memory.add_fact(db, f"偏好 {index}：" + "啰嗦" * 40, kind="preference")
+    llm = StubLlm(
+        '{"facts": [{"text": "新增目标甲", "kind": "goal"}, {"text": "新增目标乙", "kind": "goal"}]}'
+    )
+    memory.extract_facts(llm, db, session_id, prompts_dir=PROMPTS)
+    note = memory.render_facts_note(db)
+    # 口径与 `_pick_rows` 一致：逐行 len(_note_line()) 累加（不含换行符）
+    fact_chars = sum(len(line) for line in note.splitlines() if line.startswith("- ["))
+    assert fact_chars <= memory.NOTE_BUDGET_CHARS  # 事实行合计不超 600
+    assert memory.MERGE_HINT in note  # 顶满时给出合并引导

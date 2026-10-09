@@ -458,13 +458,19 @@ def run_turn(
     # 免得它变成看不见的暗开销（用户对成本敏感，这条尤其重要）。
     if bool(getattr(ctx.config.generation, "memory_by_model", True)) and ctx.llm is not None:
         try:
-            if ctx.config.summary_cfg is not None and memory.should_extract(ctx.db, session_id):
+            # P1-1：nudge_turns=0（默认）时行为与引入前逐字一致（每会话最多一次）
+            nudge_turns = int(getattr(ctx.config.generation, "memory_nudge_turns", 0) or 0)
+            if ctx.config.summary_cfg is not None and memory.should_extract(
+                ctx.db, session_id, nudge_turns=nudge_turns
+            ):
                 outcome = memory.extract_facts(
                     ctx.llm,
                     ctx.db,
                     session_id,
                     prompts_dir=ctx.config.summary_cfg.prompts_dir,
                 )
+                # 记基准轮（抽到空表也记）—— 否则下一轮会再次触发，白花钱
+                memory.mark_extracted(ctx.db, session_id)
                 usage = outcome.get("usage") or {}
                 if usage:
                     traces.record_usage(

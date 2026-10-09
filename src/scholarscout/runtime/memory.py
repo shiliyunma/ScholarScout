@@ -29,7 +29,7 @@ from typing import Any
 
 from scholarscout.state.db import Database
 from scholarscout.state.migrate import now_iso
-from scholarscout.state.sessions import new_id
+from scholarscout.state.sessions import new_id, session_meta, set_session_meta
 
 #: 与已有记忆的相似度阈值（比查询判重更严：重复的记忆会长期占注入预算）
 DEDUPE_THRESHOLD = 0.75
@@ -44,6 +44,8 @@ KINDS = ("preference", "fact", "goal")
 #:   memory —— agent **自己的工作笔记**：环境/约定/工具坑/教训
 #: 取值靠**代码层校验**（SQLite 的 ADD COLUMN 不支持 CHECK）。
 TARGETS = ("user", "memory")
+#: nudge 用的基准键：上一次抽取发生在"用户第几轮"（存 `sessions.meta_json`，见 mark_extracted）
+_EXTRACT_TURN_KEY = "memory_extract_turn"
 
 #: 两段注入的小标题（与用户当前说法冲突时以当前说法为准 —— 记忆是背景不是命令）
 SECTION_USER = (
@@ -338,25 +340,46 @@ def extract_facts(
     return outcome
 
 
-def should_extract(db: Database, session_id: str) -> bool:
-    """该不该为这个会话抽一次？—— 每会话最多一次，且要有"值得记"的迹象。
+def should_extract(db: Database, session_id: str, *, nudge_turns: int = 0) -> bool:
+    """该不该为这个会话抽一次记忆？
 
-    迹象：用户说过至少两轮（一句话的会话没什么可记的），或这次会话产出了产物。
+    - `nudge_turns <= 0`（**默认**）：**每会话最多一次**，且要有"值得记"的迹象
+      （用户说过≥2 轮，或这次会话产出了产物）。行为与引入 nudge 之前**逐字一致**。
+    - `nudge_turns > 0`：**按轮续写式**（照 Hermes 的 `nudge_interval`，docs/16 §2 P1-1）——
+      距上次抽取的用户轮数 ≥ `nudge_turns` 就再抽一次，让长会话中途出现的稳定事实
+      （如"我改用 PyTorch 了"）不必等到下次会话才被记。由 `mark_extracted` 记录基准轮。
     """
+    turns = db.query_one(
+        "SELECT count(*) AS n FROM messages WHERE session_id = ? AND role = 'user'", (session_id,)
+    )
+    user_turns = int(turns["n"]) if turns is not None else 0
+
+    if nudge_turns > 0:
+        last = int(session_meta(db, session_id).get(_EXTRACT_TURN_KEY, 0) or 0)
+        return user_turns - last >= nudge_turns
+
     already = db.query_one(
         "SELECT count(*) AS n FROM user_facts WHERE source_session = ?", (session_id,)
     )
     if already is not None and int(already["n"]) > 0:
         return False
-    turns = db.query_one(
-        "SELECT count(*) AS n FROM messages WHERE session_id = ? AND role = 'user'", (session_id,)
-    )
     produced = db.query_one(
         "SELECT (SELECT count(*) FROM learning_routes WHERE session_id = ?)"
         " + (SELECT count(*) FROM topic_maps WHERE session_id = ?)"
         " + (SELECT count(*) FROM notes WHERE session_id = ?) AS n",
         (session_id, session_id, session_id),
     )
-    user_turns = int(turns["n"]) if turns is not None else 0
     produced_n = int(produced["n"]) if produced is not None else 0
     return user_turns >= 2 or produced_n > 0
+
+
+def mark_extracted(db: Database, session_id: str) -> None:
+    """记下"刚刚在这条会话的第几轮抽过记忆"（nudge 的续写式触发靠它作基准）。
+
+    **无论抽没抽到新事实都要记**：不然抽到空表时，下一轮又会触发一次，白花钱。
+    """
+    turns = db.query_one(
+        "SELECT count(*) AS n FROM messages WHERE session_id = ? AND role = 'user'", (session_id,)
+    )
+    current = int(turns["n"]) if turns is not None else 0
+    set_session_meta(db, session_id, {_EXTRACT_TURN_KEY: current})

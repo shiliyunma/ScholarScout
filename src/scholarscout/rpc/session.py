@@ -30,6 +30,36 @@ def session_create(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return {"session_id": session_id, "created_at": row.get("created_at")}
 
 
+@method("session.ensure")
+def session_ensure(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """按 `session_key` **幂等**拿会话（存在就返回，不存在才建）—— 渠道层入口用（docs/17 §3.4）。
+
+    和 `session.create` 的区别：`create` 是"新开一个"（session_key 撞唯一约束就报错）；
+    这里把外部 `chat_id` 当 key，**同一个群/人复用同一条会话**，所以必须幂等。
+    """
+    params = _params(params)
+    session_key = _require(params, "session_key")
+    title = params.get("title")
+    source = params.get("source")
+    session_id, created = sessions.ensure_session(
+        ctx.db,
+        session_key=str(session_key),
+        title=title if isinstance(title, str) else None,
+        source=str(source)
+        if isinstance(source, str) and source
+        else ("desktop" if ctx.emit else "cli"),
+        model=ctx.config.chat.model,
+    )
+    if created:
+        loop.mark_system_prompt(ctx.db, session_id, toolsets=ctx.toolsets, config=ctx.config)
+    row = sessions.get_session(ctx.db, session_id) or {}
+    return {
+        "session_id": session_id,
+        "created": created,
+        "created_at": row.get("created_at"),
+    }
+
+
 @method("session.rename")
 def session_rename(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """改会话标题（改过之后就不再被自动命名覆盖）。"""

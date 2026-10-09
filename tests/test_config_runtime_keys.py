@@ -26,6 +26,9 @@ NON_DEFAULT_VALUES: dict[str, object] = {
     "compact_after_chars": 5555,
     # 子 Agent P0：并行抓取的并发上限（fetch_many 读它）
     "max_parallel_fetches": 5,
+    # 飞书渠道回调监听（入口层，docs/17 §3）：开关 + 端口。默认关。
+    "feishu_listener_enabled": True,
+    "feishu_listener_port": 8766,
 }
 
 
