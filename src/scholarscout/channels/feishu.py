@@ -72,6 +72,80 @@ Sender = Callable[[str, str], dict[str, Any]]
 Dispatcher = Callable[[AppContext, str, Any], Any]
 
 
+# ---------------------------------------------------------------- 接入向导用到的常量与探测（docs/18）
+
+#: 飞书开放平台入口（照 Hermes `_ONBOARD_OPEN_URLS`，adapter.py:202）
+OPEN_ENTRY_URLS: dict[str, str] = {
+    "feishu": "https://open.feishu.cn",
+    "lark": "https://open.larksuite.com",
+}
+#: 新建机器人的 launcher 页模板。URL 与三个参数来自用户实测的终端原文
+#: （`https://open.feishu.cn/page/launcher?user_code=Z2BC-3GAP&from=hermes&tp=hermes`）；
+#: `from` / `tp` 的真实语义**未在源码/文档读到**（docs/18 §② 标 unknown）——只当可配置参数，不当接口契约。
+LAUNCHER_URL_TEMPLATE = (
+    "https://open.feishu.cn/page/launcher?user_code={user_code}&from={from_}&tp={tp}"
+)
+
+#: 支持的连接模式。本仓库渠道层**只实现 webhook**（见模块顶注）；websocket 仅记录。
+SUPPORTED_CONNECTION_MODES = ("webhook", "websocket")
+DEFAULT_CONNECTION_MODE = "webhook"
+#: 群聊策略：mention=仅被 @ 时响应 / disabled=关闭（对齐参照体验的二选一）
+SUPPORTED_GROUP_POLICIES = ("mention", "disabled")
+DEFAULT_GROUP_POLICY = "mention"
+
+
+def open_entry_url(domain: str = "feishu") -> str:
+    """飞书 (feishu) / Lark (lark) 的开放平台入口（**真实可打开的官网入口**）。"""
+    return OPEN_ENTRY_URLS.get(domain, OPEN_ENTRY_URLS["feishu"])
+
+
+def launcher_url(
+    user_code: str,
+    *,
+    from_: str = "scholarscout",
+    tp: str = "scholarscout",
+    domain: str = "feishu",
+) -> str:
+    """拼"新建机器人"的 launcher 链接。
+
+    `user_code` 由飞书的设备码注册接口签发（Hermes: `_begin_registration` 的
+    `verification_uri_complete`，adapter.py:3937）。P0 不联网拿不到真码，调用方传
+    占位符即可 —— **绝不伪造设备码**。
+    """
+    url = LAUNCHER_URL_TEMPLATE.format(user_code=user_code, from_=from_, tp=tp)
+    return url.replace("open.feishu.cn", "open.larksuite.com") if domain == "lark" else url
+
+
+def connection_mode_from_env() -> str:
+    """渠道层的连接模式（读 `.env` 的 `FEISHU_CONNECTION_MODE`，键名照 Hermes adapter.py:1311）。"""
+    mode = (os.environ.get("FEISHU_CONNECTION_MODE") or DEFAULT_CONNECTION_MODE).strip().lower()
+    return mode if mode in SUPPORTED_CONNECTION_MODES else DEFAULT_CONNECTION_MODE
+
+
+def group_policy_from_env() -> str:
+    """渠道层的群聊策略（读 `.env` 的 `FEISHU_GROUP_POLICY`）。"""
+    policy = (os.environ.get("FEISHU_GROUP_POLICY") or DEFAULT_GROUP_POLICY).strip().lower()
+    return policy if policy in SUPPORTED_GROUP_POLICIES else DEFAULT_GROUP_POLICY
+
+
+def probe_listener(host: str = "127.0.0.1", port: int = 8765) -> tuple[bool, str]:
+    """试绑回调端口，成功后立即释放 —— 用来确认"渠道层起得来"。
+
+    只做 `bind` / `close`，**不 serve**（避免真起服务）；端口被占就如实报错。
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, int(port)))
+    except OSError as exc:
+        return False, f"端口 {host}:{port} 不可用：{exc}"
+    finally:
+        sock.close()
+    return True, f"端口 {host}:{port} 可用"
+
+
 @dataclass(frozen=True)
 class FeishuCredentials:
     """飞书凭据（**只从 .env / 环境变量读**，绝不硬编码、绝不入库）。"""

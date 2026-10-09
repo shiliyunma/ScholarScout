@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from scholarscout.rpc import archive, learning, research, session, settings  # noqa: F401
+from scholarscout.rpc import archive, feishu, learning, research, session, settings  # noqa: F401
 from scholarscout.rpc.registry import (
     AppContext,
     dispatch,

@@ -38,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="校验桌面 UI 资源（文件/方法名/无外链），门槛脚本用",
     )
+    parser.add_argument(
+        "--setup-feishu",
+        action="store_true",
+        help="飞书接入向导（逐步问答；密钥只写 .env 不回显；见 docs/18）",
+    )
     parser.add_argument("--db", default=None, help="数据库路径，默认 run/state.db")
     parser.add_argument("--toolsets", default="research", help="逗号分隔的工具集，默认 research")
     return parser
@@ -78,7 +83,15 @@ def main(argv: list[str] | None = None) -> int:
     # 打包后**双击 exe 就是不带参数**：那就直接开界面（"点开即用"）。
     # 源码运行时保持打印用法 —— 免得误伤脚本调用与排障习惯。
     if getattr(sys, "frozen", False) and not any(
-        (args.version, args.initdb, args.rpc, args.chat, args.desktop, args.check_ui)
+        (
+            args.version,
+            args.initdb,
+            args.rpc,
+            args.chat,
+            args.desktop,
+            args.check_ui,
+            args.setup_feishu,
+        )
     ):
         args.desktop = True
     toolsets = tuple(t.strip() for t in str(args.toolsets).split(",") if t.strip()) or ("research",)
@@ -112,6 +125,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.chat:
         return _chat_repl(db_target, toolsets)
 
+    if args.setup_feishu:
+        from scholarscout.app import build_context
+        from scholarscout.channels import feishu_setup
+
+        ctx = build_context(db_path=db_target, toolsets=toolsets)
+        try:
+            return feishu_setup.run_setup(ctx)
+        finally:
+            ctx.close()
+
     if args.desktop:
         from scholarscout.desktop.app import launch
 
@@ -122,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     print(
-        "可用：--version / --initdb / --rpc / --chat / --desktop\n"
+        "可用：--version / --initdb / --rpc / --chat / --desktop / --setup-feishu\n"
         "桌面壳：python scripts/scout.py --desktop（需先装 pywebview）；见 docs/00-总索引.md"
     )
     return 0
