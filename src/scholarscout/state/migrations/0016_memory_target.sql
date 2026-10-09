@@ -1,0 +1,13 @@
+-- 记忆双账（P0，docs/16 §2.3 P0-1）：给每条记忆标一本账。
+--
+--   target='user'   —— 关于**用户**（谁在用）：身份/背景、长期偏好、持续目标、硬约束；
+--   target='memory' —— agent **自己的工作笔记**：环境/约定/工具坑/教训。
+--
+-- 为什么用一列而不是两张表：两本账的读写、判重、出口完全一样，拆成两张表会让
+-- memory.list / add / remove 处处分叉；一列 + **代码层校验**取值最省。
+-- 为什么不写 CHECK：SQLite 的 ADD COLUMN 不支持带 CHECK 的约束（对已存在的表），
+-- 所以合法取值放在 runtime/memory.py:TARGETS 里校验（非法值直接 ValueError）。
+--
+-- 默认 'user'：与加这一列之前**行为一致**（老数据全落 user 账），
+-- 注入预算仍是 600 字（两段合占，每轮 token 不增）。
+ALTER TABLE user_facts ADD COLUMN target TEXT NOT NULL DEFAULT 'user';

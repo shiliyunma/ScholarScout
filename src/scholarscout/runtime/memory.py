@@ -33,19 +33,32 @@ from scholarscout.state.sessions import new_id
 
 #: 与已有记忆的相似度阈值（比查询判重更严：重复的记忆会长期占注入预算）
 DEDUPE_THRESHOLD = 0.75
-#: 注入的字符上限（超了就只发最新的几条，老的留在库里不删）
+#: 注入的字符上限（**两本账合占**，超了就只发最新的几条，老的留在库里不删）
 NOTE_BUDGET_CHARS = 600
 #: 一次最多抽几条
 MAX_EXTRACTED = 5
 #: 允许的类别
 KINDS = ("preference", "fact", "goal")
+#: 记忆的两本账（照 Hermes 的 MEMORY.md / USER.md；迁移 0016 起有 target 列）：
+#:   user   —— 关于**用户**（谁在用）：身份/背景、长期偏好、持续目标、硬约束
+#:   memory —— agent **自己的工作笔记**：环境/约定/工具坑/教训
+#: 取值靠**代码层校验**（SQLite 的 ADD COLUMN 不支持 CHECK）。
+TARGETS = ("user", "memory")
+
+#: 两段注入的小标题（与用户当前说法冲突时以当前说法为准 —— 记忆是背景不是命令）
+SECTION_USER = (
+    "【关于这个用户的长期记忆】（可用 memory.remove 更正；与用户当前说法冲突时**以当前说法为准**）"
+)
+SECTION_MEMORY = "【我自己的工作笔记】（环境/约定/工具坑；可用 memory.remove 更正）"
+#: 注入超预算时追加的一行合并引导（≤40 字，指向设置面板 / memory.remove）
+MERGE_HINT = "（记忆较多，只发最新的；在设置里整理或用 memory.remove 删旧项）"
 
 
 def list_facts(db: Database) -> list[dict[str, Any]]:
     return [
         dict(row)
         for row in db.query(
-            "SELECT id, text, kind, source_session, created_at, updated_at FROM user_facts"
+            "SELECT id, text, kind, target, source_session, created_at, updated_at FROM user_facts"
             " ORDER BY created_at DESC"
         )
     ]
@@ -83,21 +96,28 @@ def add_fact(
     text: str,
     *,
     kind: str = "fact",
+    target: str = "user",
     source_session: str | None = None,
 ) -> dict[str, Any]:
-    """加一条记忆。**同一件事不重复记**（相似度高的返回已有那条）。"""
+    """加一条记忆。**同一件事不重复记**（相似度高的返回已有那条）。
+
+    `target` 决定落哪本账：`user`（关于用户）/ `memory`（agent 自己的工作笔记）。
+    """
     cleaned = " ".join(str(text or "").split())
     if not cleaned:
         raise ValueError("记忆内容不能为空")
     if kind not in KINDS:
         raise ValueError(f"非法类别：{kind!r}（允许：{', '.join(KINDS)}）")
+    if target not in TARGETS:
+        raise ValueError(f"非法账本：{target!r}（允许：{', '.join(TARGETS)}）")
     existing = _find_similar(db, cleaned)
     if existing is not None:
         return {"created": False, "fact": existing, "reason": "已有相似记忆"}
     fact_id = new_id("mem")
     db.execute(
-        "INSERT INTO user_facts (id, text, kind, source_session, created_at) VALUES (?,?,?,?,?)",
-        (fact_id, cleaned[:400], kind, source_session, now_iso()),
+        "INSERT INTO user_facts (id, text, kind, target, source_session, created_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (fact_id, cleaned[:400], kind, target, source_session, now_iso()),
     )
     return {
         "created": True,
@@ -105,6 +125,7 @@ def add_fact(
             "id": fact_id,
             "text": cleaned[:400],
             "kind": kind,
+            "target": target,
             "source_session": source_session,
             "created_at": now_iso(),
             "updated_at": None,
@@ -144,23 +165,49 @@ def remove_fact(db: Database, fact_id: str) -> dict[str, Any]:
     return {"ok": True, "id": fact_id}
 
 
+def _note_line(row: dict[str, Any]) -> str:
+    return f"- [{row['kind']}] {row['text']}"
+
+
+def _pick_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """按 NOTE_BUDGET_CHARS 从新到旧挑要注入的行；返回（挑中的行, 是否截断）。
+
+    **纯函数**（不读钟、不写库），所以渲染与"入库会不会顶破预算"共用同一把尺子。
+    """
+    picked: list[dict[str, Any]] = []
+    used = 0
+    for row in rows:
+        line_len = len(_note_line(row))
+        if used + line_len > NOTE_BUDGET_CHARS and picked:
+            return picked, True
+        picked.append(row)
+        used += line_len
+    return picked, False
+
+
 def render_facts_note(db: Database) -> str:
-    """注入用的几行。超预算就只发最新的（老的留在库里，不删）。"""
+    """注入用的几行。**两本账分两段**（user / memory），两段**合占 600 字预算**。
+
+    超预算就只发最新的几条（老的留在库里，不删），并追一行合并引导 ——
+    不静默丢弃、也不让用户/模型不知道该怎么收拾。
+    """
     rows = list_facts(db)
     if not rows:
         return ""
-    picked: list[str] = []
-    used = 0
-    for row in rows:
-        line = f"- [{row['kind']}] {row['text']}"
-        if used + len(line) > NOTE_BUDGET_CHARS and picked:
-            break
-        picked.append(line)
-        used += len(line)
-    lines = [
-        "【关于这个用户的长期记忆】（可用 memory.remove 更正；与用户当前说法冲突时**以当前说法为准**）"
-    ]
-    lines.extend(picked)
+    picked, truncated = _pick_rows(rows)
+    user_lines = [_note_line(row) for row in picked if row.get("target") != "memory"]
+    memory_lines = [_note_line(row) for row in picked if row.get("target") == "memory"]
+    lines: list[str] = []
+    if user_lines:
+        lines.append(SECTION_USER)
+        lines.extend(user_lines)
+    if memory_lines:
+        if lines:
+            lines.append("")
+        lines.append(SECTION_MEMORY)
+        lines.extend(memory_lines)
+    if truncated:
+        lines.append(MERGE_HINT)
     return "\n".join(lines)
 
 
@@ -188,9 +235,17 @@ def parse_facts(content: str) -> list[dict[str, str]]:
             continue
         fact_text = " ".join(str(item.get("text") or "").split())
         kind = str(item.get("kind") or "fact")
+        target = str(item.get("target") or "user")
         if not fact_text:
             continue
-        out.append({"text": fact_text[:400], "kind": kind if kind in KINDS else "fact"})
+        out.append(
+            {
+                "text": fact_text[:400],
+                "kind": kind if kind in KINDS else "fact",
+                # 账本写错 → 落 user（与 kind 同样"不丢这条"）
+                "target": target if target in TARGETS else "user",
+            }
+        )
     return out[:MAX_EXTRACTED]
 
 
@@ -247,10 +302,40 @@ def extract_facts(
     parsed = parse_facts(str(getattr(reply, "content", "")))
     added: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    overflow = False
+    # 当前注入会占多少字（两本账合占 600 字预算）—— 与 render_facts_note 共用 _pick_rows
+    picked, _ = _pick_rows(list_facts(db))
+    used = sum(len(_note_line(row)) for row in picked)
     for item in parsed:
-        result = add_fact(db, item["text"], kind=item["kind"], source_session=session_id)
+        line_len = len(_note_line({"kind": item["kind"], "text": item["text"]}))
+        if used + line_len > NOTE_BUDGET_CHARS and (picked or added):
+            # 注入口袋满了：**不静默丢旧、也不硬塞** —— 停手并把 current_entries 回给上游，
+            # 让它提示模型/用户"合并或删除后再记"（照 Hermes 满载拒绝 add 的做法）。
+            overflow = True
+            break
+        result = add_fact(
+            db,
+            item["text"],
+            kind=item["kind"],
+            target=item["target"],
+            source_session=session_id,
+        )
+        if result["created"]:
+            used += line_len
         (added if result["created"] else skipped).append(result["fact"])
-    return {"added": added, "skipped": skipped, "reason": None, "usage": usage}
+    outcome: dict[str, Any] = {
+        "added": added,
+        "skipped": skipped,
+        "reason": None,
+        "usage": usage,
+    }
+    if overflow:
+        outcome["reason"] = (
+            f"记忆注入预算已满（{NOTE_BUDGET_CHARS} 字），未再写入新条目；"
+            "请合并或删除已有记忆后重发（current_entries 里是现有全部）"
+        )
+        outcome["current_entries"] = list_facts(db)
+    return outcome
 
 
 def should_extract(db: Database, session_id: str) -> bool:

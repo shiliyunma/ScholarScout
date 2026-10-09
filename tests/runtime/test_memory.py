@@ -110,7 +110,9 @@ def test_update_and_remove(db: Database) -> None:
 
 def test_parse_facts_handles_fence_bare_and_garbage() -> None:
     fenced = '```json\n{"facts": [{"text": "用户在写毕设", "kind": "fact"}]}\n```'
-    assert memory.parse_facts(fenced) == [{"text": "用户在写毕设", "kind": "fact"}]
+    assert memory.parse_facts(fenced) == [
+        {"text": "用户在写毕设", "kind": "fact", "target": "user"}
+    ]
     bare = '{"facts": [{"text": "偏好中文", "kind": "preference"}]}'
     assert memory.parse_facts(bare)[0]["kind"] == "preference"
     assert memory.parse_facts("模型跑题了") == []
@@ -218,3 +220,84 @@ def test_memory_remove_unknown_id_reports_not_found(ctx: AppContext) -> None:
 
     with pytest.raises(RpcError):
         dispatch(ctx, "memory.remove", {"fact_id": "mem_nope"})
+
+
+# ------------------------------------------------------------------ 双账（target，P0）
+
+
+def test_facts_default_to_user_ledger_and_render_two_sections(db: Database) -> None:
+    """两本账分道：`user` 与 `memory` 各进一段；默认账本是 `user`（迁移前行为不变）。"""
+    memory.add_fact(db, "用户偏好中文回答", kind="preference")
+    memory.add_fact(db, "本机 arXiv 接口需 ≥3 秒限速，连续请求会 406", kind="fact", target="memory")
+    rows = memory.list_facts(db)
+    assert {row["target"] for row in rows} == {"user", "memory"}
+    note = memory.render_facts_note(db)
+    assert "【关于这个用户的长期记忆】" in note
+    assert "【我自己的工作笔记】" in note
+    # 用户那条在 user 段、工作笔记那条在 memory 段
+    assert note.index("用户偏好中文回答") < note.index("【我自己的工作笔记】")
+
+
+def test_add_rejects_bad_target(db: Database) -> None:
+    with pytest.raises(ValueError):
+        memory.add_fact(db, "用户在写毕设", target="guess")
+
+
+def test_parse_facts_carries_target_and_falls_back_to_user() -> None:
+    got = memory.parse_facts('{"facts": [{"text": "x", "kind": "fact", "target": "memory"}]}')
+    assert got[0]["target"] == "memory"
+    # 账本写错 → 落 user，不丢这条（与 kind 同款兜底）
+    fallback = memory.parse_facts('{"facts": [{"text": "y", "kind": "fact", "target": "??"}]}')
+    assert fallback[0]["target"] == "user"
+
+
+def test_two_ledgers_share_the_same_600_budget(db: Database) -> None:
+    """分道只是分区，**总预算字仍是 600**（每轮 token 不增）。"""
+    for index in range(8):
+        memory.add_fact(db, f"用户偏好 {index}：" + "啰嗦" * 40, kind="preference")
+    for index in range(8):
+        memory.add_fact(db, f"工作笔记 {index}：" + "啰嗦" * 40, kind="fact", target="memory")
+    note = memory.render_facts_note(db)
+    body = "\n".join(line for line in note.splitlines() if line.startswith("- "))
+    assert len(body) <= memory.NOTE_BUDGET_CHARS
+
+
+def test_render_note_appends_merge_hint_when_over_budget(db: Database) -> None:
+    for index in range(20):
+        memory.add_fact(db, f"偏好 {index}：" + "啰嗦" * 40, kind="preference")
+    note = memory.render_facts_note(db)
+    assert memory.MERGE_HINT in note
+    assert len(memory.MERGE_HINT) <= 40  # 一行，且不喧宾夺主
+
+
+def test_extract_returns_current_entries_instead_of_silently_dropping(db: Database) -> None:
+    """注入口袋顶满时，抽取**不静默丢旧**：停手并回 current_entries 让上游合并。"""
+    # 把注入口袋塞到顶：贪心按整行装，末行留白 < 一行 → 任何新条目都顶破 600 字。
+    for index in range(20):
+        memory.add_fact(db, f"偏好 {index:02d}：" + "啰嗦" * 39, kind="preference")
+    session_id = _session(db, "ses_full", ["第一句", "第二句"])
+    llm = StubLlm(
+        '{"facts": [{"text": "用户新增的目标：这学期搞定图算法", "kind": "goal", "target": "user"}]}'
+    )
+    outcome = memory.extract_facts(llm, db, session_id, prompts_dir=PROMPTS)
+    assert outcome["added"] == []
+    assert outcome["current_entries"]  # 回的是现有全部，而不是把旧的悄悄挤掉
+    assert "预算" in str(outcome["reason"])
+
+
+def test_memory_rpc_add_and_list_carry_target(ctx: AppContext) -> None:
+    created = dispatch(
+        ctx,
+        "memory.add",
+        {"text": "本机 arXiv 接口需 ≥3 秒限速", "kind": "fact", "target": "memory"},
+    )
+    assert created["fact"]["target"] == "memory"
+    listed = dispatch(ctx, "memory.list", {})
+    assert listed["items"][0]["target"] == "memory"
+
+
+def test_memory_rpc_rejects_bad_target(ctx: AppContext) -> None:
+    from scholarscout.rpc.errors import RpcError
+
+    with pytest.raises(RpcError):
+        dispatch(ctx, "memory.add", {"text": "用户在写毕设", "target": "nope"})

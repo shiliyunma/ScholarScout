@@ -145,10 +145,11 @@ def memory_add(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     params = _params(params)
     text = _require(params, "text")
     kind = params.get("kind") if isinstance(params.get("kind"), str) else "fact"
+    target = params.get("target") if isinstance(params.get("target"), str) else "user"
     from scholarscout.runtime import memory
 
     try:
-        return memory.add_fact(ctx.db, text, kind=str(kind))
+        return memory.add_fact(ctx.db, text, kind=str(kind), target=str(target))
     except ValueError as exc:
         raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
 

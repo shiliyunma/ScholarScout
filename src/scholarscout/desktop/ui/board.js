@@ -42,9 +42,13 @@ async function loadMemory() {
   list.innerHTML = "";
   items.forEach(function (item) {
     const labels = { preference: "偏好", fact: "背景", goal: "目标" };
+    const targets = { user: "用户", memory: "笔记" };
     const li = boardItem(
       '<span class="badge">' +
         esc(labels[item.kind] || item.kind) +
+        "</span> " +
+        '<span class="badge">' +
+        esc(targets[item.target] || item.target || "用户") +
         "</span> " +
         esc(item.text),
     );
