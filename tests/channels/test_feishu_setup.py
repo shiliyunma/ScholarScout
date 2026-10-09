@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+from typing import Any
 
 import pytest
 
@@ -229,3 +230,96 @@ def test_connection_mode_and_group_policy_from_env(monkeypatch: pytest.MonkeyPat
     assert feishu.connection_mode_from_env() == feishu.DEFAULT_CONNECTION_MODE
     monkeypatch.setenv("FEISHU_GROUP_POLICY", "disabled")
     assert feishu.group_policy_from_env() == "disabled"
+
+
+def test_registration_from_tp_configurable_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(feishu.REGISTRATION_FROM_ENV, raising=False)
+    monkeypatch.delenv(feishu.REGISTRATION_TP_ENV, raising=False)
+    assert feishu.registration_from_env() == feishu.DEFAULT_REGISTRATION_FROM
+    assert feishu.registration_tp_from_env() == feishu.DEFAULT_REGISTRATION_TP
+    monkeypatch.setenv(feishu.REGISTRATION_FROM_ENV, "myapp")
+    monkeypatch.setenv(feishu.REGISTRATION_TP_ENV, "mytp")
+    assert feishu.registration_from_env() == "myapp"
+    assert feishu.registration_tp_from_env() == "mytp"
+
+
+# ------------------------------------------------------------------ 联网自动建应用（docs/18 §③）
+
+
+def _wrap_dispatch(overrides: dict[str, Any]):
+    """把指定的 RPC 换成桩，其余照走真 dispatch。"""
+
+    def call(ctx: AppContext, name: str, params: dict[str, Any] | None = None):
+        if name in overrides:
+            return overrides[name]
+        return dispatch(ctx, name, params)
+
+    return call
+
+
+def test_auto_create_success_skips_manual_credential_prompts(
+    wizard_ctx: AppContext, tmp_path
+) -> None:
+    """联网建应用成功时：不再问 App ID / App Secret，摘要直接给出 App ID。"""
+    overrides = {
+        "feishu.onboard.begin": {
+            "device_code": "dc",
+            "qr_url": "https://open.feishu.cn/page/launcher?user_code=Z2BC-3GAP&from=scholarscout&tp=scholarscout",
+            "user_code": "Z2BC-3GAP",
+            "interval": 5,
+            "expire_in": 600,
+        },
+        "feishu.onboard.poll": {
+            "ok": True,
+            "app_id": "cli_auto",
+            "domain": "feishu",
+            "open_id": "ou_x",
+        },
+    }
+    out: list[str] = []
+
+    def ask_secret(prompt: str) -> str:
+        raise AssertionError(f"自动建应用成功后不该再问密钥：{prompt}")
+
+    rc = feishu_setup.run_setup(
+        wizard_ctx,
+        ask=_scripted(
+            ["", "", "2", "", OWNER_OPEN_ID, "", ""]
+        ),  # 方式/域名/模式(websocket)/DM/openid/群聊/home
+        ask_secret=ask_secret,
+        say=out.append,
+        open_url=lambda url: True,
+        dispatch_fn=_wrap_dispatch(overrides),
+    )
+    text = "\n".join(out)
+    assert rc == 0
+    assert "✓ 已自动创建并写入凭据（App ID: cli_auto" in text
+    assert "现在用浏览器打开官网入口？" not in text  # 走了自动分支，没有手工入口提示
+    assert "App ID: cli_auto" in text
+    # 向导把非密钥字段落盘（密钥由 RPC 写）
+    assert "FEISHU_APP_ID=cli_auto" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def test_auto_create_failure_falls_back_to_manual(wizard_ctx: AppContext, tmp_path) -> None:
+    """begin 失败（离线/无凭据）时：打印原因并转手工，向导照常跑完。"""
+    from scholarscout.rpc.errors import Code, RpcError
+
+    def boom(ctx, name, params=None):
+        if name == "feishu.onboard.begin":
+            raise RpcError(Code.SERVICE_UNAVAILABLE, "网络不通")
+        return dispatch(ctx, name, params)
+
+    out: list[str] = []
+    rc = feishu_setup.run_setup(
+        wizard_ctx,
+        ask=_scripted(_DEFAULT_ASK),
+        ask_secret=_scripted(_DEFAULT_SECRET),
+        say=out.append,
+        open_url=lambda url: True,
+        dispatch_fn=boom,
+    )
+    text = "\n".join(out)
+    assert rc == 0
+    assert "转手工填凭据" in text
+    assert "page/launcher?user_code=<USER_CODE>" in text  # 手工分支仍打印模板
+    assert "FEISHU_APP_ID=cli_test_app" in (tmp_path / ".env").read_text(encoding="utf-8")

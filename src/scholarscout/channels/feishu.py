@@ -86,6 +86,13 @@ LAUNCHER_URL_TEMPLATE = (
     "https://open.feishu.cn/page/launcher?user_code={user_code}&from={from_}&tp={tp}"
 )
 
+#: 设备码注册里 `from`/`tp` 的可配置来源（`docs/18 §②` 标 unknown，故做成参数而非契约）。
+#: 键名与 Hermes 里固定的取值同形，进程内向导与 RPC 都读这两个环境变量。
+REGISTRATION_FROM_ENV = "FEISHU_REGISTRATION_FROM"
+REGISTRATION_TP_ENV = "FEISHU_REGISTRATION_TP"
+DEFAULT_REGISTRATION_FROM = "scholarscout"
+DEFAULT_REGISTRATION_TP = "scholarscout"
+
 #: 支持的连接模式。本仓库渠道层**只实现 webhook**（见模块顶注）；websocket 仅记录。
 SUPPORTED_CONNECTION_MODES = ("webhook", "websocket")
 DEFAULT_CONNECTION_MODE = "webhook"
@@ -126,6 +133,20 @@ def group_policy_from_env() -> str:
     """渠道层的群聊策略（读 `.env` 的 `FEISHU_GROUP_POLICY`）。"""
     policy = (os.environ.get("FEISHU_GROUP_POLICY") or DEFAULT_GROUP_POLICY).strip().lower()
     return policy if policy in SUPPORTED_GROUP_POLICIES else DEFAULT_GROUP_POLICY
+
+
+def registration_from_env() -> str:
+    """设备码注册 URL 里的 `from`（默认 `scholarscout`，可用 `FEISHU_REGISTRATION_FROM` 覆盖）。"""
+    return (
+        os.environ.get(REGISTRATION_FROM_ENV) or DEFAULT_REGISTRATION_FROM
+    ).strip() or DEFAULT_REGISTRATION_FROM
+
+
+def registration_tp_from_env() -> str:
+    """设备码注册 URL 里的 `tp`（默认 `scholarscout`，可用 `FEISHU_REGISTRATION_TP` 覆盖）。"""
+    return (
+        os.environ.get(REGISTRATION_TP_ENV) or DEFAULT_REGISTRATION_TP
+    ).strip() or DEFAULT_REGISTRATION_TP
 
 
 def probe_listener(host: str = "127.0.0.1", port: int = 8765) -> tuple[bool, str]:

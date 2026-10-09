@@ -107,3 +107,80 @@ def test_dm_policy_validates_and_persists(ctx: AppContext) -> None:
         dispatch(ctx, "feishu.dm_policy", {"policy": "nope"})
     assert dispatch(ctx, "feishu.dm_policy", {"policy": "all"})["policy"] == "all"
     assert dispatch(ctx, "feishu.status", {})["dm_policy"] == "all"
+
+
+# ------------------------------------------------------------------ 联网自动建应用（docs/18 §③）
+
+
+def _stub_http(handler) -> object:
+    import httpx
+
+    from scholarscout.fetch.http import HttpClient
+
+    return HttpClient(respect_robots=False, transport=httpx.MockTransport(handler))
+
+
+def test_onboard_begin_requires_an_http_client(ctx: AppContext) -> None:
+    """没有出网客户端就如实报「未配置」，而不是偷偷直连 httpx。"""
+    with pytest.raises(RpcError) as info:
+        dispatch(ctx, "feishu.onboard.begin", {})
+    assert info.value.code == -32000  # NOT_CONFIGURED
+
+
+def test_onboard_begin_rejects_unknown_domain(ctx: AppContext) -> None:
+    ctx.http = _stub_http(lambda request: None)  # type: ignore[assignment]
+    with pytest.raises(RpcError):
+        dispatch(ctx, "feishu.onboard.begin", {"domain": "mars"})
+
+
+def test_onboard_begin_returns_server_issued_url(ctx: AppContext) -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "device_code": "dc",
+                "verification_uri_complete": "https://open.feishu.cn/page/launcher?user_code=Z2BC-3GAP",
+                "user_code": "Z2BC-3GAP",
+                "interval": 5,
+                "expire_in": 600,
+            },
+        )
+
+    ctx.http = _stub_http(handler)  # type: ignore[assignment]
+    begin = dispatch(ctx, "feishu.onboard.begin", {})
+    assert begin["device_code"] == "dc"
+    assert begin["qr_url"].endswith("&from=scholarscout&tp=scholarscout")
+
+
+def test_onboard_poll_writes_credentials_but_never_returns_the_secret(
+    ctx: AppContext, tmp_path
+) -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "client_id": "cli_auto",
+                "client_secret": "sec_auto_should_not_leak",
+                "user_info": {"open_id": "ou_auto"},
+            },
+        )
+
+    ctx.http = _stub_http(handler)  # type: ignore[assignment]
+    result = dispatch(ctx, "feishu.onboard.poll", {"device_code": "dc"})
+    assert result["ok"] is True and result["app_id"] == "cli_auto"
+    # 密钥只写 .env、绝不回传
+    blob = json.dumps(result, ensure_ascii=False)
+    assert "sec_auto_should_not_leak" not in blob
+    env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "FEISHU_APP_ID=cli_auto" in env
+    assert "FEISHU_APP_SECRET=sec_auto_should_not_leak" in env
+
+
+def test_onboard_poll_requires_device_code(ctx: AppContext) -> None:
+    ctx.http = _stub_http(lambda request: None)  # type: ignore[assignment]
+    with pytest.raises(RpcError):
+        dispatch(ctx, "feishu.onboard.poll", {})

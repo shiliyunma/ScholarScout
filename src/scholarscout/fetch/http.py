@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import httpx
 
@@ -348,6 +348,41 @@ class HttpClient:
             headers=headers,
         )
         if cache:
+            self._write_cache(cache_key, accept, result)
+        return result
+
+    def post_form(
+        self,
+        url: str,
+        form: dict[str, Any],
+        *,
+        accept: str = "application/json",
+        min_interval_s: float = 0.0,
+        cache: bool = False,
+        headers: dict[str, str] | None = None,
+    ) -> FetchResult:
+        """POST 一个 ``application/x-www-form-urlencoded`` 请求体（飞书注册接口要的就是它）。
+
+        - 出网仍然**只有这一层**：robots、限速、退避、体积上限都在这里生效；
+        - **默认不缓存**：设备码注册/轮询是状态机（同一个 poll 体每次结果都不同），
+          缓存会把"等待用户授权"钉死成第一次的 `authorization_pending`（与 `upload_bytes`
+          预签名上传同理：一次性的地址不该缓存）。
+        """
+        body = urlencode([(key, str(value)) for key, value in form.items()]).encode("utf-8")
+        if not self.robots_allowed(url):
+            raise FetchError("forbidden", f"robots.txt 不允许抓取：{url}", url=url)
+        result = self._request_once(
+            url,
+            accept,
+            urlparse(url).netloc,
+            min_interval_s,
+            method="POST",
+            body=body,
+            headers=headers,
+            content_type="application/x-www-form-urlencoded",
+        )
+        if cache:
+            cache_key = f"{url}#form:{hashlib.sha256(body).hexdigest()[:16]}"
             self._write_cache(cache_key, accept, result)
         return result
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from scholarscout.fetch import feishu_onboard
+from scholarscout.fetch.http import HttpClient
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.rpc.registry import AppContext, _params, method
 from scholarscout.state import pairing
@@ -22,6 +24,12 @@ DEFAULT_DM_POLICY = "pairing"
 CONNECTION_MODES = ("webhook", "websocket")
 #: 允许的 DM 策略（对齐参照体验的三选一：配对审批 / 放行全部 / 仅白名单）
 DM_POLICIES = ("pairing", "all", "allowlist")
+#: 允许的平台域名（照 Hermes `_ONBOARD_ACCOUNTS_URLS` 的两个键，adapter.py:198-201）
+DOMAINS = ("feishu", "lark")
+#: 允许的群聊策略（对齐参照体验的二选一）
+GROUP_POLICIES = ("mention", "disabled")
+#: 群聊策略默认值
+DEFAULT_GROUP_POLICY = "mention"
 
 
 def _env_mode() -> str:
@@ -32,6 +40,25 @@ def _env_mode() -> str:
 def _env_dm_policy() -> str:
     policy = (os.environ.get("FEISHU_DM_POLICY") or DEFAULT_DM_POLICY).strip().lower()
     return policy if policy in DM_POLICIES else DEFAULT_DM_POLICY
+
+
+def _env_group_policy() -> str:
+    policy = (os.environ.get("FEISHU_GROUP_POLICY") or DEFAULT_GROUP_POLICY).strip().lower()
+    return policy if policy in GROUP_POLICIES else DEFAULT_GROUP_POLICY
+
+
+def _domain_param(params: dict[str, Any]) -> str:
+    domain = str(params.get("domain") or "feishu").strip().lower()
+    if domain not in DOMAINS:
+        raise RpcError(Code.INVALID_PARAMS, f"domain 只能是：{'、'.join(DOMAINS)}")
+    return domain
+
+
+def _require_http(ctx: AppContext) -> HttpClient:
+    """取出网客户端；没装配就如实报「未配置」，不去直接 import httpx。"""
+    if ctx.http is None:
+        raise RpcError(Code.NOT_CONFIGURED, "出网客户端未装配（应用上下文缺少 HttpClient）")
+    return ctx.http
 
 
 @method("feishu.status")
@@ -156,3 +183,83 @@ def feishu_pairing_revoke(ctx: AppContext, params: dict[str, Any]) -> dict[str, 
     if not user_id:
         raise RpcError(Code.INVALID_PARAMS, "缺参数：user_id")
     return {"ok": True, "removed": pairing.revoke_user(ctx.db, user_id)}
+
+
+# --------------------------------------------------------------------- 联网自动建应用（docs/18 §③）
+
+#: `begin` 里 `archetype` 等固定参数的出处（照 Hermes adapter.py:3931-3933）。
+#: 这里不复述常量，直接引用 `fetch/feishu_onboard.py` 的定义，避免两处漂移。
+
+
+@method("feishu.onboard.begin")
+def feishu_onboard_begin(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """发起设备码注册：回 `qr_url`（飞书服务端签发的 `verification_uri_complete` + `from`/`tp`）。
+
+    **不伪造设备码**：`qr_url` / `user_code` 都来自飞书接口的真实回包
+    （照 Hermes `_begin_registration`，adapter.py:3929-3942）。`from`/`tp` 可配置。
+    """
+    params = _params(params)
+    domain = _domain_param(params)
+    from_ = str(params.get("from") or feishu_onboard.DEFAULT_REGISTRATION_FROM)
+    tp = str(params.get("tp") or feishu_onboard.DEFAULT_REGISTRATION_TP)
+    try:
+        begin = feishu_onboard.begin_registration(
+            _require_http(ctx), domain=domain, from_=from_, tp=tp
+        )
+    except feishu_onboard.OnboardError as exc:
+        raise RpcError(Code.SERVICE_UNAVAILABLE, str(exc)) from exc
+    return {
+        "device_code": begin.device_code,
+        "qr_url": begin.qr_url,
+        "user_code": begin.user_code,
+        "interval": begin.interval,
+        "expire_in": begin.expire_in,
+    }
+
+
+@method("feishu.onboard.poll")
+def feishu_onboard_poll(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """轮询注册结果：成功则**把凭据直接写进 `.env`**，只回非密钥字段。
+
+    **密钥只写不回读**：`client_secret` 由本方法落 `.env`（+ 同步 `os.environ`），
+    **绝不放进返回值**；返回值里只有 `app_id`（用户自己的应用标识，非密钥，Hermes 也会打印）
+    与 `open_id`。未完成/取消/超时 → `{ok:false, reason}`（不抛异常，便于向导回退手工）。
+    """
+    params = _params(params)
+    device_code = str(params.get("device_code") or "").strip()
+    if not device_code:
+        raise RpcError(Code.INVALID_PARAMS, "缺参数：device_code")
+    domain = _domain_param(params)
+    interval = int(params.get("interval") or 5)
+    expire_in = int(params.get("expire_in") or 600)
+    result = feishu_onboard.poll_registration(
+        _require_http(ctx),
+        device_code=device_code,
+        interval=interval,
+        expire_in=expire_in,
+        domain=domain,
+    )
+    if result is None:
+        return {"ok": False, "reason": "未在有效期内完成创建（用户取消或超时）"}
+    _write_registration_credentials(result)
+    return {
+        "ok": True,
+        "app_id": result.app_id,
+        "domain": result.domain,
+        "open_id": result.open_id,
+    }
+
+
+def _write_registration_credentials(result: feishu_onboard.RegistrationResult) -> None:
+    """把自动创建拿到的凭据写进 `.env`（App Secret 只写不回读）。"""
+    from scholarscout import paths, settings_io
+
+    values = {
+        "FEISHU_APP_ID": result.app_id,
+        "FEISHU_APP_SECRET": result.app_secret,
+        "FEISHU_DOMAIN": result.domain,
+    }
+    settings_io.write_env(paths.home() / ".env", values)
+    for key, value in values.items():
+        if value:
+            os.environ[key] = value

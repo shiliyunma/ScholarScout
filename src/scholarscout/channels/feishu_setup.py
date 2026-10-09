@@ -8,9 +8,12 @@
 三处**与参照的有意差异**（docs/18 §③，都是本项目的约束逼出来的，写清不掩盖）：
 
 1. 入口是子命令 **`scout.py --setup-feishu`**，不是"setup 菜单第 12 项"；
-2. **不联网** → 不做"扫码自动建应用 / 轮询拿凭据"，只打印官网入口 + launcher 链接**模板**
-   （`user_code` 用显式占位符，**绝不伪造设备码**），随后走手工填凭据
-   （照 Hermes QR 失败时的回退：`QR did not complete. Continuing with manual input.`，adapter.py:4188）；
+2. **联网自动建应用已实现（P1）**：走 `feishu.onboard.begin` / `feishu.onboard.poll`
+   （经 `fetch/http.py` 出网，照 Hermes `_begin_registration` / `_poll_registration`，
+   `adapter.py:3929-3990`）→ 打印飞书**服务端签发**的链接 → 轮询拿凭据
+   （**App Secret 由 RPC 直接写 `.env`，向导不接触**）。**联网失败/无出网客户端时回退手工填凭据**
+   （照 Hermes QR 失败回退 `QR setup did not complete. Continuing with manual input.`，`adapter.py:4188`），
+   **绝不伪造设备码**；
 3. 配对**方向相反**：Hermes 是"机器人生成码给未知用户"（run_inbound.py:88），
    本项目是"向导生成本地码 → 用户把码发给机器人 → 渠道层捕获 openid → 向导校验批准"
    —— 这样 openid 自动落库，用户不必手抄。
@@ -49,6 +52,11 @@ Dispatch = Callable[..., Any]
 #: 连接模式（与参照一致的两个选项）
 _MODE_OPTIONS = ("webhook（本项目渠道层已实现）", "websocket（本项目渠道层尚未实现，仅记录）")
 _MODE_VALUES = ("webhook", "websocket")
+#: 创建方式（照参照：扫码自动 / 手工）
+_CREATE_OPTIONS = (
+    "扫码/链接自动创建（联网；本机实测可用，失败则回退手工）",
+    "手工填写 App ID 与 App Secret",
+)
 #: DM 授权（照参照体验的三选一，默认第 1 项）
 _DM_OPTIONS = ("使用配对审批（推荐）", "放行全部私聊", "只允许白名单里的用户")
 _DM_VALUES = ("pairing", "all", "allowlist")
@@ -100,6 +108,54 @@ def _tick(label: str, ok: bool) -> str:
     return f"  {'✓' if ok else '·'} {label}"
 
 
+def _try_auto_create(
+    *,
+    ctx: AppContext,
+    say: Say,
+    dispatch_fn: Dispatch,
+    domain: str,
+    from_: str,
+    tp: str,
+) -> dict[str, Any] | None:
+    """联网自动建应用：`feishu.onboard.begin`（拿服务端签发链接）→ `feishu.onboard.poll`。
+
+    照 Hermes `_qr_register_inner`（adapter.py:4086-4109）：init → begin → 打印链接 → poll →
+    成功即回凭据。**失败不阻塞**：任何异常/未完成都打印原因并返回 `None`，向导继续走手工填凭据
+    （照 Hermes 的 QR 失败回退文案，adapter.py:4188）。凭据写盘在 RPC 里完成，向导不接触 App Secret。
+    """
+    say("正在联网创建飞书应用（Connecting to Feishu / Lark…）")
+    try:
+        begin = dispatch_fn(
+            ctx, "feishu.onboard.begin", {"domain": domain, "from": from_, "tp": tp}
+        )
+    except RpcError as exc:
+        say(f"自动建应用未开始：{exc} —— 转手工填凭据。")
+        return None
+    say("用手机飞书打开下面这个链接完成创建（凭据会自动回填，无需手抄）：")
+    say(f"    {begin['qr_url']}")
+    say(f"   user_code {begin['user_code']}｜{int(begin['expire_in']) // 60} 分钟内有效")
+    say("创建完成后请回到这里，正在等待结果（Fetching configuration results…）")
+    try:
+        result = dispatch_fn(
+            ctx,
+            "feishu.onboard.poll",
+            {
+                "device_code": begin["device_code"],
+                "interval": begin["interval"],
+                "expire_in": begin["expire_in"],
+                "domain": domain,
+            },
+        )
+    except RpcError as exc:
+        say(f"等待结果时出错：{exc} —— 转手工填凭据。")
+        return None
+    if not result.get("ok"):
+        say(f"自动建应用未完成（{result.get('reason', '未知原因')}）—— 转手工填凭据。")
+        return None
+    say(f"✓ 已自动创建并写入凭据（App ID: {result['app_id']}，域名：{result['domain']}）")
+    return result
+
+
 def _obtain_openid(
     *, ask: Ask, say: Say, ctx: AppContext, dispatch_fn: Dispatch, code: str
 ) -> str | None:
@@ -135,10 +191,13 @@ def run_setup(
     open_url: OpenUrl = _default_open_url,
     dispatch_fn: Dispatch = dispatch,
     reconfigure: bool | None = None,
-    from_: str = "scholarscout",
-    tp: str = "scholarscout",
+    from_: str = "",
+    tp: str = "",
 ) -> int:
     """跑一遍向导。返回 0=完成，非 0=失败/取消。"""
+    # `from`/`tp` 可配置：显式参数优先，其次环境变量，最后默认（docs/18 §② 标 unknown，只当参数）
+    from_ = (from_ or feishu.registration_from_env()).strip() or feishu.DEFAULT_REGISTRATION_FROM
+    tp = (tp or feishu.registration_tp_from_env()).strip() or feishu.DEFAULT_REGISTRATION_TP
     say("=== ScholarScout 飞书接入向导 ===")
     try:
         # ---- 0. 已配置则先确认 ----
@@ -151,16 +210,7 @@ def run_setup(
             return 0
 
         # ---- 1. 创建方式二选一（照参照）----
-        method = _prompt_choice(
-            ask,
-            say,
-            "如何创建机器人？",
-            (
-                "扫码/链接自动创建（需联网；本版打印入口与链接模板后转手工填凭据）",
-                "手工填写 App ID 与 App Secret（推荐）",
-            ),
-            0,
-        )
+        method = _prompt_choice(ask, say, "如何创建机器人？", _CREATE_OPTIONS, 0)
 
         # ---- 2. 域名（feishu / lark）----
         domain_idx = _prompt_choice(
@@ -168,28 +218,39 @@ def run_setup(
         )
         domain = "lark" if domain_idx == 1 else "feishu"
 
-        # ---- 3. 打印（可选打开）创建入口 + launcher 链接模板 ----
+        # ---- 3. 创建入口：自动（联网）或手工 ----
         entry = feishu.open_entry_url(domain)
-        say(f"飞书开放平台入口：{entry}")
-        say("在后台创建应用 → 开启机器人能力 → 复制 App ID / App Secret。")
-        say(
-            f"（参照体验里的直建页链接形如）{feishu.launcher_url('<USER_CODE>', from_=from_, tp=tp, domain=domain)}"
-        )
-        say("  真 user_code 由飞书的设备码注册接口签发；本版不联网，故只打印模板、不生成设备码。")
-        if _confirm(ask, "现在用浏览器打开官网入口？", default=True):
-            say("  已打开浏览器。" if open_url(entry) else "  打不开就手动复制上面的链接。")
+        created: dict[str, Any] | None = None
         if method == 0:
-            say("（本版不联网，无法自动建应用 —— 继续走手工填凭据，与参照的 QR 失败回退一致。）")
+            created = _try_auto_create(
+                ctx=ctx, say=say, dispatch_fn=dispatch_fn, domain=domain, from_=from_, tp=tp
+            )
+        if created is None:
+            # 手工那条路（自动失败也落这里）：打印官网入口 + launcher 模板（**不伪造设备码**）
+            say(f"飞书开放平台入口：{entry}")
+            say("在后台创建应用 → 开启机器人能力 → 复制 App ID / App Secret。")
+            say(
+                "（参照体验里的直建页链接形如）"
+                f"{feishu.launcher_url('<USER_CODE>', from_=from_, tp=tp, domain=domain)}"
+            )
+            say("  真 user_code 由飞书的设备码注册接口签发；手工这条路不生成设备码。")
+            if _confirm(ask, "现在用浏览器打开官网入口？", default=True):
+                say("  已打开浏览器。" if open_url(entry) else "  打不开就手动复制上面的链接。")
 
         # ---- 4. 凭据（只写 .env，不回显）----
-        app_id = str(ask("App ID：") or "").strip()
-        if not app_id:
-            say("已取消：没有 App ID 无法接入。")
-            return 2
-        app_secret = str(ask_secret("App Secret（输入不回显）：") or "").strip()
-        if not app_secret:
-            say("已取消：没有 App Secret 无法接入。")
-            return 2
+        if created is not None:
+            app_id = str(created["app_id"])
+            domain = str(created.get("domain") or domain)
+            app_secret = ""  # 密钥已由 feishu.onboard.poll 直接写进 .env；向导不接触它
+        else:
+            app_id = str(ask("App ID：") or "").strip()
+            if not app_id:
+                say("已取消：没有 App ID 无法接入。")
+                return 2
+            app_secret = str(ask_secret("App Secret（输入不回显）：") or "").strip()
+            if not app_secret:
+                say("已取消：没有 App Secret 无法接入。")
+                return 2
 
         # ---- 5. 连接模式 ----
         mode_idx = _prompt_choice(ask, say, "连接模式：", _MODE_OPTIONS, 0)
@@ -207,15 +268,15 @@ def run_setup(
         else:
             say("  注意：本项目渠道层目前只实现了 webhook，websocket 会被记录下来但暂不会真连。")
 
-        _write_env(
-            {
-                "FEISHU_APP_ID": app_id,
-                "FEISHU_APP_SECRET": app_secret,
-                "FEISHU_DOMAIN": domain,
-                "FEISHU_CONNECTION_MODE": connection_mode,
-                **extra,
-            }
-        )
+        env_values = {
+            "FEISHU_APP_ID": app_id,
+            "FEISHU_DOMAIN": domain,
+            "FEISHU_CONNECTION_MODE": connection_mode,
+            **extra,
+        }
+        if app_secret:
+            env_values["FEISHU_APP_SECRET"] = app_secret
+        _write_env(env_values)
         say("✓ 凭据已写入 .env（App Secret 只写不读、不回显）")
 
         # ---- 6. 尝试拉起渠道层 ----
