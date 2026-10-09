@@ -10,9 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from scholarscout.fetch.http import FetchError
 from scholarscout.providers.arxiv import ArxivProvider
-from scholarscout.providers.base import Query, dedupe_cards
+from scholarscout.providers.base import dedupe_cards
 from scholarscout.providers.bing import BingProvider
 from scholarscout.providers.brave import BraveProvider
 from scholarscout.providers.duckduckgo import DuckDuckGoProvider
@@ -31,6 +30,7 @@ from scholarscout.providers.settings import (
 )
 from scholarscout.providers.tavily import TavilyProvider
 from scholarscout.runtime.registry import ToolSpec
+from scholarscout.runtime.subtasks import fetch_many
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.ingest import upsert_source
 
@@ -199,38 +199,20 @@ def research_search(
     missing = unavailable_providers(ctx)
     per_provider = max(1, min(int(limit or settings.per_provider_limit), 50))
 
-    status: list[dict[str, Any]] = []
-    collected: list[Any] = []
-    for name in wanted:
-        provider = providers.get(name)
-        if provider is None:
-            if name in KNOWN:
-                status.append(
-                    {
-                        "provider": name,
-                        "ok": False,
-                        "n": 0,
-                        "error": missing.get(name, "unavailable"),
-                    }
-                )
-            else:
-                status.append({"provider": name, "ok": False, "n": 0, "error": "unknown_provider"})
-            continue
-        interval = settings.interval_for(name, provider.min_interval_s)
-        try:
-            found = provider.search(
-                Query(text=query, limit=per_provider, year_from=year_from, sort=sort)
-            )
-        except FetchError as exc:
-            status.append({"provider": name, "ok": False, "n": 0, "error": f"{exc.kind}: {exc}"})
-            continue
-        except Exception as exc:
-            status.append(
-                {"provider": name, "ok": False, "n": 0, "error": f"{type(exc).__name__}: {exc}"}
-            )
-            continue
-        status.append({"provider": name, "ok": True, "n": len(found), "interval_s": interval})
-        collected.extend(found)
+    # 子 Agent P0（docs/16 §3.3）：并行 provider 扇出 —— 只并行出网，不并发调模型。
+    # 逐条返回结果，单来源失败不阻塞其它；status 的键集与旧的顺序循环逐字一致。
+    outcomes = fetch_many(
+        ctx,
+        providers,
+        wanted=wanted,
+        query=query,
+        per_provider=per_provider,
+        year_from=year_from,
+        sort=sort,
+        missing=missing,
+    )
+    status: list[dict[str, Any]] = [outcome.as_status() for outcome in outcomes]
+    collected: list[Any] = [card for outcome in outcomes for card in outcome.cards]
 
     cards = dedupe_cards(collected)
     if year_from is not None:

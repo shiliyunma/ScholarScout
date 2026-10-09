@@ -197,26 +197,32 @@ Hermes 的记忆有**两层**：内置的**文件账本**（默认，永远在�
 
 三个候选，按"收益/成本"排序落地（可任一单独做）：
 
-#### MVP ▶ P0：多来源并行抓取（`runtime/subtasks.py::fetch_many`）｜≈1–2 天
-- **它替代什么**：Hermes 里"并行子 agent 各抓几条"的做法。这里**不是 agent**，就是**一个函数**在线程池里把 N 条来源的取正文+摘要并行跑。
-- **层与落点**：`runtime/subtasks.py`（新文件，runtime 层；命名刻意用 `subtasks` 不用 `agents`，明示"不是 agent"）；被 `tools/source_fetch.py` 或 loop 内部调用。
-- **接口形状**：
+#### MVP ▶ P0：多来源并行检索（`runtime/subtasks.py::fetch_many`）｜**已落地**
+- **它替代什么**：`research.search` 里"逐个来源顺序检索"的循环 —— 换成线程池并发扇出（Hermes 里"并行子 agent 各抓一路"的**思想**，但不是 agent）。
+- **层与落点**：`runtime/subtasks.py`（新文件，runtime 层；命名刻意用 `subtasks` 不用 `agents`，明示"不是 agent"）；**只在 `tools/research_search.py::research_search` 这一处被调用**（替换原 `for name in wanted:` 顺序循环）。
+- **接口形状**（provider 维度，不是 source_id 维度）：
   ```python
   # runtime/subtasks.py
   from dataclasses import dataclass
-  @dataclass
-  class FetchOutcome:
-      source_id: str; ok: bool; doc_id: str | None; summary_id: str | None; error: str | None
+  @dataclass(frozen=True)
+  class ProviderFetch:
+      provider: str; ok: bool; n: int
+      error: str | None; interval_s: float | None; latency_ms: int | None
+      cards: tuple[SourceCard, ...] = ()
+      def as_status(self) -> dict: ...   # 键集与旧顺序循环逐字一致
 
-  def fetch_many(ctx: ToolContext, source_ids: list[str], *, concurrency: int = 3) -> list[FetchOutcome]:
-      """线程池并行抓取（stdlib concurrent.futures.ThreadPoolExecutor）。
-      每个任务独立限速（复用 fetch/http.py 的退避）；某个失败不阻塞其他。"""
+  def fetch_many(ctx: ToolContext, providers: Mapping[str, Any], *, wanted: Sequence[str],
+                 query: str, per_provider: int, year_from: int | None = None,
+                 sort: str = "relevance", missing: Mapping[str, str] | None = None,
+                 concurrency: int | None = None) -> list[ProviderFetch]:
+      """线程池并行检索（stdlib concurrent.futures.ThreadPoolExecutor）。
+      按 wanted 顺序逐条返回；单来源失败就地兜住、不阻塞其它；**只并行出网，不并发调模型**。"""
   ```
-- **成本控制**：`concurrency` 默认 3、上限写死 4；总数受 `runtime.max_tool_calls_per_turn` 之外的**独立小额度**约束（新增 `runtime.max_parallel_fetches`，默认 3）。**不并发调模型**（摘要仍串行或受同一额度）——避免费用尖峰。
-- **与现有 7 工具的关系**：`source.fetch` 单条路径不变；新增"批量"是**内部函数**（不注册成模型可见工具，避免 +声明 token 与改哈希）。
-- **RPC/事件对接**：不新增 `chat.*` 事件；每条结果仍走 `tool_traces`（`state/traces.record_trace`），可加 `parent_turn_id`+`sub_index` 便于观测。
-- **落库/可观测**：`trace.list`（`docs/01 §3.3`）已能取数；`docs/05` 加指标"并行抓取成功率""并行抓取平均时延"。
-- **验证**：单测用离线 fixture（`tests/fixtures/`）注入一个"慢 provider"，断言并发比串行快且失败隔离。
+- **成本控制**：并发上限读 `runtime.max_parallel_fetches`（默认 3），`concurrency` 参数可临时覆盖。**不并发调模型**（摘要/判权仍归主循环）——避免费用尖峰。实际限速仍由 `fetch/http.py` 按 host 串行化，调大并发也不会绕过任何来源的 `min_interval_s`。
+- **与现有 7 工具的关系**：工具数**不变**；`fetch_many` 是**内部函数**，不注册成模型可见工具、不动 `prompts.py`/`tools/__init__.py`（保住 `system_prompt_hash`）。
+- **RPC/事件对接**：不新增 `chat.*` 事件；`provider_status` 的键集与顺序保持不变（既有契约测试钉住）。
+- **落库/可观测**：复用 `tool_traces` 现有列，**不新建表**；`docs/05 §3.3` 加两条指标"并行抓取成功率""并行抓取平均时延"。
+- **验证**：`tests/runtime/test_subtasks.py`——并发上限生效、单来源失败不影响其它、异常不挂死；既有 `tests/tools/test_research_search.py` 全部保持绿。
 
 #### 进阶 ▶ P1：顺序子任务（ReWOO 式"先规划后执行"）｜≈2–3 天
 - **它替代什么**：Hermes 的"orchestrator→leaf"委派。这里**顺序**跑 K 个"mini-loop"，每个子任务**独立消息列表 + 独立小预算**，只把**最终文本**并回主 loop（复刻"父只见 summary"的隔离语义，但不并发、不开进程）。
