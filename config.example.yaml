@@ -35,6 +35,8 @@ runtime:
   # 每个子任务是一次隔离的 mini-loop（独立 messages + 小预算），只把最终文本并回主 loop；
   # 开着一定会多花模型调用。整批成本由总额度池兜住（默认且上限 = max_tool_calls_per_turn 的 1/2）。
   # 记账 usage_records.purpose="subtask"，可在 session.usage 里看到这笔开销。
+  # 开启后模型可见工具 research.delegate（docs/01 §5.18）才可用：它把互不依赖的子问题交给子任务，
+  # 子任务**实际消耗的工具调用数从本轮主循环的剩余预算里扣**（同一本账）；关着时该工具回 ok=false。
   subtask_enabled: false
   # 飞书渠道回调监听（入口层，docs/17 §3）：**默认关**。
   # 开启后用标准库 http.server 监听本地端口等飞书 POST 事件（只绑 127.0.0.1）。

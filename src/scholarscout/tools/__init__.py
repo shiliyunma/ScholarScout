@@ -13,6 +13,7 @@ def register_tools() -> list[str]:
     """注册本版所有工具，返回注册后的工具名列表。"""
     from scholarscout.runtime import registry
     from scholarscout.tools import (
+        delegate,
         note_save,
         research_search,
         route_plan,
@@ -29,4 +30,5 @@ def register_tools() -> list[str]:
     route_plan.register()
     route_revise.register()
     note_save.register()
+    delegate.register()
     return registry.registered_names()

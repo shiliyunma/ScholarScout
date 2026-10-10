@@ -30,7 +30,7 @@ from scholarscout.providers.base import Query, SourceCard
 from scholarscout.providers.llm import ChatReply, LlmError, ToolCall
 from scholarscout.providers.settings import KNOWN
 from scholarscout.runtime import context_budget, registry
-from scholarscout.runtime.toolctx import ToolContext
+from scholarscout.runtime.toolctx import ToolContext, TurnBudget
 from scholarscout.state import traces
 
 #: 线程名前缀：真机排查（卡住/超时）时 ``threading.enumerate()`` 一眼能认出是谁
@@ -499,3 +499,34 @@ def run_subtasks(
         results.append(result)
         remaining -= len(result.tool_calls)
     return results
+
+
+# ==================================================== 子 Agent P1 工具化：模型可见的委派入口
+#
+# `tools/delegate.py`（规范名 `research.delegate`，docs/01 §5.18）在这里取两样东西：
+# ① 委派可用的**额度池**（= min(P1 上限, 主账剩余)）；② 跑完把消耗**回写**到主账。
+
+#: 一次委派最多接受几个子问题（schema 与 handler 双重卡；>3 直接 ok=false）
+MAX_DELEGATE_GOALS = 3
+
+
+def delegate_budget(ctx: ToolContext, ledger: TurnBudget | None) -> int:
+    """委派可用的工具预算 = ``min(P1 上限, 主账剩余)``。
+
+    - ``P1 上限`` = :func:`_total_budget`（主轮预算的 1/2，子任务不该吃掉一半以上）；
+    - ``ledger`` 是本轮主循环的 :class:`TurnBudget`（**同一本账**）；为 ``None`` 时（脚本直调、
+      无主循环）退化为 P1 上限，行为与引入委托工具前一致；
+    - 结果可能为 0 —— 此时委派应**拒绝**（``ok=false`` + "额度不足"），绝不绕过去。
+    """
+    cap = _total_budget(ctx, None)
+    if ledger is None:
+        return cap
+    return max(0, min(cap, ledger.remaining))
+
+
+def charge_budget(ledger: TurnBudget | None, results: Sequence[SubTaskResult]) -> int:
+    """把子任务**实际消耗**的工具调用数回写到主账，返回扣掉的数（可测、可复现）。"""
+    consumed = sum(len(result.tool_calls) for result in results)
+    if ledger is not None and consumed:
+        ledger.spend(consumed)
+    return consumed

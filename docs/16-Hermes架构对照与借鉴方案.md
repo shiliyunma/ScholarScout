@@ -248,6 +248,10 @@ Hermes 的记忆有**两层**：内置的**文件账本**（默认，永远在�
   `chat.subtask_start {turn_id, seq, index, goal}`、`chat.subtask_done {turn_id, seq, index, stop_reason, refs}`。`docs/01 §4` 事件表补两行 + 契约测试 `tests/contract/test_stream_events.py` 补断言。
 - **落库/可观测**：每个子任务的工具调用落 `tool_traces`（`tool_name` 前缀 `subtask:`，或加 `parent_turn_id`/`sub_index` 列——**优先复用现有列**，不轻易加表）；看板 `research.board`（`docs/01 §5.10`）可选加一节"子任务"。
 - **验证**：`tests/runtime/test_subtasks.py`——预算上限生效、隔离（子任务不污染主 messages）、失败隔离（一个子任务异常不影响其他）；端到端用 `eval/sets/e3_tasks.jsonl` 对比"总 token"必须落在预算内。
+- **落地与工具化（2026-10-10）**：P1 底层已入库（提交 `2be178f`）。本轮把它做成**模型可见工具**
+  `research.delegate`（契约 `docs/01 §5.18`）——额度改为**与主循环同一本账**（`runtime/toolctx.py:TurnBudget`：
+  主循环每次工具 `spend(1)`，子任务跑完把实际消耗 `spend` 回同一对象），开关关 / 额度尽 / 参数非法 /
+  内部异常四种失败一律 `ok=false` + 可读原因；测试 `tests/tools/test_delegate.py`。
 
 #### 进阶 ▶ P2：审阅 / 评分拆成独立子步骤｜≈1–2 天
 - **它替代什么**：Hermes 的"评审 fork"（`agent/background_review.py` 的后台复盘）。这里做成**一次独立的只读核查调用**。

@@ -87,6 +87,25 @@ RESEARCH_STATE_RULE = """\
 """
 
 
+#: 委派规矩：把 ``research.delegate``（docs/01 §5.18）的存在、适用面与额度口径写进系统提示词。
+#: **这一段进 `build_system_prompt` → 改它即改 `system_prompt_hash`**（换哈希＝换实验臂）。
+#: 为什么必须写进提示词、而不只靠工具描述：工具声明只说"它是什么"，而"什么时候该用、花的是谁的钱、
+#: 关着时会怎样"是**流程纪律**，与流程/预算那两段同属一类 —— 只写在 schema 里模型不会守。
+DELEGATE_RULE = """\
+## 什么时候把独立子问题交给子任务（`research.delegate`）
+
+1. **适用面**：当你面对的是 **2-3 个互不依赖**的调研子问题（谁也决定不了谁），且主流程本轮还有工具预算时，
+   可以调 `research.delegate`（一次最多 3 个目标）把它们分别探下去；每个子问题跑一个隔离的小循环，
+   只把结论带回来。**互不依赖**是关键：每个子问题都要能各自单独回答。
+2. **子问题怎么写**：一条一句、独立可答的短句（例："XX 方法的代表论文有哪些""开源实现里哪些可复现"），
+   不要把整句任务照抄进去，也不要写"帮我看看"这种没有边界的。
+3. **花的是本轮的额度**：子任务的工具消耗**从本轮主预算里扣** —— 委派占用的次数会减少主流程后面可用的
+   工具调用次数。所以别一上来就委派，把额度留给最该分别探开的几个子问题；预算不够时它会回"额度不足"，
+   那就**用主流程自己做**，不要反复重试。
+4. **默认关**：这个能力受 `runtime.subtask_enabled` 控制。没开启时它会如实回 `ok=false` 并说明原因，
+   看到就换主流程，**不要重试**。"""
+
+
 #: 人格/风格档（D4）。**默认档是空串** —— 这样"没改过设置"的提示词与本功能上线前**逐字节相同**，
 #: 实验臂哈希不变、E3 那批数字仍然可比。改风格＝改实验臂，报告里必须写明用了哪一档。
 STYLE_PROMPTS: dict[str, str] = {
@@ -141,6 +160,8 @@ def build_system_prompt(
         parts.append(CLARIFY_RULE)
     # A1/A2/A7：怎么用每轮注入的「研究台账」（放最后，作为本轮流程的补充说明）
     parts.append(RESEARCH_STATE_RULE)
+    # 委派规矩：告诉模型 research.delegate 的存在、适用面与额度口径（改了它就改了 system_prompt_hash）
+    parts.append(DELEGATE_RULE)
     if STYLE_PROMPTS[chosen]:
         parts.append(STYLE_PROMPTS[chosen])
     active = ", ".join(toolsets or ["research"])

@@ -23,7 +23,7 @@ from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import ChatReply, LlmClient, LlmError, ToolCall
 from scholarscout.runtime import compaction, context_budget, registry, research_state
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
-from scholarscout.runtime.toolctx import ToolContext
+from scholarscout.runtime.toolctx import ToolContext, TurnBudget
 from scholarscout.state import sessions, traces
 from scholarscout.state.db import Database
 
@@ -101,8 +101,19 @@ class TurnContext:
     def is_cancelled(self, turn_id: str) -> bool:
         return turn_id in self.cancelled
 
-    def tool_context(self, *, session_id: str, turn_id: str) -> ToolContext:
-        """给工具用的上下文（注入库、配置、出网、模型与本次会话/轮次标识）。"""
+    def tool_context(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        budget: TurnBudget | None = None,
+        emit: Emitter | None = None,
+    ) -> ToolContext:
+        """给工具用的上下文（注入库、配置、出网、模型与本次会话/轮次标识）。
+
+        ``budget`` 是本轮的工具预算账（:class:`scholarscout.runtime.toolctx.TurnBudget`）——
+        子任务工具（``research.delegate``）据此**从主预算里扣**；``emit`` 让它能发 ``chat.subtask_*``。
+        """
         return ToolContext(
             db=self.db,
             config=self.config,
@@ -110,6 +121,8 @@ class TurnContext:
             llm=self.llm,
             session_id=session_id,
             turn_id=turn_id,
+            budget=budget,
+            emit=emit,
         )
 
 
@@ -296,6 +309,9 @@ def run_turn(
     # 轮次预算 = 工具预算 + 1：**最后那一轮不给工具**，专门留给模型把结果讲成人话。
     # 否则模型刚好用满工具预算时会被判 tool_limit，最终答案直接丢掉（踩过）。
     tool_budget = max(1, ctx.config.runtime.max_tool_calls_per_turn)
+    # 本轮工具预算账：主循环与子任务（research.delegate）**共用同一本账** ——
+    # 子任务内部消耗的工具调用数会 spend 回这个对象，于是主循环的剩余预算跟着变少。
+    budget = TurnBudget(tool_budget)
     refs_total: dict[str, list[str]] = {}
     try:
         # 先把"这个会话正在跑哪一轮"记下来：界面点「停止」时按会话找到它（整轮结束前拿不到 turn_id）
@@ -304,7 +320,7 @@ def run_turn(
             if ctx.is_cancelled(turn_id):
                 stop_reason = "cancelled"
                 break
-            tools_for_round = None if (stop_hinted or len(executed) >= tool_budget) else tool_decls
+            tools_for_round = None if (stop_hinted or budget.remaining <= 0) else tool_decls
             reply = ctx.llm.chat(messages, tools=tools_for_round)
             _accumulate_usage(usage_total, reply)
             # **每次模型调用立即记账**：原来只在整轮结束记一次，结果是"被停止或中断的轮次
@@ -358,7 +374,7 @@ def run_turn(
             )
             del assistant_row  # 已落库，无需再用
 
-            if len(executed) + len(reply.tool_calls) > tool_budget:
+            if budget.remaining < len(reply.tool_calls):
                 stop_reason = "tool_limit"
                 _emit(
                     emit,
@@ -368,6 +384,8 @@ def run_turn(
                 break
 
             for call in reply.tool_calls:
+                # 每执行一次工具就从本轮预算账里扣 1（子任务工具的额外消耗由 handler 自己回写）。
+                budget.spend(1)
                 result_text, tool_refs, canonical, tool_ok = _execute_tool(
                     ctx,
                     session_id,
@@ -375,6 +393,7 @@ def run_turn(
                     len(executed),
                     call,
                     emit,
+                    budget=budget,
                     seen_source_ids=seen_source_ids,
                 )
                 _merge_refs(refs_total, tool_refs)
@@ -537,6 +556,7 @@ def _execute_tool(
     call: ToolCall,
     emit: Emitter | None,
     *,
+    budget: TurnBudget | None = None,
     seen_source_ids: set[str] | None = None,
 ) -> tuple[str, dict[str, Any], str, bool]:
     """执行一次工具调用，返回（喂回模型的文本, 该工具报出的 refs, 规范工具名, 是否成功）。
@@ -583,7 +603,7 @@ def _execute_tool(
 
     import time
 
-    tool_ctx = ctx.tool_context(session_id=session_id, turn_id=turn_id)
+    tool_ctx = ctx.tool_context(session_id=session_id, turn_id=turn_id, budget=budget, emit=emit)
     started = time.perf_counter()
     try:
         arguments = call.parsed_arguments()

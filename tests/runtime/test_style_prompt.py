@@ -18,9 +18,9 @@ from scholarscout.runtime.prompts import (
 )
 from scholarscout.settings_io import FIELDS, SettingsError
 
-#: 与 tests/runtime/test_prompt_arms.py 里的钉值一致（默认档不能变）
-GOLDEN_ON_DEMAND_HASH = "58c966149165"
-GOLDEN_AUTO_HASH = "fa8522427ff6"
+#: 与 tests/runtime/test_prompt_arms.py 里的钉值一致（加入 research.delegate 的委派规矩后更新）
+GOLDEN_ON_DEMAND_HASH = "beaa67c49be0"
+GOLDEN_AUTO_HASH = "1ab0c25756dc"
 
 
 def test_style_choices_and_prompt_texts_do_not_drift() -> None:

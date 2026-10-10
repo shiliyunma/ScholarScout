@@ -20,16 +20,21 @@ from scholarscout.runtime.prompts import (
 GOLDEN_AUTO_HASH_V1 = "af6f1b33e12c"
 #: **历史值**：默认档（按需）当时是 `f68b1b7abb03`
 GOLDEN_ON_DEMAND_HASH_V1 = "f68b1b7abb03"
-#: 现值（2026-10-07 加入 A1/A2/A7 的多轮规矩之后）。
-#: **注意**：E3 那批数字（覆盖率 100%、ungrounded 0%）是用 V1 跑的；引用时必须写明，
-#: 要拿新数字得按 docs/14 的口径重跑 E3。
-GOLDEN_AUTO_HASH = "fa8522427ff6"
-GOLDEN_ON_DEMAND_HASH = "58c966149165"
+#: **历史值**（2026-10-07 加入 A1/A2/A7 多轮规矩之后那版）：`58c966149165` / `fa8522427ff6`
+#:   —— 是 2026-10-08 引入 `research.delegate`（docs/01 §5.18）之前的现值。
+GOLDEN_AUTO_HASH_V2 = "fa8522427ff6"
+GOLDEN_ON_DEMAND_HASH_V2 = "58c966149165"
+#: 现值（2026-10-10 加入子任务 `research.delegate` 的「委派规矩」`DELEGATE_RULE` 之后）。
+#: **注意**：§5.17 那批 E3 数字（覆盖率 100%、ungrounded 0%）是更早的 V1 跑的；
+#: 要拿新数字得按 docs/05 的口径重跑 E3（本次**不重跑**）。
+GOLDEN_AUTO_HASH = "1ab0c25756dc"
+GOLDEN_ON_DEMAND_HASH = "beaa67c49be0"
 
 
 def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
     """对照臂必须逐字钉死，否则"自动 vs 按需"就不是单变量对照。"""
     assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V1, "提示词变过就得留痕（旧值仍在上面的常量里）"
+    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V2, "加入委派规矩又换了一次哈希，旧值要留痕"
     assert system_prompt_hash(build_system_prompt(auto_artifacts=True)) == GOLDEN_AUTO_HASH
 
 
