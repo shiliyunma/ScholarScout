@@ -13,14 +13,32 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 from scholarscout.config import RuntimeProfile
 from scholarscout.fetch.http import FetchError
 from scholarscout.providers.base import Query, SourceCard
+from scholarscout.providers.llm import LlmError
 from scholarscout.providers.settings import SearchSettings
-from scholarscout.runtime.subtasks import ProviderFetch, fetch_many
+from scholarscout.runtime import registry
+from scholarscout.runtime.registry import ToolSpec
+from scholarscout.runtime.subtasks import (
+    SUBTASK_SYSTEM_PROMPT,
+    ProviderFetch,
+    _total_budget,
+    fetch_many,
+    open_goals,
+    run_subtask,
+    run_subtasks,
+)
+from scholarscout.runtime.toolctx import ToolContext
+from scholarscout.state import sessions
+
+from ..conftest import StubLlm, reply, tool_call
 
 
 def _card(url: str) -> SourceCard:
@@ -227,3 +245,283 @@ def test_query_and_interval_are_passed_per_provider() -> None:
     assert seen[0].limit == 7
     assert outcomes[0].interval_s == 1.0  # 表里没有 p → fallback 到 provider.min_interval_s
     assert outcomes[0].latency_ms is not None and outcomes[0].latency_ms >= 0
+
+
+# ====================================================== 子 Agent P1：顺序子任务（ReWOO 式）
+#
+# 五件必须成立（任务卡与 docs/16 §3.3 P1）：
+# 1. **隔离** —— 子任务用独立的 messages，**不污染主会话的 messages 表**
+# 2. **预算封顶** —— 单个子任务不超过 max_tool_calls；整批不超过总额度池
+# 3. **失败隔离** —— 一个子任务炸了不影响其它
+# 4. **默认关** —— runtime.subtask_enabled=false 时不触发、不记账、不发事件
+# 5. **独立提示词** —— 用 SUBTASK_SYSTEM_PROMPT（不进而 system_prompt_hash 的装配）
+
+_ECHO_SCHEMA = {
+    "type": "object",
+    "properties": {"query": {"type": "string"}},
+    "additionalProperties": False,
+}
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry() -> Any:
+    registry.clear_registry()
+    yield
+    registry.clear_registry()
+
+
+def _register_echo(*, fail: bool = False) -> ToolSpec:
+    def handler(ctx: object, query: str = "") -> dict[str, Any]:
+        del ctx, query
+        if fail:
+            raise RuntimeError("工具炸了")
+        return {
+            "ok": True,
+            "data": {"items": [{"source_id": "src_1", "title": "T"}]},
+            "refs": {"source_ids": ["src_1"]},
+        }
+
+    return registry.register(
+        ToolSpec(
+            name="research.echo",
+            description="回显查询",
+            parameters=_ECHO_SCHEMA,
+            handler=handler,
+            toolset="research",
+        )
+    )
+
+
+def _tool_ctx(
+    config: Any,
+    db: Any,
+    llm: Any,
+    *,
+    session_id: str,
+    turn_id: str = "trn_1",
+    enabled: bool = True,
+    budget: int = 12,
+) -> ToolContext:
+    runtime = replace(config.runtime, max_tool_calls_per_turn=budget, subtask_enabled=enabled)
+    return ToolContext(
+        db=db,
+        config=replace(config, runtime=runtime),
+        llm=llm,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+
+
+def _message_count(db: Any, session_id: str) -> int:
+    row = db.query_one("SELECT count(*) AS n FROM messages WHERE session_id = ?", (session_id,))
+    return int(row["n"])
+
+
+# --------------------------------------------------------------- 1. 隔离
+
+
+def test_run_subtask_isolates_the_main_session_messages(config, db) -> None:
+    _register_echo()
+    session_id = sessions.create_session(db, model="stub-model")
+    before = _message_count(db, session_id)
+    stub = StubLlm(
+        reply("", tool_calls=[tool_call("research.echo", '{"query":"x"}')]),
+        reply("结论：见 src_1"),
+    )
+
+    result = run_subtask(_tool_ctx(config, db, stub, session_id=session_id), "子问题一")
+
+    # 主会话的 messages 表**一条都没多**（子任务全程用自建 messages）
+    assert _message_count(db, session_id) == before
+    # 子任务用的是自己的系统提示词 + 目标，而不是主提示词
+    assert stub.calls[0]["messages"][0] == {"role": "system", "content": SUBTASK_SYSTEM_PROMPT}
+    assert stub.calls[0]["messages"][1] == {"role": "user", "content": "子问题一"}
+    assert SUBTASK_SYSTEM_PROMPT not in stub.calls[0]["messages"][0]["content"].replace(
+        SUBTASK_SYSTEM_PROMPT, ""
+    )
+    assert result.text == "结论：见 src_1"
+    assert result.tool_calls == ["research.echo"]
+    assert result.refs == {"source_ids": ["src_1"]}
+    assert result.stop_reason == "completed"
+    # 工具轨迹落库、带 subtask: 前缀（与主循环的调用分得开）
+    row = db.query_one("SELECT tool_name, ok FROM tool_traces")
+    assert row["tool_name"] == "subtask:research.echo" and row["ok"] == 1
+
+
+def test_run_subtask_without_goal_is_a_noop(config, db) -> None:
+    session_id = sessions.create_session(db, model="stub-model")
+    result = run_subtask(_tool_ctx(config, db, StubLlm(), session_id=session_id), "   ")
+    assert result.stop_reason == "empty" and result.tool_calls == []
+
+
+# --------------------------------------------------------------- 2. 预算封顶
+
+
+def test_run_subtask_stops_at_the_tool_budget(config, db) -> None:
+    _register_echo()
+    session_id = sessions.create_session(db, model="stub-model")
+    stub = StubLlm(
+        reply("", tool_calls=[tool_call("research.echo", "{}", call_id="c1")]),
+        reply("", tool_calls=[tool_call("research.echo", "{}", call_id="c2")]),
+        reply("收口了"),
+    )
+
+    result = run_subtask(_tool_ctx(config, db, stub, session_id=session_id), "g", max_tool_calls=2)
+
+    assert result.tool_calls == ["research.echo", "research.echo"]
+    assert result.stop_reason == "completed"
+    # 轮次 = 工具预算 + 1：最后一轮**不给工具**（否则用满预算会被误判 tool_limit）
+    assert stub.calls[2]["tools"] is None
+
+
+def test_total_budget_pool_is_capped_at_half_the_main_budget(config, db) -> None:
+    session_id = sessions.create_session(db, model="stub-model")
+    ctx = _tool_ctx(config, db, StubLlm(), session_id=session_id, budget=4)
+    assert _total_budget(ctx, None) == 2  # 默认 = 主预算的 1/2
+    assert _total_budget(ctx, 99) == 2  # 显式给大了也夹到 1/2 上限
+    assert _total_budget(ctx, 1) == 1
+
+
+def test_run_subtasks_pool_stops_the_rest_with_budget(config, db) -> None:
+    _register_echo()
+    session_id = sessions.create_session(db, model="stub-model")
+    stub = StubLlm(
+        reply("", tool_calls=[tool_call("research.echo", "{}", call_id="a")]),
+        reply("A"),
+        reply("", tool_calls=[tool_call("research.echo", "{}", call_id="b")]),
+        reply("B"),
+    )
+
+    results = run_subtasks(
+        _tool_ctx(config, db, stub, session_id=session_id),
+        ["g1", "g2", "g3"],
+        per_task_budget=2,
+        total_budget=2,
+    )
+
+    assert [r.stop_reason for r in results] == ["completed", "completed", "budget"]
+    assert sum(len(r.tool_calls) for r in results) <= 2  # 总额度池封顶
+    assert results[2].tool_calls == []
+
+
+# --------------------------------------------------------------- 3. 失败隔离
+
+
+def test_subtask_tool_failure_is_reported_not_raised(config, db) -> None:
+    _register_echo(fail=True)
+    session_id = sessions.create_session(db, model="stub-model")
+    stub = StubLlm(
+        reply("", tool_calls=[tool_call("research.echo", "{}")]),
+        reply("工具失败也收口"),
+    )
+
+    result = run_subtask(_tool_ctx(config, db, stub, session_id=session_id), "g", max_tool_calls=2)
+
+    assert result.stop_reason == "completed"
+    assert result.text == "工具失败也收口"
+    row = db.query_one("SELECT ok FROM tool_traces")
+    assert row["ok"] == 0
+
+
+class _GoalLlm:
+    """按目标决定行为的桩：目标是 "bad" 就抛错，其余回一句结论。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def chat(self, messages: list[dict[str, Any]], *, tools: Any = None) -> Any:
+        self.calls.append({"messages": list(messages), "tools": tools})
+        goal = messages[1]["content"]
+        if goal == "bad":
+            raise LlmError("server", "炸了")
+        return reply(f"ok:{goal}")
+
+
+def test_one_failing_subtask_does_not_block_the_others(config, db) -> None:
+    session_id = sessions.create_session(db, model="stub-model")
+
+    results = run_subtasks(
+        _tool_ctx(config, db, _GoalLlm(), session_id=session_id), ["g1", "bad", "g2"]
+    )
+
+    assert [r.text for r in results] == ["ok:g1", "子任务模型调用失败：server: 炸了", "ok:g2"]
+    assert [r.stop_reason for r in results] == ["completed", "error", "completed"]
+
+
+# --------------------------------------------------------------- 4. 默认关
+
+
+def test_disabled_switch_does_not_trigger(config, db) -> None:
+    _register_echo()
+    session_id = sessions.create_session(db, model="stub-model")
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    results = run_subtasks(
+        _tool_ctx(config, db, StubLlm(), session_id=session_id, enabled=False),
+        ["g1", "g2"],
+        emit=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert results == []
+    assert events == []
+    assert db.query_one("SELECT count(*) AS n FROM usage_records")["n"] == 0
+
+
+def test_subtask_enabled_defaults_to_false() -> None:
+    assert RuntimeProfile().subtask_enabled is False
+
+
+# --------------------------------------------------------------- 事件与记账
+
+
+def test_subtask_events_come_in_start_done_pairs(config, db) -> None:
+    _register_echo()
+    session_id = sessions.create_session(db, model="stub-model")
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    run_subtasks(
+        _tool_ctx(config, db, StubLlm(reply("done")), session_id=session_id),
+        ["g1", "g2"],
+        per_task_budget=1,
+        total_budget=2,
+        emit=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert [kind for kind, _ in events] == [
+        "chat.subtask_start",
+        "chat.subtask_done",
+        "chat.subtask_start",
+        "chat.subtask_done",
+    ]
+    assert set(events[0][1]) == {"turn_id", "seq", "index", "goal"}
+    assert set(events[1][1]) == {"turn_id", "seq", "index", "stop_reason", "refs"}
+    assert events[0][1]["turn_id"] == "trn_1"
+    assert [events[i][1]["index"] for i in (0, 2)] == [0, 1]
+
+
+def test_subtask_usage_is_recorded_with_its_own_purpose(config, db) -> None:
+    _register_echo()
+    session_id = sessions.create_session(db, model="stub-model")
+
+    run_subtasks(_tool_ctx(config, db, StubLlm(reply("done")), session_id=session_id), ["g1"])
+
+    rows = [dict(r) for r in db.query("SELECT purpose, session_id FROM usage_records")]
+    assert rows and all(r["purpose"] == "subtask" for r in rows)
+    assert all(r["session_id"] == session_id for r in rows)
+
+
+# --------------------------------------------------------------- 子任务来源
+
+
+def test_open_goals_extracts_only_open_questions() -> None:
+    state = {
+        "questions": [
+            {"text": "已覆盖的", "status": "covered"},
+            {"text": "缺口的", "status": "open"},
+            {"text": "没回填状态的"},  # 不猜已覆盖 → 算 open
+            {"text": "   "},
+            "不是字典",
+        ]
+    }
+    assert open_goals(state) == ["缺口的", "没回填状态的"]
+    assert open_goals(None) == []

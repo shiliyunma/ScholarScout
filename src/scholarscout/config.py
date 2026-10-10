@@ -101,6 +101,12 @@ class RuntimeProfile:
     #: 只并行**出网**（provider.search），绝不并发调模型；实际限速仍由 `fetch/http.py`
     #: 按 host 串行化，所以这里调大不会绕过任何来源的 `min_interval_s`。
     max_parallel_fetches: int = 3
+    #: 子 Agent P1（docs/16 §3.3）：**顺序子任务**（ReWOO 式"先规划后执行"）总开关。
+    #: **默认关** —— 每个子任务是一次隔离的 mini-loop（独立 messages + 小预算），只把最终文本
+    #: 并回主 loop；开着一定会多花模型调用。整批成本由**总额度池**兜住
+    #: （默认且上限 = `max_tool_calls_per_turn` 的 1/2），记账 `usage_records.purpose="subtask"`。
+    #: 放 RuntimeProfile（同 feishu 开关）是为了让 `tests/test_config_runtime_keys.py` 的守卫覆盖到它。
+    subtask_enabled: bool = False
     #: 飞书渠道回调监听开关（入口层，docs/17 §3）。**默认关**：开启后才用标准库
     #: `http.server` 监听本地端口等飞书 POST 事件（只绑 127.0.0.1，公网交给穿透/反代）。
     #: 放在 RuntimeProfile 里（而不是新开一个档）是为了让 `tests/test_config_runtime_keys.py`
@@ -275,6 +281,8 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             plan_by_model=bool(runtime_section.get("plan_by_model", False)),
             # 子 Agent P0：并行抓取的并发上限（D3 同款坑：加了字段必须接这一行，否则静默失效）
             max_parallel_fetches=int(runtime_section.get("max_parallel_fetches", 3)),
+            # 子 Agent P1：顺序子任务总开关（默认关）。D3 同款坑：加了字段必须接这一行。
+            subtask_enabled=bool(runtime_section.get("subtask_enabled", False)),
             # 飞书渠道回调监听（入口层，docs/17 §3）。默认关；同款坑：必须接这一行。
             feishu_listener_enabled=bool(runtime_section.get("feishu_listener_enabled", False)),
             feishu_listener_port=int(runtime_section.get("feishu_listener_port", 8765)),

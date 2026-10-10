@@ -20,15 +20,18 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 from scholarscout.fetch.http import FetchError
 from scholarscout.providers.base import Query, SourceCard
+from scholarscout.providers.llm import ChatReply, LlmError, ToolCall
 from scholarscout.providers.settings import KNOWN
+from scholarscout.runtime import context_budget, registry
 from scholarscout.runtime.toolctx import ToolContext
+from scholarscout.state import traces
 
 #: 线程名前缀：真机排查（卡住/超时）时 ``threading.enumerate()`` 一眼能认出是谁
 _THREAD_PREFIX = "scout-fetch"
@@ -163,3 +166,336 @@ def fetch_many(
                     ProviderFetch(name, ok=False, n=0, error=f"{type(exc).__name__}: {exc}")
                 )
     return outcomes
+
+
+# ================================================================ 子 Agent P1：顺序子任务（ReWOO 式）
+#
+# 复刻 Hermes「orchestrator → leaf 委派」的**隔离语义**，但拍扁成同进程内的顺序小循环：
+# 每个子任务是一个**独立的 mini-loop** —— 自建 messages、自己的工具子集与预算，只把
+# **最终文本**带回来（父只看 summary），中间过程不落主会话消息。
+#
+# 三条铁律：
+# 1. **不污染主会话**：不往 ``messages`` 表写任何东西（工具调用只落 ``tool_traces``，
+#    ``tool_name`` 前缀 ``subtask:``，便于论文里单独统计）；用的是**独立的系统提示词**
+#    ``SUBTASK_SYSTEM_PROMPT``，不碰 ``runtime/prompts.py`` → ``system_prompt_hash`` 不变。
+# 2. **成本可预测**：顺序跑（不并发）、每个子任务预算小（默认 2 次工具）、整批受
+#    **总额度池** ``total_budget`` 兜底（默认且上限 = ``max_tool_calls_per_turn`` 的 1/2）；
+#    每次模型调用都按 ``usage_records.purpose="subtask"`` 如实记账。
+# 3. **失败隔离**：任一子任务出错只影响它自己，其余照跑（``stop_reason="error"``）。
+#
+# **默认关**（``runtime.subtask_enabled=false``）：它一定会多花模型调用，必须由用户显式打开。
+
+#: 事件回调：``emit(kind, payload)``（与 ``runtime/loop.Emitter`` 同形；此处本地定义以免反向依赖）
+Emitter = Callable[[str, dict[str, Any]], None]
+
+#: 子任务的系统提示词。**独立于主提示词** —— 不进 ``build_system_prompt``，
+#: 所以新增/修改它都不会改变 ``system_prompt_hash``（改哈希＝换实验臂，本项目严禁顺手改）。
+SUBTASK_SYSTEM_PROMPT = """\
+你是 ScholarScout 的一个**子任务执行器**，只负责把一个具体的小问题查清楚并把结论写回来。
+
+规矩：
+1. 你的预算是**很小**的（默认最多 2 次工具调用）—— 别铺开，直奔这个问题，够用就收。
+2. 检索关键词用英文（arXiv 只索引英文）；中文只用于你的结论。
+3. 结论里给出可追溯的标识（source_id 或来源标题）；没有出处的内容要显式说明是通用知识。
+4. 只输出这个子问题的**结论正文**（几段话），不要写"我完成了子任务"之类的过程叙述。
+"""
+
+
+@dataclass
+class SubTaskResult:
+    """一个子任务的产出：只有最终文本与它报出的出处/用量，**没有中间过程**（父只见 summary）。"""
+
+    goal: str
+    text: str
+    refs: dict[str, list[str]]
+    tool_calls: list[str]
+    usage: dict[str, int]
+    stop_reason: str
+
+
+def open_goals(state: Mapping[str, Any] | None) -> list[str]:
+    """从研究台账里取**还没有证据**的子问题 —— 这就是子任务的来源（接现有「缺口驱动续搜」）。
+
+    只认 ``status != "covered"`` 的：模型没回填状态就保持 open（**不猜已覆盖**），
+    与 ``research_state.compute_gaps`` 的缺口口径一致。
+    """
+    questions = (state or {}).get("questions") or []
+    goals: list[str] = []
+    for item in questions:
+        if not isinstance(item, dict) or str(item.get("status")) == "covered":
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            goals.append(text)
+    return goals
+
+
+def subtasks_enabled(ctx: ToolContext) -> bool:
+    """P1 总开关：``runtime.subtask_enabled``（**默认关**）。关着时 :func:`run_subtasks` 直接回空表。"""
+    return bool(getattr(ctx.config.runtime, "subtask_enabled", False))
+
+
+def _emit(emit: Emitter | None, kind: str, payload: dict[str, Any]) -> None:
+    if emit is not None:
+        emit(kind, payload)
+
+
+def _accumulate_usage(total: dict[str, int], reply: ChatReply) -> None:
+    for key, value in reply.usage.items():
+        total[key] = total.get(key, 0) + int(value)
+
+
+def _merge_refs(target: dict[str, list[str]], incoming: Any) -> None:
+    if not isinstance(incoming, dict):
+        return
+    for key, values in incoming.items():
+        if not isinstance(values, list):
+            continue
+        bucket = target.setdefault(str(key), [])
+        for value in values:
+            text = str(value)
+            if text not in bucket:
+                bucket.append(text)
+
+
+def _run_subtask_tool(
+    ctx: ToolContext,
+    turn_id: str,
+    step: int,
+    call: ToolCall,
+    seen_source_ids: set[str],
+) -> tuple[str, dict[str, list[str]], str]:
+    """执行一次子任务内的工具调用，返回（喂回模型的文本, refs, 规范工具名）。
+
+    轨迹落 ``tool_traces``，``tool_name`` 前缀 ``subtask:`` —— 与主循环的调用分得开，
+    论文里能单独统计"子任务花了多少次工具、成功率多少"。
+    """
+    spec = registry.get_spec(call.name)
+    canonical = spec.name if spec is not None else call.name
+    trace_name = f"subtask:{canonical}"
+    session_id = ctx.session_id or ""
+    if spec is None:
+        traces.record_trace(
+            ctx.db,
+            session_id=session_id,
+            turn_id=turn_id,
+            step=step,
+            tool_name=trace_name,
+            ok=False,
+            args=call.arguments,
+            error="tool_not_registered",
+        )
+        return f"工具 {call.name} 未注册", {}, canonical
+    try:
+        arguments = call.parsed_arguments()
+        result = registry.invoke(spec, ctx, arguments)
+        traces.record_trace(
+            ctx.db,
+            session_id=session_id,
+            turn_id=turn_id,
+            step=step,
+            tool_name=trace_name,
+            ok=True,
+            args=arguments,
+            result=result,
+        )
+        refs = result.get("refs", {}) if isinstance(result, dict) else {}
+        return (
+            context_budget.project_tool_result(result, seen_source_ids=seen_source_ids),
+            refs if isinstance(refs, dict) else {},
+            canonical,
+        )
+    except Exception as exc:
+        traces.record_trace(
+            ctx.db,
+            session_id=session_id,
+            turn_id=turn_id,
+            step=step,
+            tool_name=trace_name,
+            ok=False,
+            args=call.arguments,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return f"工具 {call.name} 执行失败：{exc}", {}, canonical
+
+
+def run_subtask(
+    ctx: ToolContext,
+    goal: str,
+    *,
+    toolset: str = "research",
+    max_tool_calls: int = 2,
+    emit: Emitter | None = None,
+    seq: int = 0,
+) -> SubTaskResult:
+    """跑**一个**隔离的 mini-loop：自建 messages、自己的工具子集与预算，只回最终文本。
+
+    - **不读也不写主会话的 messages**（``ctx.session_id`` 只用于给轨迹/用量挂账）；
+    - 轮次预算 = 工具预算 + 1（与主 loop 同款语义）：最后一轮**不给工具**，逼它收口，
+      免得"刚好用满预算"被误判 ``tool_limit`` 而丢掉最终答案；
+    - 任一异常都收敛成 ``stop_reason``（``completed`` / ``tool_limit`` / ``error`` / ``empty``），绝不外抛。
+    """
+    turn_id = str(ctx.turn_id or "")
+    goal_text = str(goal or "").strip()
+    if not goal_text:
+        return SubTaskResult(
+            goal="", text="", refs={}, tool_calls=[], usage={}, stop_reason="empty"
+        )
+    _emit(
+        emit,
+        "chat.subtask_start",
+        {"turn_id": turn_id, "seq": seq, "index": seq, "goal": goal_text},
+    )
+
+    specs = registry.get_tools([toolset], features=ctx.config.features)
+    tool_decls = registry.openai_tools(specs) or None
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": SUBTASK_SYSTEM_PROMPT},
+        {"role": "user", "content": goal_text},
+    ]
+
+    budget = max(1, int(max_tool_calls))
+    executed: list[str] = []
+    usage_total: dict[str, int] = {}
+    refs_total: dict[str, list[str]] = {}
+    seen_source_ids: set[str] = set()
+    final_text = ""
+    stop_reason = "completed"
+
+    try:
+        llm = ctx.require_llm()
+        for _round in range(budget + 1):
+            tools_for_round = None if len(executed) >= budget else tool_decls
+            reply = llm.chat(messages, tools=tools_for_round)
+            _accumulate_usage(usage_total, reply)
+            # 每次模型调用立即记账（purpose="subtask"）——不会被中断吞掉，也不许变成暗开销
+            traces.record_usage(
+                ctx.db,
+                model=ctx.config.chat.model,
+                purpose="subtask",
+                session_id=ctx.session_id,
+                turn_id=turn_id or None,
+                prompt_tokens=reply.usage.get("prompt_tokens"),
+                completion_tokens=reply.usage.get("completion_tokens"),
+                cached_tokens=reply.usage.get("cached_tokens"),
+            )
+            final_text = reply.content or final_text
+            if not reply.tool_calls:
+                break
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": reply.content or "",
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {"name": call.name, "arguments": call.arguments},
+                        }
+                        for call in reply.tool_calls
+                    ],
+                }
+            )
+            if len(executed) + len(reply.tool_calls) > budget:
+                stop_reason = "tool_limit"
+                break
+            for call in reply.tool_calls:
+                text, refs, canonical = _run_subtask_tool(
+                    ctx, turn_id, len(executed), call, seen_source_ids
+                )
+                _merge_refs(refs_total, refs)
+                executed.append(canonical)
+                messages.append(
+                    {"role": "tool", "content": text, "tool_call_id": call.id, "name": call.name}
+                )
+                # 更早的工具结果折叠成一行：子任务预算小，但一样别把历史一路重发
+                context_budget.collapse_old_tool_results(messages)
+        else:
+            stop_reason = "tool_limit"
+    except LlmError as exc:
+        stop_reason = "error"
+        final_text = final_text or f"子任务模型调用失败：{exc.kind}: {exc}"
+    except Exception as exc:
+        stop_reason = "error"
+        final_text = final_text or f"子任务执行失败：{type(exc).__name__}: {exc}"
+
+    result = SubTaskResult(
+        goal=goal_text,
+        text=final_text,
+        refs=refs_total,
+        tool_calls=executed,
+        usage=usage_total,
+        stop_reason=stop_reason,
+    )
+    _emit(
+        emit,
+        "chat.subtask_done",
+        {
+            "turn_id": turn_id,
+            "seq": seq,
+            "index": seq,
+            "stop_reason": stop_reason,
+            "refs": refs_total,
+        },
+    )
+    return result
+
+
+def _total_budget(ctx: ToolContext, explicit: int | None) -> int:
+    """总额度池：默认**且上限**都是主轮预算的一半 —— 子任务不该吃掉主 loop 的一半以上。"""
+    ceiling = max(1, int(ctx.config.runtime.max_tool_calls_per_turn) // 2)
+    if explicit is None:
+        return ceiling
+    return max(1, min(int(explicit), ceiling))
+
+
+def run_subtasks(
+    ctx: ToolContext,
+    goals: Sequence[str],
+    *,
+    per_task_budget: int = 2,
+    total_budget: int | None = None,
+    emit: Emitter | None = None,
+) -> list[SubTaskResult]:
+    """**顺序**跑 K 个子任务（不做并发 → 峰值成本可预测）。
+
+    - ``goals``：子任务清单（来源见 :func:`open_goals`）；
+    - ``per_task_budget``：每个子任务的工具调用上限（默认 2）；
+    - ``total_budget``：整批的**总额度池**（工具调用数）。不传＝主轮预算的 1/2，
+      传入值也会被夹到该上限。池子耗尽后，剩余子任务直接标 ``stop_reason="budget"``；
+    - **默认关**：``runtime.subtask_enabled=false`` 时直接回空表（不触发、不记账、不发事件）。
+
+    失败隔离：任一子任务异常只影响它自己，其余照跑。
+    """
+    clean = [str(goal).strip() for goal in (goals or []) if str(goal).strip()]
+    if not clean or not subtasks_enabled(ctx):
+        return []
+
+    pool = _total_budget(ctx, total_budget)
+    per = max(1, int(per_task_budget))
+    remaining = pool
+    results: list[SubTaskResult] = []
+    for index, goal in enumerate(clean):
+        if remaining <= 0:
+            results.append(
+                SubTaskResult(
+                    goal=goal, text="", refs={}, tool_calls=[], usage={}, stop_reason="budget"
+                )
+            )
+            continue
+        try:
+            result = run_subtask(
+                ctx, goal, max_tool_calls=min(per, remaining), emit=emit, seq=index
+            )
+        except Exception as exc:  # 兜底：run_subtask 已自行收敛，这里防意外
+            result = SubTaskResult(
+                goal=goal,
+                text=f"子任务失败：{type(exc).__name__}: {exc}",
+                refs={},
+                tool_calls=[],
+                usage={},
+                stop_reason="error",
+            )
+        results.append(result)
+        remaining -= len(result.tool_calls)
+    return results

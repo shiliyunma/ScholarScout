@@ -31,6 +31,11 @@ runtime:
   # 子 Agent P0（docs/16 §3.3）：并行抓取来源的并发上限。
   # 只并行出网（各来源同时检索），绝不并发调模型；限速仍由出网层按 host 串行化。
   max_parallel_fetches: 3
+  # 子 Agent P1（docs/16 §3.3）：顺序子任务（ReWOO 式"先规划后执行"）。**默认关** ——
+  # 每个子任务是一次隔离的 mini-loop（独立 messages + 小预算），只把最终文本并回主 loop；
+  # 开着一定会多花模型调用。整批成本由总额度池兜住（默认且上限 = max_tool_calls_per_turn 的 1/2）。
+  # 记账 usage_records.purpose="subtask"，可在 session.usage 里看到这笔开销。
+  subtask_enabled: false
   # 飞书渠道回调监听（入口层，docs/17 §3）：**默认关**。
   # 开启后用标准库 http.server 监听本地端口等飞书 POST 事件（只绑 127.0.0.1）。
   # 没有 .env 密钥（FEISHU_VERIFICATION_TOKEN / FEISHU_ENCRYPT_KEY）时不校签并明确告警。

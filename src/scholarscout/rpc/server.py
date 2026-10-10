@@ -24,6 +24,9 @@ NOTIFICATION_METHODS = (
     "chat.tool_result",
     "chat.done",
     "chat.error",
+    # 子 Agent P1（docs/16 §3.3）：顺序子任务的生命周期事件（**不动 chat.delta**）
+    "chat.subtask_start",
+    "chat.subtask_done",
     # 会话标题在轮次开始前就定下来（用户一发送就能看到名字）
     "session.updated",
 )
