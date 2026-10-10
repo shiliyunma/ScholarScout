@@ -387,6 +387,365 @@ function renderAppearance(container) {
 }
 
 
+/* ==========================================================================
+   飞书接入卡片（设置页）
+   —— 凭据有无 / 渠道开关 / 当前策略 / 配对码与倒计时 / 「获取我的 id」引导 / 自检
+   三条硬约定都守住：
+   1) 不认识的键报错：这里只调 feishu.* 专用 RPC，绝不把飞书键塞进 settings.update
+      （settings_io 会拒未知键；飞书凭据与渠道开关本就只进 .env，见 docs/03 §2 边界）；
+   2) 密钥只写不回读：界面**只显示「已配置／未配置」**，任何密钥内容都不回显、不预填；
+   3) 可清理的只有缓存：本卡片**不提供**任何清理入口。
+   ========================================================================== */
+
+/*: 配对码有效期秒数（与 state/pairing.py::CODE_TTL_SECONDS 一致，仅用于本地倒计时显示） */
+var FEISHU_CODE_TTL = 3600;
+/*: DM 授权策略的中文（与 rpc/feishu.py::DM_POLICIES 一一对应） */
+var FEISHU_DM_OPTIONS = [
+  ["pairing", "配对审批（推荐）"],
+  ["all", "放行全部私聊"],
+  ["allowlist", "仅白名单"]
+];
+/*: 连接模式 / 群聊策略的中文（后端给的是枚举，界面别直接甩英文） */
+var FEISHU_MODE_LABELS = {
+  webhook: "webhook（事件回调）",
+  websocket: "websocket（本项目尚未实现，仅记录）"
+};
+var FEISHU_GROUP_LABELS = { mention: "仅被 @ 时响应", disabled: "关闭群聊" };
+
+/*: 倒计时用的定时器与「这一枚刚生成的配对码」（明文只在此刻可见，刷新页面即丢） */
+var feishuPairTimer = null;
+var feishuPair = null;
+
+
+function feishuClearTimer() {
+  if (feishuPairTimer) {
+    clearInterval(feishuPairTimer);
+    feishuPairTimer = null;
+  }
+}
+
+
+function feishuPad(n) {
+  return (n < 10 ? "0" : "") + n;
+}
+
+
+function feishuCountdownText(left) {
+  return (
+    "去飞书私聊机器人，把这条码发给它（" +
+    feishuPad(Math.floor(left / 60)) +
+    ":" +
+    feishuPad(left % 60) +
+    " 后过期）"
+  );
+}
+
+
+function feishuLine(label, value, kind) {
+  var row = document.createElement("div");
+  row.className = "feishu-line";
+  var name = document.createElement("span");
+  name.textContent = label;
+  var val = document.createElement("span");
+  val.className = "feishu-value" + (kind ? " is-" + kind : "");
+  val.textContent = value;
+  row.appendChild(name);
+  row.appendChild(val);
+  return row;
+}
+
+
+function feishuButton(parent, label, handler) {
+  var button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.textContent = label;
+  button.addEventListener("click", function () {
+    Promise.resolve(handler()).catch(function (error) {
+      el("settings-note").textContent = "飞书操作失败：" + error.message;
+    });
+  });
+  parent.appendChild(button);
+  return button;
+}
+
+
+async function renderFeishuCard(body) {
+  feishuClearTimer();
+  feishuPair = null; // 明文码只在此刻可见：重开设置面板就不再显示旧的
+  var group = document.createElement("div");
+  group.className = "set-group";
+  var head = document.createElement("h4");
+  head.textContent = "飞书接入";
+  group.appendChild(head);
+  group.appendChild(
+    plainHint(
+      "凭据与渠道开关都写 .env（不写 config.yaml）。这里**只显示「已配置／未配置」**，" +
+        "绝不回显任何密钥内容；可清理的永远只有缓存。",
+    ),
+  );
+
+  var statusBox = document.createElement("div");
+  statusBox.className = "feishu-status";
+  group.appendChild(statusBox);
+
+  var policyRow = document.createElement("div");
+  policyRow.className = "set-row";
+  group.appendChild(policyRow);
+
+  var probeBox = document.createElement("div");
+  probeBox.className = "feishu-probe";
+  group.appendChild(probeBox);
+
+  var pairBox = document.createElement("div");
+  pairBox.className = "feishu-pairing";
+  group.appendChild(pairBox);
+
+  body.appendChild(group);
+
+  function paintStatus(status) {
+    statusBox.textContent = "";
+    statusBox.appendChild(
+      feishuLine("App ID", status.app_id_set ? "已配置" : "未配置", status.app_id_set ? "ok" : "off"),
+    );
+    statusBox.appendChild(
+      feishuLine(
+        "App Secret",
+        status.secret_set ? "已配置" : "未配置",
+        status.secret_set ? "ok" : "off",
+      ),
+    );
+    statusBox.appendChild(
+      feishuLine(
+        "渠道层监听",
+        (status.listener_enabled ? "开" : "关") + "（端口 " + status.listener_port + "）",
+      ),
+    );
+    statusBox.appendChild(
+      feishuLine("连接模式", FEISHU_MODE_LABELS[status.connection_mode] || status.connection_mode),
+    );
+    statusBox.appendChild(
+      feishuLine("群聊策略", FEISHU_GROUP_LABELS[status.group_policy] || status.group_policy),
+    );
+    statusBox.appendChild(
+      feishuLine("临时放行", status.temp_open ? "开（还没批准任何人，渠道层先放行）" : "关"),
+    );
+  }
+
+  function paintPolicy(status) {
+    policyRow.textContent = "";
+    var label = document.createElement("span");
+    label.textContent = "私聊授权策略";
+    policyRow.appendChild(label);
+    var seg = document.createElement("div");
+    seg.className = "set-seg";
+    FEISHU_DM_OPTIONS.forEach(function (pair) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = pair[1];
+      button.classList.toggle("is-on", status.dm_policy === pair[0]);
+      button.addEventListener("click", function () {
+        scout
+          .call("feishu.dm_policy", { policy: pair[0] })
+          .then(function () {
+            el("settings-note").textContent =
+              "已切换私聊策略：" + pair[1] + "（写 .env，重启应用即生效）";
+            return refresh();
+          })
+          .catch(function (error) {
+            el("settings-note").textContent = "切换失败：" + error.message;
+          });
+      });
+      seg.appendChild(button);
+    });
+    policyRow.appendChild(seg);
+  }
+
+  function paintPairing(listing) {
+    feishuClearTimer();
+    pairBox.textContent = "";
+    pairBox.appendChild(
+      plainHint(
+        "配对码：待批 " +
+          (listing.pending || []).length +
+          " 枚｜白名单 " +
+          (listing.approved || []).length +
+          " 个｜临时放行 " +
+          (listing.temp_open ? "开" : "关"),
+      ),
+    );
+
+    var actions = document.createElement("div");
+    actions.className = "set-seg";
+    feishuButton(actions, (listing.pending || []).length ? "再生成一枚配对码" : "生成配对码", function () {
+      return createCode();
+    });
+    feishuButton(actions, "刷新待批 / 白名单", function () {
+      return refresh();
+    });
+    pairBox.appendChild(actions);
+
+    var codeBox = document.createElement("div");
+    codeBox.className = "feishu-code";
+    pairBox.appendChild(codeBox);
+    if (feishuPair) {
+      // 刷新时若刚生成过码，把倒计时从存下的剩余秒数接着画（不丢）
+      var code = document.createElement("div");
+      code.className = "feishu-code-value";
+      code.textContent = feishuPair.code;
+      codeBox.appendChild(code);
+      var tip = document.createElement("div");
+      tip.className = "hint feishu-code-tip";
+      codeBox.appendChild(tip);
+      feishuStartCountdown(tip);
+    }
+
+    pairBox.appendChild(
+      plainHint(
+        "获取你的 open_id：把上面的配对码私聊发给机器人，机器人回执后你的 open_id 会自动落库，" +
+          "点「刷新」即可在下面看到（白名单模式要的就是它；直接粘贴机器人整条回复也行）。",
+      ),
+    );
+
+    var pending = listing.pending || [];
+    if (pending.length) {
+      var plist = document.createElement("ul");
+      plist.className = "list feishu-pending";
+      pending.forEach(function (row) {
+        var li = document.createElement("li");
+        li.textContent = row.claimed
+          ? "待批：" + (row.user_name || row.user_id)
+          : "待批：还没收到你的码（未绑定身份）";
+        var meta = document.createElement("span");
+        meta.className = "meta";
+        var left = Math.max(0, FEISHU_CODE_TTL - Number(row.age_seconds || 0));
+        meta.textContent = "剩余 " + Math.floor(left / 60) + " 分";
+        li.appendChild(meta);
+        plist.appendChild(li);
+      });
+      pairBox.appendChild(plist);
+    }
+
+    var approved = listing.approved || [];
+    if (approved.length) {
+      var alist = document.createElement("ul");
+      alist.className = "list feishu-approved";
+      approved.forEach(function (row) {
+        var li = document.createElement("li");
+        li.textContent = (row.user_name ? row.user_name + " " : "") + row.user_id;
+        var revoke = document.createElement("button");
+        revoke.type = "button";
+        revoke.className = "ghost";
+        revoke.textContent = "撤销";
+        revoke.addEventListener("click", function () {
+          scout
+            .call("feishu.pairing.revoke", { user_id: row.user_id })
+            .then(function () {
+              return refresh();
+            })
+            .catch(function (error) {
+              el("settings-note").textContent = "撤销失败：" + error.message;
+            });
+        });
+        li.appendChild(revoke);
+        alist.appendChild(li);
+      });
+      pairBox.appendChild(alist);
+    }
+  }
+
+  function feishuStartCountdown(tip) {
+    feishuClearTimer();
+    var render = function () {
+      tip.textContent =
+        feishuPair.left > 0 ? feishuCountdownText(feishuPair.left) : "配对码已过期，请重新生成。";
+    };
+    render();
+    feishuPairTimer = setInterval(function () {
+      feishuPair.left -= 1;
+      if (feishuPair.left <= 0) {
+        feishuClearTimer();
+        render();
+        return;
+      }
+      render();
+    }, 1000);
+  }
+
+  async function createCode() {
+    var created;
+    try {
+      created = await scout.call("feishu.pairing.create", {});
+    } catch (error) {
+      el("settings-note").textContent = "生成配对码失败：" + error.message;
+      return;
+    }
+    feishuPair = {
+      code: String(created.code || ""),
+      left: Math.max(0, Math.floor(created.ttl_seconds || FEISHU_CODE_TTL))
+    };
+    el("settings-note").textContent = "已生成配对码（明文只在此刻可见，库里只存 sha256(salt+code)）";
+    await refresh();
+  }
+
+  async function runProbe() {
+    probeOut.textContent = "正在联网探测…";
+    var result;
+    try {
+      result = await scout.call("feishu.probe", {});
+    } catch (error) {
+      probeOut.textContent = "自检失败：" + error.message;
+      return;
+    }
+    if (!result.ok) {
+      probeOut.textContent = "机器人名 unknown —— " + (result.reason || "");
+      return;
+    }
+    probeOut.textContent =
+      "机器人名：" +
+      result.bot_name +
+      "｜bot open_id：" +
+      (result.bot_open_id || "—") +
+      "｜token 有效期约 " +
+      Math.round(Number(result.token_expire || 0) / 60) +
+      " 分钟（token 值不回传）";
+  }
+
+  // 自检（联网）：机器人名与 token 有效期 —— 失败只显示 unknown，不阻塞
+  probeBox.appendChild(plainHint("自检：联网探测机器人名与 token 有效期；失败不影响接入，显示 unknown。"));
+  var probeActions = document.createElement("div");
+  probeActions.className = "set-seg";
+  feishuButton(probeActions, "自检（联网）", function () {
+    return runProbe();
+  });
+  probeBox.appendChild(probeActions);
+  var probeOut = document.createElement("p");
+  probeOut.className = "hint feishu-probe-out";
+  probeBox.appendChild(probeOut);
+
+  async function refresh() {
+    var status;
+    try {
+      status = await scout.call("feishu.status", {});
+    } catch (error) {
+      statusBox.textContent = "读不到飞书状态：" + error.message;
+      return;
+    }
+    var listing;
+    try {
+      listing = await scout.call("feishu.pairing.list", {});
+    } catch (error) {
+      listing = { pending: [], approved: [], temp_open: status.temp_open };
+    }
+    paintStatus(status);
+    paintPolicy(status);
+    paintPairing(listing);
+  }
+
+  await refresh();
+}
+
+
 function renderUsage(group, payload) {
   var body = group.querySelector(".set-usage");
   body.textContent = "";
@@ -437,6 +796,9 @@ async function openSettings() {
   });
 
   renderAppearance(body);
+
+  // 飞书接入卡片（凭据有无 / 渠道开关 / 当前策略 / 配对码与倒计时 / 「获取我的 id」引导 / 自检）
+  await renderFeishuCard(body);
 
   // MinerU：开关开着但没配 token —— 现在**不是错误**（扫描版走免 Token 的预签名直传也能用），
   // 但要说清能力边界：免 Token 的 Agent 通道限 ≤10MB / ≤20 页，更大或要更高精度才需要 Token。

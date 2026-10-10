@@ -6829,3 +6829,53 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   display: flex;
   gap: 8px;
 }
+
+/* ---------------------------------------------------- 设置页 · 飞书接入卡片 */
+.feishu-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.feishu-line {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(180px, 1.4fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.feishu-value {
+  color: var(--ui-text-secondary, #6b6b73);
+  min-width: 0;
+}
+.feishu-value.is-ok { color: var(--ui-green, #1f8a65); }
+.feishu-value.is-off { color: var(--ui-red, #cf2d56); }
+.feishu-pairing,
+.feishu-probe {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.feishu-code-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px;
+  letter-spacing: 0.18em;
+  font-weight: 600;
+  padding: 6px 10px;
+  border: 1px dashed var(--ui-border, rgba(128, 128, 128, 0.45));
+  border-radius: 8px;
+  display: inline-block;
+}
+.feishu-pending li,
+.feishu-approved li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.feishu-approved li button {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.feishu-probe-out { margin: 0; }
+
