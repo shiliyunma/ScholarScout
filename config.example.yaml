@@ -36,6 +36,10 @@ runtime:
   # 没有 .env 密钥（FEISHU_VERIFICATION_TOKEN / FEISHU_ENCRYPT_KEY）时不校签并明确告警。
   feishu_listener_enabled: false
   feishu_listener_port: 8765      # 照 Hermes 适配器默认；enabled=false 时不起服务
+  feishu_listener_path: /feishu/webhook   # 回调路径（照 Hermes 默认）；与穿透工具对齐用
+  # 飞书**出站发送器**（把一轮回答推回飞书，docs/17 §3.7）：**默认关**。
+  # 关着时渠道层只记录、绝不发任何外网；开启需同时配好 .env 的 FEISHU_APP_ID / FEISHU_APP_SECRET。
+  feishu_reply_enabled: false
 
 # ===== 摘要流水线（照 AIHOT 的"截断 + 一次调用"，见 docs/04）=====
 summary:

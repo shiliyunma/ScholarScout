@@ -20,9 +20,12 @@ import logging
 import os
 from typing import Any
 
+import httpx
 import pytest
 
 from scholarscout.channels import feishu
+from scholarscout.fetch import feishu_send
+from scholarscout.fetch.http import HttpClient
 from scholarscout.rpc.methods import AppContext, dispatch
 from scholarscout.state import pairing
 from scholarscout.tools import register_tools
@@ -634,3 +637,162 @@ def test_authorize_dm_policies() -> None:
         _msg(), dm_policy="pairing", group_policy="mention", approved=False
     )
     assert decision.action == "pair" and decision.reply == feishu.PAIRING_PROMPT
+
+
+# ================================================================== C. 出站真发送器接线（端到端桩，docs/17 §3.7）
+
+#: 实测的真实回包形状
+_TOKEN_OK = {"code": 0, "msg": "ok", "tenant_access_token": "t-" + "a" * 40, "expire": 7200}
+_MSG_OK = {"code": 0, "msg": "success", "data": {"message_id": "om_e2e_sent_1"}}
+
+
+def _sender_http(seen: list[httpx.Request]) -> HttpClient:
+    """出网口打桩：换 token → 200；发消息 → 200（真实回包形状）。不真联网。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if "tenant_access_token" in str(request.url):
+            return httpx.Response(200, json=_TOKEN_OK)
+        return httpx.Response(200, json=_MSG_OK)
+
+    return HttpClient(respect_robots=False, transport=httpx.MockTransport(handler))
+
+
+def test_end_to_end_inbound_runs_turn_then_outbound_is_called(ctx: AppContext) -> None:
+    """**端到端桩**：入站真回调 → 跑一轮（桩模型）→ **出站真发送器被调用**（不联网）。
+
+    出站走的是 `fetch/feishu_send.build_sender` → `fetch/http.py` → MockTransport，
+    所以断言的正是**真端点与真字段**（`POST /open-apis/im/v1/messages?receive_id_type=chat_id`）。
+    """
+    ctx.llm = StubLlm(reply(STUB_REPLY))
+    _approve(ctx)
+    seen: list[httpx.Request] = []
+    sender = feishu_send.build_sender(
+        _sender_http(seen), enabled=True, app_id="cli_e2e", app_secret="sec_e2e"
+    )
+    server = feishu.build_server(
+        ctx, port=0, credentials=_creds(), sender=sender, dispatcher=dispatch
+    )
+    server.start()
+    try:
+        status, payload = _send(server, _message_payload("端到端：入站→跑一轮→出站发送"))
+    finally:
+        server.stop()
+
+    # 入站：回包正常 + 真落库
+    assert status == 200 and payload == {"code": 0, "msg": "ok"}
+    assert ctx.db.scalar_int("SELECT count(*) FROM sessions WHERE session_key = ?", (CHAT_ID,)) == 1
+    # 出站被调：真打了取 token + 发消息两个端点
+    token_calls = [r for r in seen if "tenant_access_token" in str(r.url)]
+    send_calls = [r for r in seen if "im/v1/messages" in str(r.url)]
+    assert len(token_calls) == 1, "应复用 fetch/feishu_onboard.fetch_tenant_token 换一次 token"
+    assert len(send_calls) == 1, "出站发送器应被调用一次"
+    req = send_calls[0]
+    assert req.method == "POST"
+    assert str(req.url).endswith("/open-apis/im/v1/messages?receive_id_type=chat_id")
+    assert req.headers["authorization"] == "Bearer " + str(_TOKEN_OK["tenant_access_token"])
+    body = json.loads(req.content.decode("utf-8"))
+    assert body["receive_id"] == CHAT_ID
+    assert body["msg_type"] == "text"
+    assert json.loads(body["content"]) == {"text": STUB_REPLY}  # 桩模型的回答被推回去
+    print(
+        "[e2e] 入站 200 → 会话落库 → 出站 POST "
+        f"{req.url} body={json.dumps(body, ensure_ascii=False)}"
+    )
+
+
+def test_end_to_end_outbound_failure_does_not_break_the_turn(ctx: AppContext) -> None:
+    """**反例**：出站发送失败（网络异常）时，入站仍回 200、会话照常落库（发送失败不崩会话）。"""
+    ctx.llm = StubLlm(reply(STUB_REPLY))
+    _approve(ctx)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "tenant_access_token" in str(request.url):
+            return httpx.Response(200, json=_TOKEN_OK)
+        raise httpx.ConnectError("boom")
+
+    sender = feishu_send.build_sender(
+        HttpClient(respect_robots=False, transport=httpx.MockTransport(handler)),
+        enabled=True,
+        app_id="cli_e2e",
+        app_secret="sec_e2e",
+    )
+    server = feishu.build_server(
+        ctx, port=0, credentials=_creds(), sender=sender, dispatcher=dispatch
+    )
+    server.start()
+    try:
+        status, payload = _send(server, _message_payload("出站会失败的这条"))
+    finally:
+        server.stop()
+
+    assert status == 200 and payload == {"code": 0, "msg": "ok"}
+    assert ctx.db.scalar_int("SELECT count(*) FROM sessions WHERE session_key = ?", (CHAT_ID,)) == 1
+
+
+def test_end_to_end_outbound_disabled_runs_turn_but_never_sends(ctx: AppContext) -> None:
+    """**默认关**：出站发送器关着时，入站照常跑一轮、**但一次外网都不发**。"""
+    ctx.llm = StubLlm(reply(STUB_REPLY))
+    _approve(ctx)
+    seen: list[httpx.Request] = []
+    sender = feishu_send.build_sender(_sender_http(seen), enabled=False)
+    server = feishu.build_server(
+        ctx, port=0, credentials=_creds(), sender=sender, dispatcher=dispatch
+    )
+    server.start()
+    try:
+        status, payload = _send(server, _message_payload("关着的时候跑一轮"))
+    finally:
+        server.stop()
+
+    assert status == 200 and payload == {"code": 0, "msg": "ok"}
+    assert ctx.db.scalar_int("SELECT count(*) FROM sessions WHERE session_key = ?", (CHAT_ID,)) == 1
+    assert seen == []  # 关着：一次外网都没发
+
+
+# ================================================================== D. 监听入口（docs/17 §3.8）
+
+
+def test_run_listener_prints_address_and_path(ctx: AppContext, recorder) -> None:
+    """监听入口**明确打印监听地址与路径**（与穿透工具对接用）。"""
+    lines: list[str] = []
+    server = feishu.run_listener(
+        ctx,
+        port=0,
+        path="/feishu/webhook",
+        sender=recorder,
+        dispatcher=dispatch,
+        say=lines.append,
+        block=False,
+    )
+    try:
+        assert any(
+            "listening on 127.0.0.1" in line and line.endswith("/feishu/webhook") for line in lines
+        ), lines
+        assert any("内网穿透" in line and "/feishu/webhook" in line for line in lines), lines
+        # 真起来了：能打 HTTP（challenge 先过 token 再回显）
+        body = json.dumps(
+            {"type": feishu.CHALLENGE_EVENT, "challenge": "ch_listen", "token": VERIFICATION_TOKEN}
+        ).encode()
+        status, payload = _post(server.address[1], body, {"Content-Type": "application/json"})
+        assert status == 200 and payload == {"challenge": "ch_listen"}
+    finally:
+        server.stop()
+    print("[listen] " + " | ".join(lines))
+
+
+def test_run_listener_custom_path_is_honored(ctx: AppContext, recorder) -> None:
+    lines: list[str] = []
+    server = feishu.run_listener(
+        ctx,
+        port=0,
+        path="/custom/hook",
+        sender=recorder,
+        dispatcher=dispatch,
+        say=lines.append,
+        block=False,
+    )
+    try:
+        assert any(line.endswith("/custom/hook") for line in lines), lines
+    finally:
+        server.stop()

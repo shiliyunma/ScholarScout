@@ -740,3 +740,65 @@ def build_server(
     """装配一个回调服务（**不启动**）：`FeishuWebhook` + `FeishuCallbackServer`。"""
     webhook = FeishuWebhook(ctx, credentials=credentials, sender=sender, dispatcher=dispatcher)
     return FeishuCallbackServer(webhook, host=host, port=port, path=path)
+
+
+# ------------------------------------------------------------------ 监听入口（docs/17 §3.8）
+
+#: 启动日志的模板：**明确打印监听地址与路径**，方便与内网穿透工具对接。
+#: 例：`[Feishu] listening on 127.0.0.1:8765/feishu/webhook`
+LISTEN_LOG_TEMPLATE = "[Feishu] listening on {host}:{port}{path}"
+#: 第二行提示（穿透工具要映射的本地地址）。
+LISTEN_HINT_TEMPLATE = (
+    "[Feishu] 内网穿透请把公网地址映射到 http://{host}:{port}{path}，"
+    "再把该公网 URL 填进飞书后台事件订阅（详见 docs/17 §3.8）"
+)
+
+
+def run_listener(
+    ctx: AppContext,
+    *,
+    sender: Sender | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    path: str = DEFAULT_PATH,
+    credentials: FeishuCredentials | None = None,
+    dispatcher: Dispatcher = dispatch,
+    say: Callable[[str], None] = print,
+    block: bool = True,
+) -> FeishuCallbackServer:
+    """起回调监听并**打印监听地址与路径**（`docs/17 §3.8`），返回已启动的 server。
+
+    - 只绑 `host`（默认 `127.0.0.1`）：公网交给内网穿透/反代，进程本身不直接暴露；
+    - `sender` 由调用方注入（真实部署注入 `fetch/feishu_send.build_sender`；缺省即 `RecordingSender`，
+      **不假装发成功**）；
+    - 打印 `LISTEN_LOG_TEMPLATE`（如 `[Feishu] listening on 127.0.0.1:8765/feishu/webhook`）
+      + `LISTEN_HINT_TEMPLATE`；日志同时经 `logger.info` 落盘；
+    - `block=True`（CLI 入口）阻塞到 Ctrl-C；`block=False` 立即返回（桩测用）。
+    """
+    import time as _time
+
+    server = build_server(
+        ctx,
+        host=host,
+        port=port,
+        path=path,
+        credentials=credentials,
+        sender=sender,
+        dispatcher=dispatcher,
+    )
+    server.start()
+    bound_host, bound_port = server.address
+    line = LISTEN_LOG_TEMPLATE.format(host=bound_host, port=bound_port, path=server.path)
+    hint = LISTEN_HINT_TEMPLATE.format(host=bound_host, port=bound_port, path=server.path)
+    logger.info(line)
+    logger.info(hint)
+    say(line)
+    say(hint)
+    if block:
+        try:
+            while True:
+                _time.sleep(3600)
+        except KeyboardInterrupt:  # Ctrl-C：优雅收尾
+            say("[Feishu] 收到中断，正在停止监听…")
+            server.stop()
+    return server

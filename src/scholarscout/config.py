@@ -108,6 +108,11 @@ class RuntimeProfile:
     feishu_listener_enabled: bool = False
     #: 回调监听端口（照 Hermes 适配器默认 8765；enabled=false 时不起服务，端口无意义）。
     feishu_listener_port: int = 8765
+    #: 回调路径（照 Hermes 默认 `/feishu/webhook`，adapter.py:151）；可配，便于与穿透工具对齐。
+    feishu_listener_path: str = "/feishu/webhook"
+    #: 飞书**出站发送器**开关（把一轮回答推回飞书，docs/17 §3.7）。**默认关**：
+    #: 关着时渠道层只记录、绝不发任何外网（与监听开关分开：监听=收，发送=发）。
+    feishu_reply_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -273,6 +278,11 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             # 飞书渠道回调监听（入口层，docs/17 §3）。默认关；同款坑：必须接这一行。
             feishu_listener_enabled=bool(runtime_section.get("feishu_listener_enabled", False)),
             feishu_listener_port=int(runtime_section.get("feishu_listener_port", 8765)),
+            feishu_listener_path=str(
+                runtime_section.get("feishu_listener_path", "/feishu/webhook")
+            ),
+            # 飞书出站发送（把回答推回飞书）。默认关 → 关着时渠道层绝不发任何外网。
+            feishu_reply_enabled=bool(runtime_section.get("feishu_reply_enabled", False)),
         ),
         features=Features(
             enable_kb=bool(feature_section.get("enable_kb", False)),
