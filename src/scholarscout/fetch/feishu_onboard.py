@@ -32,8 +32,11 @@
     `error ∈ {access_denied, expired_token}` → 放弃（`:3979-3984`）；其它（如
     `authorization_pending`）继续轮询（`:3985`）。超时由 `expire_in` 兜底（`:3952/3987-3990`）。
 - 请求超时 Hermes 用 10s（`_ONBOARD_REQUEST_TIMEOUT_S = 10` `:204`）。
-- Bot 名探测：`GET /open-apis/bot/v3/info` 取 `bot.app_name`（`probe_bot` / `_probe_bot_http`
-  / `_parse_bot_response`，`:4013-4068`）。
+- Bot 名探测（**已实测，本模块已实现**）：先 `POST /open-apis/auth/v3/tenant_access_token/internal`
+  换 `tenant_access_token`，再 `GET /open-apis/bot/v3/info`（头 `Authorization: Bearer <token>`）取
+  **`bot.app_name`**（机器人名）与 **`bot.open_id`**（bot 自身 id）—— 见本模块 `fetch_tenant_token` / `probe_bot`。
+  Hermes 用的同一端点：`plugins/platforms/feishu/adapter.py:3348`（源码里 `probe_bot` / `_probe_bot_http`
+  / `_parse_bot_response`，`:4013-4068`）。**失败或 `code != 0` 一律回退 `None`（不阻塞）**。
 
 ## 两条工程取舍（写清楚，不掩盖）
 
@@ -79,6 +82,17 @@ DEFAULT_POLL_TP = "ob_app"
 DEFAULT_REGISTRATION_FROM = "scholarscout"
 DEFAULT_REGISTRATION_TP = "scholarscout"
 
+#: 换 `tenant_access_token` 的路径（**实测**：`POST {open_base}/open-apis/auth/v3/tenant_access_token/internal`，
+#: body 是 JSON `{"app_id","app_secret"}` → `{"code":0,"tenant_access_token":"<42字符>","expire":7200}`）。
+TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal"
+#: 取机器人信息的路径（**实测**：`GET {open_base}/open-apis/bot/v3/info`，头 `Authorization: Bearer <token>`，
+#: → `{"code":0,"bot":{"app_name":"大浩的AI毕设","open_id":"ou_54e..."}}`）。Hermes 同一端点：`adapter.py:3348`。
+BOT_INFO_PATH = "/open-apis/bot/v3/info"
+#: 探测失败后的**重试次数上限**（首试之外，至多再试 2 次 —— docs/18 §③/§④ 要求「重试 ≤2」）。
+PROBE_RETRIES = 2
+#: 一次探测最多请求几次（首试 + 重试）。
+PROBE_MAX_ATTEMPTS = PROBE_RETRIES + 1
+
 
 class OnboardError(Exception):
     """注册流程的协议错误（端点没回 device_code / 回的不是 JSON 对象）。"""
@@ -105,10 +119,42 @@ class RegistrationResult:
     open_id: str = ""
 
 
+@dataclass(frozen=True)
+class TenantToken:
+    """`tenant_access_token/internal` 的结果（字段名取自实测回包）。"""
+
+    token: str
+    expire: int
+
+
+@dataclass(frozen=True)
+class BotProbe:
+    """`bot/v3/info` 的结果：机器人名取 **`bot.app_name`**，bot 自身 id 取 **`bot.open_id`**。
+
+    `token_expire` 顺带把换 token 时拿到的有效期（秒）带出来，供设置卡片「自检」显示。
+    """
+
+    app_name: str
+    open_id: str
+    token_expire: int
+
+
 def registration_endpoint(domain: str = "feishu") -> str:
     """注册端点 URL（accounts 基址 + 路径）。"""
     base = ONBOARD_ACCOUNTS_URLS.get(domain, ONBOARD_ACCOUNTS_URLS["feishu"])
     return f"{base}{REGISTRATION_PATH}"
+
+
+def tenant_token_endpoint(domain: str = "feishu") -> str:
+    """换 `tenant_access_token` 的端点（开放平台基址 + `TOKEN_PATH`）。"""
+    base = ONBOARD_OPEN_URLS.get(domain, ONBOARD_OPEN_URLS["feishu"])
+    return f"{base}{TOKEN_PATH}"
+
+
+def bot_info_endpoint(domain: str = "feishu") -> str:
+    """取机器人信息的端点（开放平台基址 + `BOT_INFO_PATH`）。"""
+    base = ONBOARD_OPEN_URLS.get(domain, ONBOARD_OPEN_URLS["feishu"])
+    return f"{base}{BOT_INFO_PATH}"
 
 
 def _json_object(result: FetchResult) -> dict[str, Any]:
@@ -223,4 +269,93 @@ def poll_registration(
 
         sleep(min(backoff, max_interval_s))
         backoff = min(backoff * 2, max_interval_s)
+    return None
+
+
+# ------------------------------------------------------------------ Bot 名探测（已实测）
+
+#: 一句话交代探测这两个端点的取舍（写清，不掩盖）：网络/协议/`code!=0` 都算失败，回 `None`。
+#: 探测是**非阻塞**能力 —— 设置卡片「自检」与向导完成摘要都只是"有就显示、没有就显示 unknown"，
+#: 绝不因为它失败而中断主流程（docs/18 §③/§④）。
+
+
+def fetch_tenant_token(
+    http: HttpClient,
+    *,
+    app_id: str,
+    app_secret: str,
+    domain: str = "feishu",
+    retries: int = PROBE_RETRIES,
+) -> TenantToken | None:
+    """换 `tenant_access_token`（照实测回包解析）。**失败一律返回 `None`，不抛异常。**
+
+    - 请求：`POST {open_base}/open-apis/auth/v3/tenant_access_token/internal`，JSON body
+      `{"app_id": ..., "app_secret": ...}`（走 `HttpClient.post_json`，出网仍只在这一层）；
+    - 成功判据：`code == 0` 且 `tenant_access_token` 非空；回包里的 `expire` 是有效期秒数；
+    - **`code != 0` 一律算失败**（实测口径：凭据不对/被拒时 `code` 非 0）；
+    - 网络/协议错误（`FetchError`）与 `code!=0` 都按退避重试，**至多重试 `retries`（默认 2）次**。
+    """
+    attempts = max(1, int(retries) + 1)
+    for _ in range(attempts):
+        try:
+            result = http.post_json(
+                tenant_token_endpoint(domain),
+                {"app_id": str(app_id), "app_secret": str(app_secret)},
+            )
+            payload = _json_object(result)
+        except (FetchError, OnboardError):
+            continue
+        if int(payload.get("code") or 0) != 0:
+            continue
+        token = str(payload.get("tenant_access_token") or "")
+        if not token:
+            continue
+        return TenantToken(token=token, expire=int(payload.get("expire") or 0))
+    return None
+
+
+def probe_bot(
+    http: HttpClient,
+    *,
+    app_id: str,
+    app_secret: str,
+    domain: str = "feishu",
+    retries: int = PROBE_RETRIES,
+) -> BotProbe | None:
+    """联网探测机器人名与自身 id：**换 token → 打 `bot/v3/info`**。失败返回 `None`（不抛）。
+
+    - `GET {open_base}/open-apis/bot/v3/info`，头 `Authorization: Bearer <tenant_access_token>`；
+    - 机器人名取 **`bot.app_name`**、bot 自身 id 取 **`bot.open_id`**（实测回包形状）；
+    - **`code != 0` 一律算失败**；token 拿不到、回包没 `bot.app_name` 也算失败；
+    - `bot/v3/info` 是**状态查询**，不缓存（`cache=False`：名字变了应立刻反映）。
+    """
+    token = fetch_tenant_token(
+        http, app_id=app_id, app_secret=app_secret, domain=domain, retries=retries
+    )
+    if token is None:
+        return None
+    attempts = max(1, int(retries) + 1)
+    for _ in range(attempts):
+        try:
+            result = http.fetch(
+                bot_info_endpoint(domain),
+                accept="application/json",
+                cache=False,
+                headers={"Authorization": f"Bearer {token.token}"},
+            )
+            payload = _json_object(result)
+        except (FetchError, OnboardError):
+            continue
+        if int(payload.get("code") or 0) != 0:
+            continue
+        bot = payload.get("bot")
+        bot = bot if isinstance(bot, dict) else {}
+        name = str(bot.get("app_name") or "")
+        if not name:
+            continue
+        return BotProbe(
+            app_name=name,
+            open_id=str(bot.get("open_id") or ""),
+            token_expire=int(token.expire),
+        )
     return None

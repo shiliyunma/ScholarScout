@@ -323,3 +323,57 @@ def test_auto_create_failure_falls_back_to_manual(wizard_ctx: AppContext, tmp_pa
     assert "转手工填凭据" in text
     assert "page/launcher?user_code=<USER_CODE>" in text  # 手工分支仍打印模板
     assert "FEISHU_APP_ID=cli_test_app" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------------ Bot 名探测（完成摘要，docs/18 §③④）
+
+
+def test_bot_name_is_probed_and_shown_at_the_end(wizard_ctx: AppContext) -> None:
+    """完成摘要里的 Bot 名来自联网探测（此处把 feishu.probe 打桩成真名）。"""
+    out: list[str] = []
+    rc = feishu_setup.run_setup(
+        wizard_ctx,
+        ask=_scripted(_DEFAULT_ASK),
+        ask_secret=_scripted(_DEFAULT_SECRET),
+        say=out.append,
+        open_url=lambda url: True,
+        dispatch_fn=_wrap_dispatch(
+            {
+                "feishu.probe": {
+                    "ok": True,
+                    "bot_name": "大浩的AI毕设",
+                    "bot_open_id": "ou_54e",
+                    "token_expire": 7200,
+                    "domain": "feishu",
+                    "reason": "ok",
+                }
+            }
+        ),
+    )
+    text = "\n".join(out)
+    assert rc == 0
+    assert "Bot: 大浩的AI毕设" in text
+    assert "✓ 机器人名 大浩的AI毕设" in text  # 自检里也带机器人名
+
+
+def test_bot_name_falls_back_to_unknown_without_blocking(wizard_ctx: AppContext) -> None:
+    """探测抛异常也不能中断向导：回退 unknown 且照常完成（**非阻塞**）。"""
+
+    def boom(ctx, name, params=None):
+        if name == "feishu.probe":
+            raise RuntimeError("network down")
+        return dispatch(ctx, name, params)
+
+    out: list[str] = []
+    rc = feishu_setup.run_setup(
+        wizard_ctx,
+        ask=_scripted(_DEFAULT_ASK),
+        ask_secret=_scripted(_DEFAULT_SECRET),
+        say=out.append,
+        open_url=lambda url: True,
+        dispatch_fn=boom,
+    )
+    text = "\n".join(out)
+    assert rc == 0
+    assert "Bot: unknown" in text
+    assert "✓ 飞书接入已配置！" in text

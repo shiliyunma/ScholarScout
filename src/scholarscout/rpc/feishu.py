@@ -72,13 +72,50 @@ def feishu_status(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         "secret_set": secret_set,
         "connection_mode": _env_mode(),
         "dm_policy": _env_dm_policy(),
+        "group_policy": _env_group_policy(),
         "listener_enabled": bool(ctx.config.runtime.feishu_listener_enabled),
         "listener_port": int(ctx.config.runtime.feishu_listener_port),
-        # P0 不联网探测 bot 名 → 明确给 None，不编
+        # 本方法**不联网**：机器人名恒为 None，真名走 feishu.probe（联网，失败回退 unknown）
         "bot_name": None,
         "temp_open": pairing.temp_open(ctx.db),
         "pending": pairing.pending_count(ctx.db),
         "allowlist": pairing.approved_users(ctx.db),
+    }
+
+
+@method("feishu.probe")
+def feishu_probe(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """联网探测机器人名（`bot.app_name`）与自身 id（`bot.open_id`）+ token 有效期。
+
+    **非阻塞**（docs/01 §3.8 / docs/17 §3.4 / docs/18 §③④）：凭据没配、没出网客户端、
+    网络失败或回包 `code != 0` 都只回 `{ok:false, bot_name:"unknown", reason}`，**绝不抛异常**
+    —— 设置卡片「自检」与向导完成摘要不该因为探测失败而中断。**不回传 token 值**，只回有效期秒数。
+    """
+    params = _params(params)
+    domain = _domain_param(params)
+    app_id = os.environ.get("FEISHU_APP_ID", "").strip()
+    app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
+    unknown: dict[str, Any] = {
+        "ok": False,
+        "bot_name": "unknown",
+        "bot_open_id": "",
+        "token_expire": 0,
+        "domain": domain,
+    }
+    if not (app_id and app_secret):
+        return {**unknown, "reason": "凭据未配置：先填 FEISHU_APP_ID / FEISHU_APP_SECRET"}
+    if ctx.http is None:
+        return {**unknown, "reason": "出网客户端未装配，无法联网探测"}
+    probe = feishu_onboard.probe_bot(ctx.http, app_id=app_id, app_secret=app_secret, domain=domain)
+    if probe is None:
+        return {**unknown, "reason": "探测失败（网络错误或 code!=0）—— 不影响接入，可稍后重试"}
+    return {
+        "ok": True,
+        "bot_name": probe.app_name,
+        "bot_open_id": probe.open_id,
+        "token_expire": probe.token_expire,
+        "domain": domain,
+        "reason": "ok",
     }
 
 

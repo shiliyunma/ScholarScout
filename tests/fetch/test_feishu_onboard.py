@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 import httpx
@@ -258,3 +259,98 @@ def test_registration_endpoint_per_domain() -> None:
     )
     # 未知域名回退到 feishu（不抛，避免向导因一个错字整个挂掉）
     assert feishu_onboard.registration_endpoint("nope") == REGISTRATION_URL
+
+
+# ------------------------------------------------------------------ Bot 名探测（已实测，docs/18 §④）
+
+TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+BOT_URL = "https://open.feishu.cn/open-apis/bot/v3/info"
+#: 实测回包形状（用户在本机真机跑出来的）：换 token 回 tenant_access_token + expire
+_TOKEN_OK = {"code": 0, "msg": "ok", "tenant_access_token": "t-" + "a" * 40, "expire": 7200}
+_BOT_OK = {"code": 0, "msg": "ok", "bot": {"app_name": "大浩的AI毕设", "open_id": "ou_54eabc"}}
+
+
+def _probe_client(handler: Callable[[httpx.Request], httpx.Response]) -> HttpClient:
+    return make_client(handler, clock=FakeClock(), slept=[])
+
+
+def test_probe_bot_sends_exact_requests_and_parses_the_real_shape() -> None:
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            {
+                "url": str(request.url),
+                "method": request.method,
+                "auth": request.headers.get("authorization", ""),
+                "body": request.content.decode("utf-8"),
+                "content_type": request.headers.get("content-type", ""),
+            }
+        )
+        if str(request.url) == TOKEN_URL:
+            return httpx.Response(200, json=_TOKEN_OK)
+        return httpx.Response(200, json=_BOT_OK)
+
+    probe = feishu_onboard.probe_bot(_probe_client(handler), app_id="cli_x", app_secret="sec_x")
+    assert probe is not None
+    assert probe.app_name == "大浩的AI毕设"  # 名字取 bot.app_name
+    assert probe.open_id == "ou_54eabc"  # bot 自身 id 取 bot.open_id
+    assert probe.token_expire == 7200  # 有效期来自换 token 的 expire
+
+    token_call, bot_call = seen  # 先换 token 再打 bot/v3/info
+    assert token_call["url"] == TOKEN_URL and token_call["method"] == "POST"
+    assert str(token_call["content_type"]).startswith("application/json")
+    assert json.loads(str(token_call["body"])) == {"app_id": "cli_x", "app_secret": "sec_x"}
+    assert bot_call["url"] == BOT_URL and bot_call["method"] == "GET"
+    assert bot_call["auth"] == "Bearer " + str(_TOKEN_OK["tenant_access_token"])
+
+
+def test_probe_bot_caps_retries_when_token_code_is_nonzero() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"code": 99991, "msg": "bad credentials"})
+
+    probe = feishu_onboard.probe_bot(
+        _probe_client(handler), app_id="cli", app_secret="sec", retries=2
+    )
+    assert probe is None
+    # code!=0 算失败：重试 ≤2 => 至多 3 次换 token；且**不**去打 bot/v3/info
+    assert calls == [TOKEN_URL] * feishu_onboard.PROBE_MAX_ATTEMPTS
+
+
+def test_probe_bot_nonzero_code_on_bot_info_is_a_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == TOKEN_URL:
+            return httpx.Response(200, json=_TOKEN_OK)
+        return httpx.Response(200, json={"code": 99991, "msg": "no bot"})
+
+    probe = feishu_onboard.probe_bot(_probe_client(handler), app_id="a", app_secret="s", retries=0)
+    assert probe is None
+
+
+def test_probe_bot_returns_none_when_token_missing_in_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 0, "msg": "ok", "expire": 7200})
+
+    probe = feishu_onboard.probe_bot(_probe_client(handler), app_id="a", app_secret="s", retries=0)
+    assert probe is None
+
+
+def test_probe_bot_swallows_transport_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    # 非阻塞：连接错误不外抛，只回 None
+    probe = feishu_onboard.probe_bot(_probe_client(handler), app_id="a", app_secret="s", retries=1)
+    assert probe is None
+
+
+def test_bot_endpoints_per_domain() -> None:
+    assert feishu_onboard.tenant_token_endpoint("feishu") == TOKEN_URL
+    assert feishu_onboard.bot_info_endpoint("feishu") == BOT_URL
+    assert feishu_onboard.tenant_token_endpoint("lark").startswith("https://open.larksuite.com/")
+    assert feishu_onboard.bot_info_endpoint("lark").startswith("https://open.larksuite.com/")
+    # 未知域名回退 feishu（与 registration_endpoint 同取舍）
+    assert feishu_onboard.bot_info_endpoint("nope") == BOT_URL

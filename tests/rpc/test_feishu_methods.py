@@ -184,3 +184,84 @@ def test_onboard_poll_requires_device_code(ctx: AppContext) -> None:
     ctx.http = _stub_http(lambda request: None)  # type: ignore[assignment]
     with pytest.raises(RpcError):
         dispatch(ctx, "feishu.onboard.poll", {})
+
+
+# ------------------------------------------------------------------ Bot 名探测（feishu.probe，docs/01 §3.8）
+
+_TOKEN_OK = {"code": 0, "msg": "ok", "tenant_access_token": "tok-" + "a" * 38, "expire": 7200}
+_BOT_OK = {"code": 0, "msg": "ok", "bot": {"app_name": "大浩的AI毕设", "open_id": "ou_54eabc"}}
+
+
+def test_probe_without_credentials_is_non_blocking(ctx: AppContext) -> None:
+    """凭据没配也要回结构完整的 unknown，而不是抛异常（自检/向导不该被中断）。"""
+    result = dispatch(ctx, "feishu.probe", {})
+    assert result["ok"] is False
+    assert result["bot_name"] == "unknown"
+    assert result["token_expire"] == 0
+    assert "凭据未配置" in result["reason"]
+
+
+def test_probe_without_http_client_is_non_blocking(
+    ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    result = dispatch(ctx, "feishu.probe", {})
+    assert result["ok"] is False and result["bot_name"] == "unknown"
+    assert "出网客户端未装配" in result["reason"]
+
+
+def test_probe_returns_bot_name_and_never_leaks_the_token(
+    ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/tenant_access_token/internal"):
+            return httpx.Response(200, json=_TOKEN_OK)
+        return httpx.Response(200, json=_BOT_OK)
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    ctx.http = _stub_http(handler)  # type: ignore[assignment]
+    result = dispatch(ctx, "feishu.probe", {})
+    assert result["ok"] is True
+    assert result["bot_name"] == "大浩的AI毕设"  # 名取 bot.app_name
+    assert result["bot_open_id"] == "ou_54eabc"  # 自身 id 取 bot.open_id
+    assert result["token_expire"] == 7200
+    blob = json.dumps(result, ensure_ascii=False)
+    assert str(_TOKEN_OK["tenant_access_token"]) not in blob, "token 值被回传了"
+    assert "sec_x" not in blob
+
+
+def test_probe_treats_nonzero_code_as_unknown(
+    ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 99991, "msg": "bad"})
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    ctx.http = _stub_http(handler)  # type: ignore[assignment]
+    result = dispatch(ctx, "feishu.probe", {})
+    assert result["ok"] is False and result["bot_name"] == "unknown"
+
+
+def test_probe_swallows_transport_errors(ctx: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    ctx.http = _stub_http(handler)  # type: ignore[assignment]
+    result = dispatch(ctx, "feishu.probe", {})
+    assert result["ok"] is False and result["bot_name"] == "unknown"
+
+
+def test_probe_rejects_unknown_domain(ctx: AppContext) -> None:
+    with pytest.raises(RpcError):
+        dispatch(ctx, "feishu.probe", {"domain": "mars"})

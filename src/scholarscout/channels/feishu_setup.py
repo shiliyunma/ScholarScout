@@ -108,6 +108,20 @@ def _tick(label: str, ok: bool) -> str:
     return f"  {'✓' if ok else '·'} {label}"
 
 
+def _probe_bot_name(*, ctx: AppContext, dispatch_fn: Dispatch, domain: str) -> str:
+    """向导完成时联网探测机器人名；**失败/无凭据一律回退 `unknown`，不阻塞**（docs/18 §③④）。
+
+    探测是增强项：`feishu.probe` 本身就非阻塞（失败回 `ok:false`），这里再兜一层，
+    保证向导**永远不会**因为探测而中断。
+    """
+    try:
+        result = dispatch_fn(ctx, "feishu.probe", {"domain": domain})
+    except Exception:  # 探测失败绝不能中断向导
+        return "unknown"
+    name = str((result or {}).get("bot_name") or "").strip()
+    return name or "unknown"
+
+
 def _try_auto_create(
     *,
     ctx: AppContext,
@@ -321,11 +335,15 @@ def run_setup(
             _write_env({"FEISHU_HOME_CHANNEL": home})
 
         # ---- 10. 完成摘要（不打印 Secret）----
+        # Bot 名联网探测：拿到就显示真名，拿不到回退 unknown（**不阻塞**，docs/18 §③④）
+        bot_name = _probe_bot_name(ctx=ctx, dispatch_fn=dispatch_fn, domain=domain)
         say("")
         say("✓ 飞书接入已配置！")
         say(f"App ID: {app_id}")
         say(f"Domain: {domain}")
-        say("Bot: unknown（P0 不联网探测 bot 名）")
+        say(f"Bot: {bot_name}")
+        if bot_name == "unknown":
+            say("   （没探测到机器人名：本机无出网或凭据未配；不影响接入）")
         say(f"连接模式: {connection_mode}｜群聊: {group_policy}｜DM: {dm_policy}")
         say("配置已写入 .env；重启应用即生效。")
 
@@ -353,6 +371,7 @@ def run_setup(
                 f"  · 白名单：{len(status['allowlist'])} 个身份（当前 DM 策略 {dm_policy}，可不使用白名单）"
             )
         say(_tick("临时放行已收回", not bool(status["temp_open"])))
+        say(_tick(f"机器人名 {bot_name}", bot_name != "unknown"))
         return 0
     except KeyboardInterrupt:
         say("\n已取消飞书接入向导。")
