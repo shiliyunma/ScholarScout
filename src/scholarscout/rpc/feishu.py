@@ -82,10 +82,30 @@ def feishu_status(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@method("feishu.access")
+def feishu_access(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """运行时拦截取数口（渠道层专用，**渠道层不读库**，docs/17 §3.4）。
+
+    给一个 `open_id`，回三件渠道层做放行判定需要的最小事实：
+    - `approved`：该 open_id 是否在白名单（误匹配一律 False）；
+    - `temp_open`：当前是否处于「临时放行」（还没批准任何身份时渠道层先放行）；
+    - `dm_policy`：当前 DM 策略（`pairing`/`all`/`allowlist`）。
+
+    **只回判定所需的最小事实**，不回身份明细、不回码 —— 渠道层拿这些就够了。
+    `open_id` 缺省/为空按未授权处理（不回 `approved:true`）。
+    """
+    params = _params(params)
+    open_id = str(params.get("open_id") or "").strip()
+    return {
+        "approved": pairing.is_approved(ctx.db, open_id) if open_id else False,
+        "temp_open": pairing.temp_open(ctx.db),
+        "dm_policy": _env_dm_policy(),
+    }
+
+
 @method("feishu.dm_policy")
 def feishu_dm_policy(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """设置私聊授权策略（写 `.env` 的渠道层开关，键名照参照体验）。"""
-    params = _params(params)
     policy = str(params.get("policy") or "").strip().lower()
     if policy not in DM_POLICIES:
         raise RpcError(Code.INVALID_PARAMS, f"policy 只能是：{'、'.join(DM_POLICIES)}")

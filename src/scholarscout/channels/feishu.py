@@ -99,6 +99,9 @@ DEFAULT_CONNECTION_MODE = "webhook"
 #: 群聊策略：mention=仅被 @ 时响应 / disabled=关闭（对齐参照体验的二选一）
 SUPPORTED_GROUP_POLICIES = ("mention", "disabled")
 DEFAULT_GROUP_POLICY = "mention"
+#: 私聊（DM）授权策略：pairing=配对审批（默认，未授权不跑会话）/ all=放行全部 / allowlist=仅白名单
+SUPPORTED_DM_POLICIES = ("pairing", "all", "allowlist")
+DEFAULT_DM_POLICY = "pairing"
 
 
 def open_entry_url(domain: str = "feishu") -> str:
@@ -133,6 +136,22 @@ def group_policy_from_env() -> str:
     """渠道层的群聊策略（读 `.env` 的 `FEISHU_GROUP_POLICY`）。"""
     policy = (os.environ.get("FEISHU_GROUP_POLICY") or DEFAULT_GROUP_POLICY).strip().lower()
     return policy if policy in SUPPORTED_GROUP_POLICIES else DEFAULT_GROUP_POLICY
+
+
+def dm_policy_from_env() -> str:
+    """渠道层的私聊策略（读 `.env` 的 `FEISHU_DM_POLICY`；与 `rpc/feishu.py` 同名键）。"""
+    policy = (os.environ.get("FEISHU_DM_POLICY") or DEFAULT_DM_POLICY).strip().lower()
+    return policy if policy in SUPPORTED_DM_POLICIES else DEFAULT_DM_POLICY
+
+
+def bot_open_id_from_env() -> str:
+    """机器人自身 open_id（键名照 Hermes `FEISHU_BOT_OPEN_ID`，adapter.py:1316）。"""
+    return os.environ.get("FEISHU_BOT_OPEN_ID", "").strip()
+
+
+def bot_name_from_env() -> str:
+    """机器人名字（键名照 Hermes `FEISHU_BOT_NAME`，adapter.py:1318）。"""
+    return os.environ.get("FEISHU_BOT_NAME", "").strip()
 
 
 def registration_from_env() -> str:
@@ -199,12 +218,19 @@ def credentials_from_env() -> FeishuCredentials:
 
 @dataclass(frozen=True)
 class FeishuMessage:
-    """一条飞书文本消息（本模块只认文本，第一版够用）。"""
+    """一条飞书文本消息（本模块只认文本，第一版够用）。
+
+    `chat_type`（`p2p` / `group`）与 `mentions`（消息里 @ 到的人）是**运行时拦截**的依据
+    （docs/17 §3.4）：群聊按 `@提及` 策略、私聊按 DM 策略。两者缺省即"私聊、没 @ 谁"。
+    """
 
     chat_id: str
     text: str
     message_id: str
     sender_open_id: str
+    chat_type: str = ""
+    #: 消息 @ 到的人：`(open_id, name)` 列表（顺序照飞书原样），用于"是否 @ 了机器人"的判定
+    mentions: tuple[tuple[str, str], ...] = ()
 
 
 # ------------------------------------------------------------------ 纯函数（可单独测）
@@ -295,7 +321,105 @@ def parse_message_event(payload: Mapping[str, Any]) -> FeishuMessage | None:
         text=text,
         message_id=str(message.get("message_id") or ""),
         sender_open_id=open_id,
+        chat_type=str(message.get("chat_type") or ""),
+        mentions=_parse_mentions(message.get("mentions")),
     )
+
+
+def _parse_mentions(raw: Any) -> tuple[tuple[str, str], ...]:
+    """解析 `message.mentions`（`[{"key":..., "id":{"open_id":...}, "name":...}]`）。
+
+    Hermes 的 `_message_mentions_bot` 按 `open_id > user_id > name` 判定（`adapter.py:3318-3322`）；
+    本模块只存 `(open_id, name)` 两种，判定在 :func:`bot_mentioned` 里做。
+    """
+    if not isinstance(raw, list):
+        return ()
+    mentions: list[tuple[str, str]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        mention_id = item.get("id")
+        open_id = ""
+        if isinstance(mention_id, Mapping):
+            open_id = str(mention_id.get("open_id") or "")
+        mentions.append((open_id, str(item.get("name") or "")))
+    return tuple(mentions)
+
+
+#: 未授权私聊时回的配对提示（docs/17 §3.4 / docs/18 §③：用户把向导生成的码发回来）
+PAIRING_PROMPT = (
+    "你好～ 我还没被授权为任何人服务。\n"
+    "请在机器人主人那侧的 ScholarScout 里运行「飞书接入向导 / 设置页」生成一枚配对码，"
+    "然后把那 8 位码**直接私聊发给我**，主人确认后即可使用。"
+)
+#: 收到配对码并成功登记后的回执（不跑会话）
+PAIRING_CLAIMED_REPLY = "收到配对码，已登记。请在机器人主人那侧确认配对（只需点一下批准）。"
+
+
+@dataclass(frozen=True)
+class InterceptDecision:
+    """一条消息的处置决定（运行时拦截的出口，可单独断言）。
+
+    `action`：`run`（跑会话）/ `pair`（只回配对提示，不跑会话）/ `drop`（丢弃并记日志）。
+    `reason` 用于日志与测试；`reply` 是 `pair` 时回给用户的文本。
+    """
+
+    action: str  # "run" | "pair" | "drop"
+    reason: str = ""
+    reply: str = ""
+
+
+def bot_mentioned(message: FeishuMessage, *, bot_open_id: str = "", bot_name: str = "") -> bool:
+    """消息是否 @ 了机器人。
+
+    判定优先级照 Hermes `_FeishuBotIdentity.matches`（`adapter.py:3318-3322`）：
+    `open_id` 优先；`name` 作兜底（仅在配置了 bot 名时精确比对）。两者都没配 → 一律 False
+    （宁可漏过、也不把"没 @ 谁"当成"@ 了机器人"）。
+    """
+    for open_id, name in message.mentions:
+        if bot_open_id and open_id and open_id == bot_open_id:
+            return True
+        if not bot_open_id and bot_name and name and name == bot_name:
+            return True
+    return False
+
+
+def authorize_message(
+    message: FeishuMessage,
+    *,
+    dm_policy: str,
+    group_policy: str,
+    approved: bool,
+    temp_open: bool = False,
+    bot_open_id: str = "",
+    bot_name: str = "",
+) -> InterceptDecision:
+    """运行时拦截的核心（纯函数，便于正反例桩测；docs/17 §3.4）。
+
+    规则（对齐参照体验）：
+    - **群聊**：`disabled` 一律丢弃；`mention` 仅在被 @ 时跑，否则丢弃；
+    - **私聊**：`all` 放行；`allowlist` 只放行白名单，名单外丢弃；`pairing`（默认）**未授权不跑会话**，
+      只回配对提示（`approved` 或「临时放行」时放行）。
+    """
+    if message.chat_type == "group":
+        if group_policy == "disabled":
+            return InterceptDecision("drop", "group_disabled")
+        if not bot_mentioned(message, bot_open_id=bot_open_id, bot_name=bot_name):
+            return InterceptDecision("drop", "group_no_mention")
+        return InterceptDecision("run", "group_mentioned")
+
+    if dm_policy == "all":
+        return InterceptDecision("run", "dm_all")
+    if dm_policy == "allowlist":
+        if approved:
+            return InterceptDecision("run", "dm_allowlisted")
+        return InterceptDecision("drop", "not_allowlisted")
+    # 默认：pairing —— 未授权只回配对提示，绝不执行会话
+    if approved:
+        return InterceptDecision("run", "dm_paired")
+    if temp_open:
+        return InterceptDecision("run", "dm_temp_open")
+    return InterceptDecision("pair", "dm_unpaired", reply=PAIRING_PROMPT)
 
 
 class RecordingSender:
@@ -326,6 +450,8 @@ class FeishuWebhook:
         source: str = "feishu",
         rate_limit_max: int = RATE_LIMIT_MAX,
         rate_window_s: int = RATE_WINDOW_SECONDS,
+        bot_open_id: str | None = None,
+        bot_name: str | None = None,
     ) -> None:
         self._ctx = ctx
         self._credentials = credentials or credentials_from_env()
@@ -335,6 +461,9 @@ class FeishuWebhook:
         self._rate_window_s = rate_window_s
         self._rate_counts: dict[str, list[float]] = {}
         self._rate_lock = threading.Lock()
+        #: 机器人自身身份（群聊 @提及 判定用）。默认读 `.env`，可注入替换（桩测）。
+        self._bot_open_id = bot_open_id if bot_open_id is not None else bot_open_id_from_env()
+        self._bot_name = bot_name if bot_name is not None else bot_name_from_env()
 
         if sender is not None:
             self._sender: Sender = sender
@@ -351,6 +480,103 @@ class FeishuWebhook:
     @property
     def credentials(self) -> FeishuCredentials:
         return self._credentials
+
+    def _decide(self, message: FeishuMessage) -> tuple[InterceptDecision, dict[str, Any]]:
+        """拿白名单状态（经 RPC）后做运行时拦截判定，返回（决定, 原始访问状态）。
+
+        **渠道层不读库**：`approved` / `temp_open` / `dm_policy` 都由 `feishu.access` RPC 给出
+        （`docs/17 §3.4`、`docs/01 §3.8`）；群聊策略读 `.env`（与本模块同名键）。
+        取不到访问状态时**保守处理**（不误放行）：私聊按未授权回配对提示、群聊丢弃。
+        """
+        group_policy = group_policy_from_env()
+        try:
+            access = self._dispatcher(
+                self._ctx, "feishu.access", {"open_id": message.sender_open_id}
+            )
+        except Exception as exc:  # RPC 失败不能变成"放行"（那就等于没拦）
+            logger.warning("[Feishu] 取访问状态失败，按未授权处理：%s", exc)
+            access = {"approved": False, "temp_open": False, "dm_policy": dm_policy_from_env()}
+        decision = authorize_message(
+            message,
+            dm_policy=str(access.get("dm_policy") or dm_policy_from_env()),
+            group_policy=group_policy,
+            approved=bool(access.get("approved")),
+            temp_open=bool(access.get("temp_open")),
+            bot_open_id=self._bot_open_id,
+            bot_name=self._bot_name,
+        )
+        return decision, dict(access)
+
+    def _try_claim(self, message: FeishuMessage) -> bool:
+        """未授权私聊：**先把整条消息当配对码登记**。
+
+        登记成功（码对得上）就回一句回执并返回 True —— **不跑任何会话**，也不再用配对提示
+        覆盖它。这是"用户把向导生成的码私聊发回来"的唯一入口（`docs/18 §③`）。
+        码不对/过期/登记失败都返回 False（正常路径，不是错误）。
+        """
+        code = message.text.strip()
+        if not (code and message.sender_open_id):
+            return False
+        try:
+            claimed = self._dispatcher(
+                self._ctx,
+                "feishu.pairing.claim",
+                {"code": code, "open_id": message.sender_open_id},
+            )
+        except Exception as exc:  # 登记失败不是错误路径，按普通未授权处理
+            logger.warning("[Feishu] 配对码登记失败：%s", exc)
+            return False
+        if claimed and claimed.get("claimed"):
+            logger.info("[Feishu] 配对码已登记：sender=%s", message.sender_open_id)
+            self._sender(message.chat_id, PAIRING_CLAIMED_REPLY)
+            return True
+        return False
+
+    def _run_turn(self, message: FeishuMessage) -> None:
+        """一条消息 = 一次会话请求：**先过运行时拦截**，再幂等拿会话 → 跑一轮 → 回包。
+
+        拦截顺序（对齐 `docs/17 §3.4`）：
+        `drop` → 记日志丢弃；未授权私聊 → **先给一次配对码登记机会**（登记成功只回执、不跑会话），
+        否则 `pair` 回配对提示、`run`（含"临时放行"）才真跑。
+        """
+        decision, access = self._decide(message)
+        if decision.action == "drop":
+            logger.warning(
+                "[Feishu] 消息被丢弃（%s）chat_id=%s sender=%s",
+                decision.reason,
+                message.chat_id,
+                message.sender_open_id,
+            )
+            return
+        # 未授权私聊：先尝试把它当配对码登记（临时放行期间同样先试一次，否则码会被当普通消息跑掉）
+        if (
+            message.chat_type != "group"
+            and not bool(access.get("approved"))
+            and self._try_claim(message)
+        ):
+            return
+        if decision.action == "pair":
+            self._sender(message.chat_id, decision.reply or PAIRING_PROMPT)
+            return
+
+        ensured = self._dispatcher(
+            self._ctx,
+            "session.ensure",
+            {"session_key": message.chat_id, "source": self._source},
+        )
+        session_id = str(ensured["session_id"])
+        result = self._dispatcher(
+            self._ctx, "chat.send", {"session_id": session_id, "text": message.text}
+        )
+        reply_text = str((result or {}).get("text") or "")
+        self._sender(message.chat_id, reply_text)
+        logger.info(
+            "[Feishu] chat_id=%s → session=%s（stop_reason=%s，回复 %d 字）",
+            message.chat_id,
+            session_id,
+            (result or {}).get("stop_reason"),
+            len(reply_text),
+        )
 
     def _check_rate(self, rate_key: str) -> bool:
         """滑动窗口限速（键 `app_id:path:remote_ip`，照 Hermes adapter.py:2776-2785）。"""
@@ -413,27 +639,6 @@ class FeishuWebhook:
             except Exception as exc:  # 事件处理失败也要回 200（否则飞书会重试风暴）
                 logger.warning("[Feishu] 处理消息事件失败（已回 200 结束重试）：%s", exc)
         return 200, dict(SUCCESS_BODY)
-
-    def _run_turn(self, message: FeishuMessage) -> None:
-        """一条消息 = 一次会话请求：幂等拿会话 → 跑一轮 → 把回复送回去。"""
-        ensured = self._dispatcher(
-            self._ctx,
-            "session.ensure",
-            {"session_key": message.chat_id, "source": self._source},
-        )
-        session_id = str(ensured["session_id"])
-        result = self._dispatcher(
-            self._ctx, "chat.send", {"session_id": session_id, "text": message.text}
-        )
-        reply_text = str((result or {}).get("text") or "")
-        self._sender(message.chat_id, reply_text)
-        logger.info(
-            "[Feishu] chat_id=%s → session=%s（stop_reason=%s，回复 %d 字）",
-            message.chat_id,
-            session_id,
-            (result or {}).get("stop_reason"),
-            len(reply_text),
-        )
 
 
 # ------------------------------------------------------------------ stdlib HTTP 监听
