@@ -1601,10 +1601,13 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .group-toggle {
   width: 100%;
   text-align: left;
+  /* 透明底但要留住描边：组头得看得出是「可点的分组条」，与普通资料行区分开。
+     别写 var(--border) —— 这套设计令牌里根本没有 --border（未定义 → 整条 border 声明
+     在计算值阶段失效 → 连 button 基类的描边一起被抹掉，组头就成了裸文字）。用 --ui-* 家族。 */
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--muted-foreground);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  color: var(--ui-text-secondary);
   font: inherit;
   font-size: 12px;
   padding: 3px 6px;
@@ -1612,8 +1615,8 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 
 .group-toggle:hover {
-  background: var(--accent);
-  color: var(--foreground);
+  background: var(--ui-control-hover-background);
+  color: var(--ui-text-primary);
 }
 
 /* 详情里的「原文 / 摘要」小节标签 */
@@ -3273,10 +3276,13 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .group-toggle {
   width: 100%;
   text-align: left;
+  /* 透明底但要留住描边：组头得看得出是「可点的分组条」，与普通资料行区分开。
+     别写 var(--border) —— 这套设计令牌里根本没有 --border（未定义 → 整条 border 声明
+     在计算值阶段失效 → 连 button 基类的描边一起被抹掉，组头就成了裸文字）。用 --ui-* 家族。 */
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--muted-foreground);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  color: var(--ui-text-secondary);
   font: inherit;
   font-size: 12px;
   padding: 3px 6px;
@@ -3284,8 +3290,8 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 
 .group-toggle:hover {
-  background: var(--accent);
-  color: var(--foreground);
+  background: var(--ui-control-hover-background);
+  color: var(--ui-text-primary);
 }
 
 /* 详情里的「原文 / 摘要」小节标签 */
@@ -4975,10 +4981,13 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .group-toggle {
   width: 100%;
   text-align: left;
+  /* 透明底但要留住描边：组头得看得出是「可点的分组条」，与普通资料行区分开。
+     别写 var(--border) —— 这套设计令牌里根本没有 --border（未定义 → 整条 border 声明
+     在计算值阶段失效 → 连 button 基类的描边一起被抹掉，组头就成了裸文字）。用 --ui-* 家族。 */
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--muted-foreground);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  color: var(--ui-text-secondary);
   font: inherit;
   font-size: 12px;
   padding: 3px 6px;
@@ -4986,8 +4995,8 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 
 .group-toggle:hover {
-  background: var(--accent);
-  color: var(--foreground);
+  background: var(--ui-control-hover-background);
+  color: var(--ui-text-primary);
 }
 
 /* 详情里的「原文 / 摘要」小节标签 */
@@ -6647,10 +6656,13 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .group-toggle {
   width: 100%;
   text-align: left;
+  /* 透明底但要留住描边：组头得看得出是「可点的分组条」，与普通资料行区分开。
+     别写 var(--border) —— 这套设计令牌里根本没有 --border（未定义 → 整条 border 声明
+     在计算值阶段失效 → 连 button 基类的描边一起被抹掉，组头就成了裸文字）。用 --ui-* 家族。 */
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--muted-foreground);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  color: var(--ui-text-secondary);
   font: inherit;
   font-size: 12px;
   padding: 3px 6px;
@@ -6658,8 +6670,8 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 
 .group-toggle:hover {
-  background: var(--accent);
-  color: var(--foreground);
+  background: var(--ui-control-hover-background);
+  color: var(--ui-text-primary);
 }
 
 /* 详情里的「原文 / 摘要」小节标签 */
@@ -6783,9 +6795,12 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   overflow: auto;
 }
 
-/* 资料库分组折叠：用 class 控制显隐 —— .source-row 自带 display，CSS 的 display 会盖过 [hidden]，
-   所以之前"点三角没反应"。 */
-.source-row.is-folded-row {
+/* 资料库分组折叠：class + display:none。
+   ⚠️ 选择器必须带 #source-list 前缀：基础规则是 `#source-list li.source-row { display: flex }`
+   —— 那是 id 选择器（权重 1,1,1），裸的 `.source-row.is-folded-row`（0,2,0）**压不过它**，
+   于是 class 明明加上了、display 仍是 flex（上一轮"点三角没反应"就是这么来的）。
+   顺带：`[hidden]` 属性同样会被 id 规则盖掉，所以这里统一用类，别混。 */
+#source-list li.source-row.is-folded-row {
   display: none;
 }
 
