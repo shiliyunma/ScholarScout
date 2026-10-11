@@ -29,6 +29,8 @@ RULES: dict[str, tuple[str, ...]] = {
     # 领域逻辑：可以用 state，不该碰运行时、协议、界面
     "learning": ("runtime", "rpc", "desktop", "tools"),
     "grading": ("runtime", "rpc", "desktop", "tools"),
+    # 资料归档与索引：读库 + 落盘，同样不碰运行时、协议、界面与工具
+    "library": ("runtime", "rpc", "desktop", "tools"),
     # 运行时（回合循环 / 工具注册）：可以用下面的全部，不该碰协议与界面
     "runtime": ("rpc", "desktop"),
     # 工具实现：同上

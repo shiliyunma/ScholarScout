@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 from urllib.parse import urlparse
 
 from scholarscout import paths
 from scholarscout.fetch.html_text import extract_html
+from scholarscout.library import naming
 from scholarscout.providers.base import canonical_url
 from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
@@ -223,6 +225,15 @@ def _document_row(ctx: ToolContext, source_id: str, sha256: str) -> dict[str, An
     return dict(row) if row is not None else None
 
 
+def _meta_of(raw: Any) -> dict[str, Any]:
+    """``sources.meta_json`` → dict；坏 JSON 就当空（命名回落，不因为一个坏字段炸掉抓取）。"""
+    try:
+        parsed = json.loads(str(raw or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def source_fetch(
     ctx: ToolContext,
     url: str | None = None,
@@ -247,8 +258,10 @@ def source_fetch(
     is_pdf = "pdf" in media_type.lower() or url.lower().endswith(".pdf")
 
     # ---- 去重快路径：同来源同内容已经抓过，直接返回既有结果（不重复调模型）
+    # 顺手把来源元数据取出来：命名要的类型 / 标题 / 发表月份此刻就能拿到（docs/19 §4）。
     existing_source = ctx.db.query_one(
-        "SELECT id FROM sources WHERE url_canonical = ?", (canonical_url(url),)
+        "SELECT id, title, source_type, meta_json FROM sources WHERE url_canonical = ?",
+        (canonical_url(url),),
     )
     if existing_source is not None and not force:
         found = _document_row(ctx, str(existing_source["id"]), sha256)
@@ -347,11 +360,25 @@ def source_fetch(
         text = text[:max_chars]
 
     extension = _extension(media_type, url, is_pdf)
-    raw_file = paths.raw_path_for(sha256, extension)
+    source_type = (
+        str(existing_source["source_type"])
+        if existing_source is not None
+        else guess_source_type(url)
+    )
+    source_title = str(existing_source["title"]) if existing_source is not None else ""
+    meta = _meta_of(existing_source["meta_json"]) if existing_source is not None else {}
+    domain = naming.domain_of(url)
+    year_month = naming.year_month_for(url, meta)
+    name_title = naming.pick_title(title, source_title)
+
+    # 新布局：data/raw/<类型>/<年-月>/<标题>--<sha8>.<ext>，全文同桶同名只差后缀（docs/19 §1/§2）。
+    raw_file = paths.raw_path_for_doc(
+        source_type, year_month, name_title, sha256, extension, domain=domain
+    )
     raw_file.parent.mkdir(parents=True, exist_ok=True)
     raw_file.write_bytes(content)
 
-    text_file = paths.text_path_for(doc_id)
+    text_file = paths.text_path_for_doc(source_type, year_month, name_title, sha256, domain=domain)
     text_file.parent.mkdir(parents=True, exist_ok=True)
     text_file.write_text(text, encoding="utf-8")
 

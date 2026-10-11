@@ -299,7 +299,11 @@ def test_archive_paths_reports_existence_after_fetch(
 
     payload = dispatch(ctx, "archive.paths", {"doc_id": doc_id})
     assert payload["exists"] == {"raw_path": True, "text_path": True}
-    assert payload["raw_path"].startswith("data/raw/")
+    # 新布局：类型/年-月 分桶 + 人类可读文件名，全文与原件同名只差后缀（docs/19 §2）
+    assert payload["raw_path"].startswith("data/raw/doc/unknown/教育智能体文档--")
+    assert payload["raw_path"].endswith(".html")
+    assert payload["text_path"].startswith("data/text/doc/unknown/教育智能体文档--")
+    assert payload["text_path"].endswith(".txt")
 
 
 def test_guess_source_type() -> None:

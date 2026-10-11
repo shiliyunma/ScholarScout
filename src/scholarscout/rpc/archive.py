@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from scholarscout import paths
+from scholarscout.library import index as library_index
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.rpc.registry import AppContext, _int_param, _params, _require, method
 from scholarscout.state import archive
@@ -105,6 +106,16 @@ def archive_paths(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     if payload is None:
         raise RpcError(Code.NOT_FOUND, f"资料不存在：{doc_id}")
     return payload
+
+
+@method("archive.reindex")
+def archive_reindex(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """重建 ``data/library/`` 下的资料索引（全库 + 各桶）。**只读库、零模型调用**。
+
+    改名/迁移后索引会过期，界面靠它一键重算，不必手改 Markdown（docs/01 §3.3、docs/19 §2）。
+    """
+    _params(params)
+    return library_index.write_indexes(ctx.db)
 
 
 def _launch_with_system(target: Path) -> None:

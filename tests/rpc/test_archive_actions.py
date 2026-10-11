@@ -102,3 +102,19 @@ def test_reveal_missing_path_is_not_found(ctx: AppContext) -> None:
     with pytest.raises(RpcError) as exc:
         dispatch(ctx, "archive.reveal", {"path": "data/notes/不存在.md"})
     assert exc.value.code == -32002
+
+
+def test_reindex_rebuilds_library_index(ctx: AppContext, tmp_path: Path) -> None:
+    """``archive.reindex`` 用库里的资料重建 ``data/library/`` 下的清单（docs/01 §3.3）。"""
+    _document(ctx)
+
+    payload = dispatch(ctx, "archive.reindex", {})
+
+    assert payload["ok"] is True
+    assert payload["total"] == 1
+    assert payload["index_path"] == "data/library/index.md"
+    body = (tmp_path / "data" / "library" / "index.md").read_text(encoding="utf-8")
+    assert "A Test Paper" in body
+    assert "arxiv.org" in body
+    # 这篇来自 arxiv 2501.0000x → 落 paper/2025-01 桶
+    assert (tmp_path / "data" / "library" / "paper" / "2025-01" / "index.md").is_file()
