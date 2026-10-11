@@ -330,6 +330,62 @@ function initLayout() {
 }
 
 
+/* ------------------------------------------------ 左栏（会话）收起 / 展开 */
+
+/*: localStorage 键（与 scout:theme / scout:layout / scout:uiScale 同一个前缀与风格）。 */
+var SIDEBAR_COLLAPSE_KEY = "scout:sidebarCollapsed";
+
+
+/** 纯函数：存档值 → 是否收起。**只有 "1" 算收起**（没存过、被写坏了都当展开）。 */
+function sidebarCollapsedFromStored(raw) {
+  return raw === "1";
+}
+
+
+/** 纯函数：是否收起 → 存档值。 */
+function sidebarStoredValue(collapsed) {
+  return collapsed ? "1" : "0";
+}
+
+
+/** 读存档；localStorage 不可用（隐私模式）时当展开，不因此报错。 */
+function readSidebarCollapsed() {
+  try {
+    return sidebarCollapsedFromStored(localStorage.getItem(SIDEBAR_COLLAPSE_KEY));
+  } catch (error) {
+    return false;
+  }
+}
+
+
+/** 应用收起态：类挂在 .layout 上（CSS 靠它改 grid 轨道），按钮的文案/箭头随状态变。
+    persist === false 时不回写 localStorage（启动时读存档用）。 */
+function applySidebarCollapsed(collapsed, persist) {
+  state.sidebarCollapsed = collapsed;
+  const layout = layoutEl();
+  if (layout) layout.classList.toggle("is-side-collapsed", collapsed);
+  const button = el("btn-side-toggle");
+  if (button) {
+    const label = collapsed ? "展开侧栏" : "收起侧栏";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  }
+  if (persist !== false) {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSE_KEY, sidebarStoredValue(collapsed));
+    } catch (error) {
+      /* 存不了就算了：只是不持久化，不影响本次收起 */
+    }
+  }
+}
+
+
+function toggleSidebarCollapsed() {
+  applySidebarCollapsed(!state.sidebarCollapsed);
+}
+
+
 function wireSplitter(id, side) {
   const handle = el(id);
   if (!handle) return;

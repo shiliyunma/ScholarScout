@@ -6894,3 +6894,58 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 .feishu-probe-out { margin: 0; }
 
+
+/* ───────────────────────────────────────── 左栏（会话）收起 / 展开 */
+
+/* 列宽 --col-left 是 JS 写在 .layout 的内联样式上的（内联权重最高），所以收起态**不能**
+   去改 --col-left —— 改的是 .layout 自己的 grid 轨道：类规则 .layout.is-side-collapsed
+   权重 0,2,0 > 基础 .layout 的 0,1,0，能压过去；内联样式只设了 --col-left/--col-right
+   两个自定义属性，没设 grid-template-columns，所以这里改轨道是安全的。
+   收起后左栏只留一条 46px 的图标栏，分隔条轨道归零并隐藏它的把手。 */
+.layout {
+  --side-rail-width: 46px;
+  transition: grid-template-columns 180ms ease;
+}
+.layout.is-side-collapsed {
+  grid-template-columns:
+    var(--side-rail-width) 0 minmax(0, 1fr) var(--splitter-width) var(--col-right);
+}
+.layout.is-side-collapsed #split-left {
+  /* 收起后分隔条所在的轨道已经是 0px。这里**绝不能**用 display:none ——
+     那会让它退出 grid 流，后面的列全部往前挪一格：col-chat 掉进 0px 轨道被挤成 1px、
+     右栏掉进 6px 的分隔条轨道（真机渲染核对抓到的真 bug）。
+     visibility:hidden 保留盒子占位、只是不显示，轨道对齐不受影响。 */
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 表头右侧的两个按钮（新建 + 收起） */
+.col-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 收起箭头随状态翻转（图标条里那一枚就是收起/展开开关本身） */
+.side-toggle-icon {
+  transition: transform 180ms ease;
+}
+.layout.is-side-collapsed #btn-side-toggle .side-toggle-icon {
+  transform: rotate(180deg);
+}
+
+/* 收起后：表头居中、标题/新建/会话列表全部让位，只留那枚开关；内容不越界 */
+.col-sessions {
+  overflow: hidden;
+}
+.layout.is-side-collapsed .col-head {
+  justify-content: center;
+  padding-right: 0;
+}
+.layout.is-side-collapsed .col-head h2,
+.layout.is-side-collapsed #btn-new,
+.layout.is-side-collapsed #session-list {
+  display: none;
+}
+
+

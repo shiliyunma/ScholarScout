@@ -555,6 +555,7 @@ function wire() {
   el("btn-new").addEventListener("click", function () {
     newSession();
   });
+  el("btn-side-toggle").addEventListener("click", toggleSidebarCollapsed);
   el("btn-search").addEventListener("click", function () {
     loadSources(el("search").value.trim());
   });
@@ -597,6 +598,7 @@ var state = {
   history: false,
   noteKind: "note",
   layout: { left: 216, right: 380 },
+  sidebarCollapsed: false,
 };
 
 /* ------------------------------------------------------------------ 主题 */
@@ -636,6 +638,7 @@ try {
 }
 applyTheme(saved === "light" || saved === "dark" ? saved : "auto");
 loadUiScale(); /* 布局由 boot 里的 initLayout 负责，这里只管缩放 */
+applySidebarCollapsed(readSidebarCollapsed(), false); /* 左栏收起态：与主题一样，加载时先按存档恢复 */
 
 
 /* 主题循环：设置面板的主题分段控件在用（顶栏那个按钮已去掉） */

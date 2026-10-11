@@ -24,7 +24,15 @@
     <aside class="col col-sessions">
       <div class="col-head">
         <h2>会话</h2>
-        <button id="btn-new" class="mini" type="button" title="新建会话">＋ 新建</button>
+        <div class="col-head-actions">
+          <button id="btn-new" class="mini" type="button" title="新建会话">＋ 新建</button>
+          <button id="btn-side-toggle" class="icon-btn side-toggle" type="button"
+                  title="收起侧栏" aria-label="收起侧栏" aria-expanded="true" aria-controls="session-list">
+            <svg class="side-toggle-icon" viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true"><path d="M15 6l-6 6 6 6"></path><path d="M20 4v16"></path></svg>
+          </button>
+        </div>
       </div>
       <ul class="list" id="session-list"></ul>
     </aside>
