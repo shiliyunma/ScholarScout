@@ -34,6 +34,15 @@ class FetchSettings:
     respect_robots: bool = True
     #: 跳过 robots 检查的 API 主机（robots 是给爬虫看的，不是给 API 客户端看的）
     robots_exempt_hosts: tuple[str, ...] = DEFAULT_ROBOTS_EXEMPT_HOSTS
+    #: **抽取阈值**（MB，可为小数，默认 20）：文件字节数超过它 → 不抽正文，只登记
+    #: 元数据 + 保留源地址，标 `extract_status="skipped_large"`（docs/19 §8.3）。
+    #: 与 `max_bytes`（出网层硬上限，超了直接拒收）分工不同：这个是"落盘后要不要抽正文"。
+    large_file_mb: float = 20.0
+
+    @property
+    def large_file_bytes(self) -> int:
+        """抽取阈值的字节数（按十进制 MB，与 `max_bytes` 同口径）。"""
+        return int(self.large_file_mb * 1_000_000)
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any] | None) -> FetchSettings:
@@ -46,6 +55,7 @@ class FetchSettings:
             max_bytes=int(section.get("max_bytes", 20_000_000)),
             cache_ttl_hours=float(section.get("cache_ttl_hours", 6.0)),
             respect_robots=bool(section.get("respect_robots", True)),
+            large_file_mb=float(section.get("large_file_mb", 20.0)),
             robots_exempt_hosts=(
                 tuple(str(host) for host in hosts)
                 if isinstance(hosts, list)

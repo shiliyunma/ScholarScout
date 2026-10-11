@@ -12,7 +12,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 from scholarscout import paths
+from scholarscout.fetch.formats import (
+    OFFICE_SUFFIXES,
+    TEXT_SUFFIXES,
+    guess_extension,
+)
 from scholarscout.fetch.html_text import extract_html
+from scholarscout.fetch.http import FetchError
+from scholarscout.fetch.urls import guess_source_type, prefer_direct_file
 from scholarscout.library import naming
 from scholarscout.providers.base import canonical_url
 from scholarscout.runtime.registry import ToolSpec
@@ -44,122 +51,18 @@ PARAMETERS: dict[str, Any] = {
 }
 
 
-def guess_source_type(url: str) -> str:
-    host = (urlparse(url).hostname or "").lower()
-    if "arxiv.org" in host:
-        return "arxiv"
-    if "github.com" in host:
-        return "github"
-    if host.startswith("docs.") or "/docs/" in url:
-        return "official"
-    return "web"
+# 来源类型判定（`guess_source_type`）与「落地页 → 真文件」改写（`prefer_direct_file`）
+# **已移到 `fetch/urls.py`** —— 协议层（`rpc/archive.py` 的按需下载）也要用同一份口径，
+# 放 `fetch/`（最底层）两边都能 import。顶部 import 进来的名字在本模块照常使用，
+# 外部 `from scholarscout.tools.source_fetch import guess_source_type` 一字不改（测试这么用）。
 
 
-#: 音视频后缀：用户明确要求**不**抓（只保留资料链接，不下载、不抽正文）。
-
-_MEDIA_SUFFIXES = {
-    "mp3",
-    "wav",
-    "flac",
-    "aac",
-    "ogg",
-    "m4a",
-    "wma",
-    "opus",
-    "mp4",
-    "avi",
-    "mkv",
-    "mov",
-    "wmv",
-    "flv",
-    "webm",
-    "m4v",
-    "mpg",
-    "mpeg",
-    "ts",
-}
-
-
-#: Office 三件套：走 fetch/office.py 的标准库抽取器（zip + XML，不引依赖）。
-
-_OFFICE_SUFFIXES = {"docx", "xlsx", "pptx", "xls"}
-
-
-#: 文本类后缀：**原样解码**，不要拿 HTML 提取器去洗（洗了就没了缩进和代码结构）。
-
-_TEXT_SUFFIXES = {
-    "md",
-    "markdown",
-    "txt",
-    "py",
-    "js",
-    "ts",
-    "jsx",
-    "tsx",
-    "json",
-    "yaml",
-    "yml",
-    "toml",
-    "ini",
-    "cfg",
-    "csv",
-    "tsv",
-    "ipynb",
-    "c",
-    "cc",
-    "cpp",
-    "h",
-    "hpp",
-    "java",
-    "go",
-    "rs",
-    "rb",
-    "sh",
-    "bat",
-    "ps1",
-    "sql",
-    "tex",
-    "r",
-    "jl",
-    "m",
-    "patch",
-    "diff",
-    "log",
-}
-
-
-def _extension(media_type: str, url: str, is_pdf: bool) -> str:
-    """落盘与展示用的类型标签。**先看 URL 后缀**再看 media type —— 很多站点把 .md/.py
-    用 text/plain 甚至 application/octet-stream 发出来，只看 media type 会一律认成 txt。
-    """
-    if is_pdf:
-        return "pdf"
-    lowered = media_type.lower()
-    name = url.split("?", 1)[0].split("#", 1)[0].rsplit("/", 1)[-1]
-    suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    if suffix in _MEDIA_SUFFIXES:
-        return "media"
-    if suffix in _OFFICE_SUFFIXES or "officedocument" in lowered or "msword" in lowered:
-        return (
-            "docx"
-            if (suffix == "docx" or "word" in lowered)
-            else (
-                "xlsx"
-                if (suffix in {"xlsx", "xls"} or "excel" in lowered or "spreadsheet" in lowered)
-                else ("pptx" if (suffix == "pptx" or "presentation" in lowered) else suffix)
-            )
-        )
-    if suffix in _TEXT_SUFFIXES:
-        return suffix
-    if "html" in lowered or not lowered:
-        return "html"
-    if "json" in lowered:
-        return "json"
-    if "xml" in lowered or "atom" in lowered:
-        return "xml"
-    if "text/plain" in lowered:
-        return "txt"
-    return "bin"
+def _file_detail(size_bytes: int, *, kind: str) -> str:
+    """跳过抽取时写进 `extract_detail` 的**可核查**说明（大小 + 类型 + 去原站/下载指引）。"""
+    mib = size_bytes / 1_000_000
+    return (
+        f"{kind}：{size_bytes} 字节（{mib:.2f}MB）；已保留源地址，可「下载」到本地或「去原站」查看"
+    )
 
 
 def _pdf_text(content: bytes) -> tuple[str, str, str, str]:
@@ -251,12 +154,30 @@ def source_fetch(
     assert url is not None  # 上面的分支已保证
 
     http = ctx.require_http()
-    response = http.fetch(url, cache=not force)
+    requested_url = url
+    # 优先抓真文件（arxiv `/abs/<id>` → `/pdf/<id>`）；拿不到再回落原 URL。
+    # 抓的哪一种**如实记在**返回里（requested_url / fetched_url / used_landing_page）。
+    direct = prefer_direct_file(url)
+    fetched_url = url
+    if direct is not None:
+        try:
+            response = http.fetch(direct, cache=not force)
+        except FetchError:
+            response = http.fetch(url, cache=not force)
+        else:
+            fetched_url = direct
+    else:
+        response = http.fetch(url, cache=not force)
 
     content: bytes = response.content
     sha256 = hashlib.sha256(content).hexdigest()
     media_type = response.media_type or ""
-    is_pdf = "pdf" in media_type.lower() or url.lower().endswith(".pdf")
+    is_pdf = "pdf" in media_type.lower() or fetched_url.lower().endswith(".pdf")
+    extension = guess_extension(media_type, fetched_url, is_pdf)
+    size_bytes = len(content)
+    # 大文件策略（docs/19 §8.3）：超过抽取阈值就不抽正文，只登记元数据 + 保留源地址。
+    large_file = size_bytes > ctx.config.fetch_cfg.large_file_bytes
+    used_landing_page = fetched_url == url
 
     # ---- 去重快路径：同来源同内容已经抓过，直接返回既有结果（不重复调模型）
     # 顺手把来源元数据取出来：命名要的类型 / 标题 / 发表月份此刻就能拿到（docs/19 §4）。
@@ -276,8 +197,13 @@ def source_fetch(
                     "mime": found["mime"],
                     "chars": found["chars"],
                     "lang": found["lang"],
+                    "bytes": size_bytes,
+                    "ext": extension,
                     "raw_path": found["raw_path"],
                     "text_path": found["text_path"],
+                    "requested_url": requested_url,
+                    "fetched_url": fetched_url,
+                    "used_landing_page": used_landing_page,
                     "extract_status": found["extract_status"],
                     "extract_engine": found["extract_engine"],
                     "extract_detail": found.get("extract_detail"),
@@ -295,38 +221,88 @@ def source_fetch(
     # ---- 抽正文 + 落文件
     doc_id = sessions.new_id("doc")
     extract_detail = ""
-    if is_pdf:
+    if large_file:
+        # 大文件策略（docs/19 §8.3）：**不抽正文**，只登记大小 / 类型 / 源地址。
+        # 原件照常落盘；界面给「下载」与「去原站」两个出口。
+        text, title, lang = "", "", None
+        extract_status, engine = "skipped_large", "none"
+        extract_detail = _file_detail(
+            size_bytes,
+            kind=f"超过抽取阈值 {ctx.config.fetch_cfg.large_file_mb:g}MB，未抽正文",
+        )
+    elif is_pdf:
         text, extract_status, engine, extract_detail = _pdf_text(content)
         if not text and ctx.config.features.enable_mineru:
             # 扫描版/无文字层：走 MinerU 官方 API（契约与实测见 fetch/mineru.py 顶部）。
             # 优先用刚下载到手的字节直传，少一个"对方下不到"的失败点。
             # 文件名按 URL 末段取：官方**按后缀判类型**，所以别把后缀丢了。
-            name = str(url).rsplit("/", 1)[-1].split("?")[0].strip() or "scan.pdf"
+            name = str(fetched_url).rsplit("/", 1)[-1].split("?")[0].strip() or "scan.pdf"
             if "." not in name:
                 name += ".pdf"
             text, extract_status, engine, mineru_detail = _mineru_fallback(
-                ctx, url, content=content, filename=name
+                ctx, fetched_url, content=content, filename=name
             )
             extract_detail = (
                 f"{extract_detail}；{mineru_detail}" if extract_detail else mineru_detail
             )
         title = ""
         lang = None
-    elif _extension(media_type, url, is_pdf) == "media":
-        # 音视频不抽正文（用户明确排除）：清晰记一条，别让它变成一句含糊的"提取失败"
+    elif extension == "media":
+        # 音视频不抽正文（用户明确排除）：清晰记一条（含大小/类型），别让它变成一句含糊的"提取失败"
 
         text, title, lang = "", "", None
 
         extract_status, engine = "skipped_media", "none"
 
-        extract_detail = "音视频不提取正文（" + (media_type or "未知类型") + "）"
+        extract_detail = _file_detail(
+            size_bytes, kind="音视频不提取正文（" + (media_type or "未知类型") + "）"
+        )
 
-    elif _extension(media_type, url, is_pdf) in _OFFICE_SUFFIXES:
+    elif extension == "epub":
+        # .epub：zip + XHTML 按章抽字（fetch/formats.py，不引依赖）
+
+        from scholarscout.fetch import formats
+
+        _ok, text, extract_detail = formats.epub_text(content)
+
+        title, lang = "", None
+
+        extract_status = "ok" if (text or _ok) else "extract_failed"
+
+        engine = "local-ebook"
+
+    elif extension == "rtf":
+        # .rtf：控制字剥离成纯文本（fetch/formats.py）
+
+        from scholarscout.fetch import formats
+
+        _ok, text, extract_detail = formats.rtf_text(content)
+
+        title, lang = "", None
+
+        extract_status = "ok" if text.strip() else ("empty" if _ok else "extract_failed")
+
+        engine = "local"
+
+    elif extension == "archive":
+        # .zip/.tar*：**只列目录当元数据**，不解内容（fetch/formats.py）
+
+        from scholarscout.fetch import formats
+
+        _ok, text, extract_detail = formats.archive_listing(content, extension)
+
+        title, lang = "", None
+
+        extract_status = "ok" if (text or _ok) else "extract_failed"
+
+        engine = "local-archive"
+
+    elif extension in OFFICE_SUFFIXES:
         # .docx/.xlsx/.pptx：标准库解 zip + XML 抽文字（见 fetch/office.py）
 
         from scholarscout.fetch import office
 
-        _ok, text, extract_detail = office.office_text(_extension(media_type, url, is_pdf), content)
+        _ok, text, extract_detail = office.office_text(extension, content)
 
         title, lang = "", None
 
@@ -334,7 +310,7 @@ def source_fetch(
 
         engine = "local-office"
 
-    elif _extension(media_type, url, is_pdf) in _TEXT_SUFFIXES:
+    elif extension in TEXT_SUFFIXES:
         # 文本类：**原样解码**，不走 HTML 提取器（洗了会把缩进/代码结构搞没）
 
         text = response.text
@@ -360,7 +336,6 @@ def source_fetch(
     if truncated:
         text = text[:max_chars]
 
-    extension = _extension(media_type, url, is_pdf)
     source_type = (
         str(existing_source["source_type"])
         if existing_source is not None
@@ -487,8 +462,13 @@ def source_fetch(
             "mime": media_type,
             "chars": len(text),
             "lang": lang,
+            "bytes": size_bytes,
+            "ext": extension,
             "raw_path": paths.rel_to_home(raw_file),
             "text_path": paths.rel_to_home(text_file),
+            "requested_url": requested_url,
+            "fetched_url": fetched_url,
+            "used_landing_page": used_landing_page,
             "extract_status": extract_status,
             "extract_engine": engine,
             "extract_detail": extract_detail or None,

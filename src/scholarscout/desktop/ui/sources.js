@@ -113,6 +113,14 @@ async function showSource(docId) {
   const box = el("source-detail");
   box.innerHTML = "";
   attachDetailClose(box, "从列表里点一条，看它的摘要与详情。");
+  // 下载状态行挂在**详情区之外**（id 在 index.html 静态声明，见那里的注释）：
+  // 详情区重画 / 「关闭」都会清空 innerHTML，挂在里面就会连 id 一起消失。
+  // 这里只清掉上一条资料的下载提示，避免串台。
+  const dlStatusLine = el("source-download-status");
+  if (dlStatusLine) {
+    dlStatusLine.textContent = "";
+    dlStatusLine.hidden = true;
+  }
   // 「⋯」按用户要求挪到列表条目那一行去了（跟着条目走，这里不再重复）
   const title = document.createElement("h3");
   title.textContent = first.title_zh || doc.title || "(无标题)";
@@ -130,6 +138,32 @@ async function showSource(docId) {
     (doc.extract_status || "") +
     (doc.truncated ? "｜超长已截断" : "");
   box.appendChild(meta);
+
+  // 两个出口（docs/19 §8.4）：「去原站」用 sources.url 走系统浏览器新窗口打开；
+  // 「下载」调 archive.download（后端默认关；大文件后端先拒绝、这里二次确认后带 force 重试）。
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const openBtn = document.createElement("button");
+  openBtn.type = "button";
+  openBtn.className = "ghost";
+  openBtn.id = "btn-source-open-origin";
+  openBtn.textContent = "去原站";
+  openBtn.title = "用系统浏览器打开资料的原始网址（新窗口）";
+  openBtn.addEventListener("click", function () {
+    openExternalUrl(doc.url);
+  });
+  const downloadBtn = document.createElement("button");
+  downloadBtn.type = "button";
+  downloadBtn.className = "ghost";
+  downloadBtn.id = "btn-source-download";
+  downloadBtn.textContent = "下载";
+  downloadBtn.title = "把原件下载到本地 data/raw/（大文件需二次确认）";
+  downloadBtn.addEventListener("click", function () {
+    downloadSource(downloadBtn, docId, doc);
+  });
+  actions.appendChild(openBtn);
+  actions.appendChild(downloadBtn);
+  box.appendChild(actions);
 
   const body = document.createElement("div");
   body.textContent = first.summary_short || "（这条资料还没出摘要）";
@@ -156,6 +190,56 @@ async function showSource(docId) {
 
 /* 摘要区右上角的「⋯」：三个打开方式收在同一个按钮里。
    放在**顶部**而不是末尾 —— 放末尾时内容一长就得滚动才看得见，等于没有这个按钮。 */
+
+
+/* 「下载」按钮：调 archive.download。
+   后端默认关（features.enable_download=false）时会回 ok:false + reason，这里原样报出来；
+   大文件后端先拒绝（large:true）→ 二次确认后再带 force:true 重试；
+   成功显示落盘的可读路径 + 字节数，失败如实报原因（绝不假装成功）。 */
+async function downloadSource(button, docId, doc) {
+  const status = el("source-download-status");
+  const show = function (text) {
+    if (!status) return;
+    status.textContent = text;
+    status.hidden = !text; // 空闲时收起，不占高度（.hint 有上下 8px 外边距）
+  };
+  const params = {
+    doc_id: docId,
+    source_id: (doc && doc.source_id) || undefined,
+    url: (doc && doc.url) || undefined,
+  };
+  button.disabled = true;
+  show("下载中…");
+  try {
+    const result = await scout.call("archive.download", params);
+    if (result && result.ok) {
+      show((result.already ? "本地已有（未重复下载）：" : "已下载：") + result.path +
+        "（" + fmtBytes(result.bytes) + "）");
+      return;
+    }
+    if (result && result.large) {
+      const limit = fmtBytes(result.threshold_bytes);
+      if (!window.confirm(
+        "这个文件不小（" + fmtBytes(result.bytes) + "，超过抽取阈值 " + limit + "）。仍要下载到本地吗？"
+      )) {
+        show("已取消（文件超过 " + limit + " 阈值）");
+        return;
+      }
+      const forced = await scout.call("archive.download", Object.assign({}, params, { force: true }));
+      if (forced && forced.ok) {
+        show("已下载：" + forced.path + "（" + fmtBytes(forced.bytes) + "）");
+      } else {
+        show("下载失败：" + ((forced && forced.reason) || "未知原因"));
+      }
+      return;
+    }
+    show("下载失败：" + ((result && result.reason) || "未知原因"));
+  } catch (error) {
+    show("下载失败：" + ((error && error.message) || String(error)));
+  } finally {
+    button.disabled = false;
+  }
+}
 
 
 function detailActions(docId, doc) {
@@ -213,6 +297,12 @@ function showTopic(payload) {
   const box = el("source-detail");
   box.innerHTML = "";
   attachDetailClose(box, "从列表里点一条，看它的摘要与详情。");
+  // 切到主题地图也把上一次的下载提示清掉（状态行在详情区之外，不会被这次重画清掉）
+  const topicStatus = el("source-download-status");
+  if (topicStatus) {
+    topicStatus.textContent = "";
+    topicStatus.hidden = true;
+  }
   const title = document.createElement("h3");
   title.textContent = "主题地图：" + (payload.topic || "");
   box.appendChild(title);

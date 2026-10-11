@@ -127,6 +127,9 @@ class Features:
     enable_mineru: bool = True
     enable_topic_map: bool = True
     enable_route_plan: bool = True
+    #: 按需下载（`archive.download`，docs/01 §3.3）。**默认关**：关着时界面「下载」按钮
+    #: **不动网**，只回 `{ok:false, reason}`。开启才真下载到 `data/raw/`（受 `fetch.max_bytes` 硬上限）。
+    enable_download: bool = False
 
 
 @dataclass(frozen=True)
@@ -320,6 +323,8 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             enable_mineru=bool(feature_section.get("enable_mineru", True)),
             enable_topic_map=bool(feature_section.get("enable_topic_map", True)),
             enable_route_plan=bool(feature_section.get("enable_route_plan", True)),
+            # 按需下载开关（默认关）。D3 同款坑：加了字段必须接这一行，否则 YAML 写了被静默忽略。
+            enable_download=bool(feature_section.get("enable_download", False)),
         ),
         data_dir=paths.data_dir(),
         db_path=paths.db_path(),

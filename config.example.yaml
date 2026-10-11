@@ -90,16 +90,21 @@ search:
     serper: 0.5
     brave: 1.0
     google_cse: 0.5
-    openalex: 0.5
-    semantic_scholar: 1.0
-    github: 1.0
+    # 注意：**故意不写 github** —— 它的间隔取决于有没有配 token（未认证 6s / 认证 2s），
+    # 由 providers/github.py 自己算；写进这张表会覆盖它 → 打光额度、间歇 403
+    # （同样的道理：任何"动态算间隔"的来源都不要写在这里）
 
 # ===== 抓取 =====
 fetch:
   timeout_s: 20
   retries: 3
   user_agent: "ScholarScout/0.1 (academic research assistant; contact: <you@example.com>)"
-  max_bytes: 20000000             # 单文件下载上限 20MB
+  max_bytes: 20000000             # 单文件下载上限 20MB（出网层硬上限：超出直接拒收）
+  # 抽取阈值（MB，可为小数）：文件超过它**不抽正文**，只登记大小/类型/源地址，
+  # extract_status="skipped_large"（音视频另标 skipped_media）。
+  # 与上面 max_bytes 的分工：max_bytes 是出网层红线（超了连字节都拿不到），
+  # large_file_mb 是落盘后"要不要抽正文"的阈值。docs/19 §8.3
+  large_file_mb: 20
   respect_robots: true
 
 # ===== 扫描版 / 复杂版式 PDF：MinerU 官方接口（决议 8，见 docs/04 §7）=====
@@ -146,6 +151,9 @@ features:
   enable_mineru: true
   enable_topic_map: true
   enable_route_plan: true
+  # 按需下载（archive.download，docs/01 §3.3）：**默认关**。关着时界面「下载」按钮
+  # 不动网，只回 {ok:false, reason}；开启后才真下载到 data/raw/（受 fetch.max_bytes 硬上限）。
+  enable_download: false
 
 # ===== 生成策略 =====
 generation:

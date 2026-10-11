@@ -85,6 +85,11 @@
         <div class="splitter-h" id="split-sources" role="separator"
              title="拖动调整摘要区高度（双击复位）"></div>
         <div class="detail" id="source-detail"></div>
+        <!-- 下载状态的**文本提示区**：id 由 sources.js 的 el() 取用，必须静态声明。
+             挂在详情区之外 → 详情区反复 innerHTML=""（渲染 / 「关闭」）时它不会被清掉，
+             也不会破坏 .detail:empty 的收起行为。空闲时 hidden（占 0 像素，
+             不给列表/详情区挤高度 —— .hint 有上下 8px 外边距）。 -->
+        <p class="hint" id="source-download-status" hidden></p>
       </div>
 
       <div class="pane" id="pane-routes">
