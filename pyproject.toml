@@ -36,13 +36,21 @@ target-version = "py311"
 src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "D100", "D104"]
 ignore = [
     "E501",      # 行宽交给 formatter
     "RUF001",    # 全宽标点误报：本项目注释/文案是中文，全宽括号引号是正常写法
     "RUF002",    # 同上（docstring）
     "RUF003",    # 同上（注释）
 ]
+# 关于 D100 / D104（模块与包必须有 docstring）：
+#   这是"这个文件是干什么的"唯一不会腐烂的位置 —— 与代码同文件、同一个提交、被 pdoc/编辑器直接读，
+#   所以它由 lint 强制，而不是靠另写一份说明文档。
+#   为什么开两条：`__init__.py` 归 D104（包），其余模块归 D100 —— 只开 D100 会漏掉所有包的入口。
+#   **只开这两条，不要开整个 D 族**：D2xx/D4xx 是 docstring 的**格式**规则（摘要后空行、首行句号结尾…），
+#   与中文 docstring 的全宽标点打架，而 RUF001-003 已经 ignore 了全宽标点，再引格式规则只会制造噪音。
+#   **已知盲区**：`_` 开头的模块被 ruff 当私有，D100 不管（本项目 linted 范围内只有 tests/desktop/_ui.py 一个）。
+#   开这两条时实测：src/tests/scripts/eval 共 273 个 py 文件（其中 28 个是 __init__.py），缺 docstring 的 0 个 —— 零新增报错。
 
 [tool.mypy]
 python_version = "3.11"

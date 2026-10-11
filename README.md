@@ -6,6 +6,18 @@
 
 ---
 
+## 界面
+
+| 浅色（默认） | 深色 |
+|---|---|
+| ![浅色主题](docs/screenshots/ui_light.png) | ![深色主题](docs/screenshots/ui_dark.png) |
+
+三栏：左 = 会话列表，中 = 对话（**工具调用与出处都会显示**，每条回答下面挂的是真实出处 chip），
+右 = 资料库 / 学习路线 / 抽背卡。浅色为默认，顶栏可切深色。
+
+> 截图拍摄于 2026-10-05。标题栏里的"工具 N 个"是启动时的**真实注册数**（当时 6 个，现在是 8 个）——
+> 此后界面与工具集都有更新，以实际运行为准。
+
 ## 这是什么 / 不是什么
 
 | 是 | 不是 |
@@ -20,15 +32,19 @@
 ## 架构（四层）
 
 ```
-桌面壳 pywebview ──JSON-RPC 2.0/stdio──> rpc/ ──> runtime/ ──> tools/ 6 个主线工具
+桌面壳 pywebview ──JSON-RPC 2.0/stdio──> rpc/ ──> runtime/ ──> tools/（8 个工具）
                                                           │
                                           providers/ + fetch/（出网唯一入口）
                                                           │
                                           state/（SQLite + FTS5）  data/（原件归档）
 ```
 
-主线工具：`research.search` / `source.fetch` / `source.grade` / `topic.build_map` / `route.plan` / `note.save`
-降级通道（默认关，仅作论文消融对照）：`kb.search`
+工具（**权威清单在 `docs/01 §5`**）：检索 `research.search` / 取原文出摘要 `source.fetch` /
+判权 `source.grade` / 主题图 `topic.build_map` / 学习路线 `route.plan` + `route.revise` /
+笔记与抽背卡 `note.save` / 委派独立子问题 `research.delegate`
+
+> ⚠️ 早期文档里写的"降级通道 `kb.search`"**没有实现**：`kb` 工具集已在 `runtime/registry.py` 的
+> `TOOLSETS` 里声明、受 `features.enable_kb` 门控，但**没有任何模块注册进去**（`docs/03 §1` 目录树已标注为规划中）。
 
 ## 技术栈（与 Hermes Agent 同构的下半身，前端降级）
 
@@ -101,6 +117,14 @@ SearxNG 在国内要绕三个坑（全部实测过，详见 `deploy/searxng/sett
 | `docs/03-目录结构与规则文件.md` | 目录树、模块边界、门槛、依赖登记 | v0.1 |
 | `docs/项目规则.md` | 开发规则正文（AI 协作 8 条铁律） | v0.1 |
 | `docs/04-摘要提取方案.md` | 摘要口径 + MinerU 接入（含真机契约） | v0.1 |
+| `docs/05-评测方案.md` | **评测口径的唯一权威**：指标定义、对照臂、已知局限 | v1.0 |
+| `docs/代码地图/00-符号清单.md` | **生成物**：每个文件的符号与依赖（勿手改，门禁会查是否过期） | 自动生成 |
+| `docs/代码地图/01-全局术语表.md` | 术语 → 定义 → 代码里的名字 → 涉及哪些目录 | v0.1 |
+
+另外：**每个重要目录下都有一份 `README.md`**（`src/scholarscout/` 各层、`scripts/`、`eval/`、`prompts/`），
+按 Chromium《Documentation Best Practices》对 README 的规定写四件事：
+这一层放什么 / 先看哪个文件 / 哪些是 API（契约）/ 谁维护去哪看更多 ——
+**刻意不写行数、文件数、阈值**（那些会腐烂），需要时可以看生成物 `docs/代码地图/00-符号清单.md`。
 
 ## 快速开始
 
@@ -115,7 +139,7 @@ cp .env.example .env            # 填 LLM_API_KEY
 # 3) 建库（幂等，可重复跑）
 .venv/Scripts/python.exe scripts/scout.py --initdb
 
-# 4) 门槛（lint + 类型 + 测试 + 三项校验，一个不过就不合）
+# 4) 门槛（lint + 格式 + 类型 + 测试 + 四项校验，一个不过就不合；清单见 docs/03 §4）
 bash scripts/check.sh
 
 # 5) 打开桌面窗口（需要 pywebview，已在依赖白名单里）
@@ -165,7 +189,7 @@ exe 图标（csc `/win32icon:`）与窗口标题栏/任务栏图标（见下）�
 > 跑 CLI 用 `scripts/scout.py`。原因链见 `docs/03 §9`。
 >
 > 当前状态：**M1–M8 主线已闭环**（含通用/商用搜索、GitHub、OpenAlex 两路学术索引、MinerU 兜底接入）；
-> `check.sh` 全绿；剩下的见 `docs/00-总索引.md` 的待办。
+> `check.sh` 八项全绿；剩下的见 `docs/00-总索引.md` 的待办。
 
 ## 桌面壳怎么工作
 
@@ -239,9 +263,14 @@ python -m scholarscout --rpc 子进程  ← 与 CLI/测试走同一个分发器
 
 | 集 | 规模 | 需要模型 | 现状 |
 |---|---|---|---|
-| E1 判权一致性 | 24 条 | 否 | tier 一致率 **100%**（κ 1.000）、verdict 一致率 58.3%（κ 0.444），10 条分歧如实列出 |
-| E2 反幻觉守卫 | 12 条 | 否 | 守卫行为符合预期 **12/12**；关掉守卫时出处覆盖率虚高 96%→79% |
-| E3 端到端 | 6 条 | **是** | 待配置模型密钥后运行 |
+| E1 判权一致性 | 24 条 | 否 | tier 一致率 **100%**、verdict 一致率 58.3%（κ 0.444），10 条分歧如实列出 |
+| E2 反幻觉守卫 | 13 条 | 否 | 守卫行为符合预期；关掉守卫时出处覆盖率虚高（伪造 id 也算"有出处"） |
+| E3 端到端 | 6 条 | **是** | 已跑通真机（真模型 + 真出网），报告落 `eval/reports/`；单题几分钟 |
+
+> **读 tier 一致率 100% 时注意**：E1 的 `expect_tier` 本身就是由规则表推出的，回归护栏还断言
+> `tier_agreement == 1.0` —— 它证明的是"**规则表没有漂移**"，**不是**"判权判对了"。
+> 真正与人工判断对照的是 verdict 一致率与 Cohen's κ。指标口径、对照臂、已知局限见 `docs/05-评测方案.md`
+> （**改口径必须先改它、再重跑**，不许只改代码）。
 
 对照臂 A_no_rules（撤掉规则表）：tier 一致率从 100% 掉到 **16.7%** —— 规则表确实在干活。
 所有调用类指标（成功率、P50/P95 时延、token）**只从 `tool_traces` / `usage_records` 取数**，不另造一套埋点。
