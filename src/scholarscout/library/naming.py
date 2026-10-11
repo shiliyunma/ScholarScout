@@ -1,18 +1,25 @@
-"""命名要的元数据：**类型 / 年-月 / 真标题** —— 全从 provider 元数据推，不编（docs/19 §1/§2）。
+"""命名要的元数据：**类型 / 发表年月 / 收录年月 / 真标题 / 会话目录名** —— 全从库与 provider 元数据推，不编（docs/19 §1/§2）。
 
 三条口径（都对应一个曾经会犯的错法）：
 
 1. **年-月优先取 arXiv 号自带的 YYMM**（``2410.24164`` → ``2024-10``）—— 它是资料自己的时间戳，
    比「什么时候被我们抓到」准得多。
 2. **取不到月份落 ``unknown``**，绝不用抓取日期冒充发表日期（与 docs/05「未知年份不编」同口径）。
+   反过来，**收录年月**（``collected_month``）取的就是 ``documents.fetched_at``，取不到同样落 ``unknown``。
 3. **标题取不到就回落到域名**，绝不用 URL 或抓取时间编一个看着像真标题的字符串。
+
+会话目录名也在这里定：标题 slug；**两个会话标题同名时追加短会话 id** 区分（docs/19 §2）。
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from typing import Any
+
+from scholarscout import paths
+from scholarscout.state.db import Database
 
 #: arXiv 新式编号 ``YYMM.NNNNN``（月份必须 01–12，所以 ``9946.2026`` 这类 DOI 片段不会被误判）。
 _ARXIV_ID_RE = re.compile(r"(?<!\d)(\d{2})(0[1-9]|1[0-2])\.\d{4,5}(?!\d)")
@@ -94,3 +101,68 @@ def domain_of(url: str | None) -> str:
 
     host = (urlparse(str(url or "")).hostname or "").lower()
     return host[4:] if host.startswith("www.") else host
+
+
+#: 会话目录名未知时用的段值（与 ``paths.UNKNOWN_SESSION`` 同源）。
+_UNKNOWN_SESSION = "unknown"
+
+
+def collected_month(fetched_at: str | None) -> str:
+    """**收录年月**：``documents.fetched_at``（ISO 时间戳）→ ``YYYY-MM``；取不到回 ``unknown``。
+
+    与发表年月的区别（用户 2026-10-11 明确的两条口径）：收录年月是"我什么时候采到它的"，
+    发表年月是"它自己什么时候出的"。两个都进索引（``docs/19`` §2），缺哪个写哪个的 ``unknown``。
+    """
+    match = _MONTH_RE.search(str(fetched_at or ""))
+    if match is None:
+        return _UNKNOWN_SESSION
+    return f"{match.group(1)}-{match.group(2)}"
+
+
+def session_short_id(session_id: str) -> str:
+    """会话的**短 id**（同名会话用来区分目录）：取 id 里的字母数字，末尾 4 位。
+
+    ``ses_s2d2ytta`` → ``ytta``。末尾 4 位是最没有规律的一段，短且够用。
+    """
+    alnum = re.sub(r"[^0-9A-Za-z]", "", str(session_id or ""))
+    return alnum[-4:] if len(alnum) >= 4 else (alnum or "ses0")
+
+
+def session_dir_name(title: str | None, session_id: str, *, colliding: bool = False) -> str:
+    """会话目录名：标题 slug；``colliding=True``（有别的会话同名）时追加 ``--<短会话 id>``。
+
+    标题取不到就回落成 ``unknown``（**不编一个看着像会话名的字符串**）。
+    """
+    slug = paths.slugify(title or "", fallback=_UNKNOWN_SESSION)
+    if colliding:
+        return f"{slug}--{session_short_id(session_id)}"
+    return slug
+
+
+def session_dir_names(rows: Iterable[tuple[str, str | None]]) -> dict[str, str]:
+    """``(session_id, title)`` 列表 → ``{session_id: 目录名}``；**同名的都追加短 id**。
+
+    为什么不是"第一个用裸名、后面的加后缀"：那样结果依赖遍历顺序，换个入口就算出不同的目录。
+    **「slug 撞车 → 撞车的每个都带短 id」与顺序无关**，重算多少次都一样（迁移脚本要幂等）。
+    """
+    items = [(str(session_id), title) for session_id, title in rows]
+    slugs = [paths.slugify(title or "", fallback=_UNKNOWN_SESSION) for _, title in items]
+    counts = Counter(slugs)
+    return {
+        session_id: session_dir_name(title, session_id, colliding=counts[slug] > 1)
+        for (session_id, title), slug in zip(items, slugs, strict=True)
+    }
+
+
+def session_dir_map(db: Database) -> dict[str, str]:
+    """全库会话 → 目录名（同名加短 id）。``source.fetch`` 与迁移脚本共用同一份口径。"""
+    return session_dir_names(
+        (str(row["id"]), row["title"]) for row in db.query("SELECT id, title FROM sessions")
+    )
+
+
+def session_dir_for(db: Database, session_id: str | None) -> str:
+    """这个会话在资料布局里的目录名；没有会话/查不到就落 ``unknown``（不编）。"""
+    if not session_id:
+        return _UNKNOWN_SESSION
+    return session_dir_map(db).get(str(session_id), _UNKNOWN_SESSION)

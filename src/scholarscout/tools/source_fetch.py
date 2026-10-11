@@ -25,6 +25,7 @@ from scholarscout.state.ingest import (
     save_summary,
     upsert_source,
 )
+from scholarscout.state.migrate import now_iso
 from scholarscout.summary.pipeline import SummaryInput, summarize
 
 DESCRIPTION = (
@@ -368,17 +369,41 @@ def source_fetch(
     source_title = str(existing_source["title"]) if existing_source is not None else ""
     meta = _meta_of(existing_source["meta_json"]) if existing_source is not None else {}
     domain = naming.domain_of(url)
-    year_month = naming.year_month_for(url, meta)
+    # 两个时间口径（docs/19 §2）：发表年月取资料自己的时间戳；收录年月就是"现在"这次抓取
+    # （同一个 `fetched_at` 也写进 documents，落盘目录与库里那一列必须是同一个月份）。
+    published_month = naming.year_month_for(url, meta)
     name_title = naming.pick_title(title, source_title)
+    fetched_at = now_iso()
+    collected_month = naming.collected_month(fetched_at)
 
-    # 新布局：data/raw/<类型>/<年-月>/<标题>--<sha8>.<ext>，全文同桶同名只差后缀（docs/19 §1/§2）。
-    raw_file = paths.raw_path_for_doc(
-        source_type, year_month, name_title, sha256, extension, domain=domain
+    # 布局是**参数**：默认 `<会话>/<格式>`（会话目录名含同名短 id；没有会话上下文就落 unknown/）。
+    # 值来自 config.yaml 的 `library.layout`，代码与迁移脚本都从它读，不写死布局（docs/19 §2）。
+    layout = ctx.config.library.layout
+    session_dir = naming.session_dir_for(ctx.db, ctx.session_id)
+    raw_file = paths.raw_path_for_layout(
+        layout,
+        session=session_dir,
+        fmt=paths.doc_type_for(source_type),
+        collected=collected_month,
+        published=published_month,
+        title=name_title,
+        sha256=sha256,
+        domain=domain,
+        ext=extension,
     )
     raw_file.parent.mkdir(parents=True, exist_ok=True)
     raw_file.write_bytes(content)
 
-    text_file = paths.text_path_for_doc(source_type, year_month, name_title, sha256, domain=domain)
+    text_file = paths.text_path_for_layout(
+        layout,
+        session=session_dir,
+        fmt=paths.doc_type_for(source_type),
+        collected=collected_month,
+        published=published_month,
+        title=name_title,
+        sha256=sha256,
+        domain=domain,
+    )
     text_file.parent.mkdir(parents=True, exist_ok=True)
     text_file.write_text(text, encoding="utf-8")
 
@@ -412,6 +437,7 @@ def source_fetch(
         truncated=truncated,
         http_status=response.status,
         doc_id=doc_id,
+        fetched_at=fetched_at,
     )
 
     # ---- 摘要（没有模型就如实不生成）

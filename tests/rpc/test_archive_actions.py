@@ -112,9 +112,10 @@ def test_reindex_rebuilds_library_index(ctx: AppContext, tmp_path: Path) -> None
 
     assert payload["ok"] is True
     assert payload["total"] == 1
+    assert payload["layout"] == "session/format"
     assert payload["index_path"] == "data/library/index.md"
     body = (tmp_path / "data" / "library" / "index.md").read_text(encoding="utf-8")
     assert "A Test Paper" in body
     assert "arxiv.org" in body
-    # 这篇来自 arxiv 2501.0000x → 落 paper/2025-01 桶
-    assert (tmp_path / "data" / "library" / "paper" / "2025-01" / "index.md").is_file()
+    # 默认布局 = <会话>/<格式>；这条资料没有任何会话提及 → 会话段落 unknown/paper
+    assert (tmp_path / "data" / "library" / "unknown" / "paper" / "index.md").is_file()

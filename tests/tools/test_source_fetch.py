@@ -299,11 +299,30 @@ def test_archive_paths_reports_existence_after_fetch(
 
     payload = dispatch(ctx, "archive.paths", {"doc_id": doc_id})
     assert payload["exists"] == {"raw_path": True, "text_path": True}
-    # 新布局：类型/年-月 分桶 + 人类可读文件名，全文与原件同名只差后缀（docs/19 §2）
-    assert payload["raw_path"].startswith("data/raw/doc/unknown/教育智能体文档--")
+    # 新布局：会话/格式 分桶 + 人类可读文件名，全文与原件同名只差后缀（docs/19 §2）。
+    # 这里没有对应的会话行 → 会话段落 unknown（不编一个看着像会话名的目录）。
+    assert payload["raw_path"].startswith("data/raw/unknown/doc/教育智能体文档--")
     assert payload["raw_path"].endswith(".html")
-    assert payload["text_path"].startswith("data/text/doc/unknown/教育智能体文档--")
+    assert payload["text_path"].startswith("data/text/unknown/doc/教育智能体文档--")
     assert payload["text_path"].endswith(".txt")
+
+
+def test_fetch_uses_session_dir_from_layout(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """落盘目录的会话段取**当前会话的目录名**（标题 slug），格式段取 ``source_type`` 的映射。"""
+    _redirect_home(monkeypatch, tmp_path)
+    ctx.db.execute(
+        "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?,?,?,?)",
+        ("ses_t", "教育智能体调研", "2026-10-01T00:00:00+08:00", "2026-10-01T00:00:00+08:00"),
+    )
+    tool_ctx = _tool_ctx(ctx, _html_handler([]), llm=StubLlm(reply(SUMMARY_TEXT)))
+
+    data = source_fetch(tool_ctx, url="https://docs.example.com/guide")["data"]
+
+    assert data["raw_path"].startswith("data/raw/教育智能体调研/doc/")
+    assert data["text_path"].startswith("data/text/教育智能体调研/doc/")
+    assert (tmp_path / data["raw_path"]).is_file()
 
 
 def test_guess_source_type() -> None:

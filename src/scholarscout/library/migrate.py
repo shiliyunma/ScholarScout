@@ -1,5 +1,7 @@
-"""一次性迁移：旧命名 ``data/raw/<2位>/<sha>.<ext>``、``data/text/<doc_id>.txt``
-→ 新的「类型/年-月/人类可读文件名」布局（docs/19 §3）。
+"""一次性迁移：**任意已知旧布局** → **当前布局**（docs/19 §3）。
+
+旧布局不需要枚举：入库时写下的 ``documents.raw_path`` / ``text_path`` 就是"旧路径"，
+迁移只做一件事 —— 把文件从它现在的位置搬到按当前布局算出来的位置，并把库里两列改过去。
 
 三条硬口径：
 
@@ -8,14 +10,19 @@
 2. **幂等** —— 库里已指向新路径的条目直接跳过，重跑不产生任何副作用。
 3. **冲突不丢数据** —— 目标位置已被别的文件占用时，给新名追加 ``--2``、``--3``…并在报告里列出。
 
-旧目录清理：把 ``data/raw/<2位>/`` 下**未被库引用**的历史文件移进 ``data/raw/_orphan/``
+**布局是参数**（``layout``）：默认 ``paths.DEFAULT_LAYOUT``（``<会话>/<格式>``），由配置
+``library.layout`` 决定；同一份代码因此能把资料从任意旧布局迁到任意新布局（用户以后再改布局，
+只要改配置再跑一次这个脚本）。
+
+旧目录清理：把 ``data/raw`` / ``data/text`` 下**未被库引用的**历史文件移进 ``_orphan/``
 （隔离而非删除 —— 那些文件已无元数据，编不出人类可读的名字，删了就是数据丢失），
-随后删除空掉的 ``<2位>`` 目录；``data/text/`` 顶层遗留的老命名文件同样进 ``data/text/_orphan/``。
+随后**自底向上删掉空掉的旧目录**（``<类型>/<年-月>/``、``<2位>/``、老命名遗留的顶层文件所在目录）。
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,12 +35,27 @@ from scholarscout.state.db import Database
 #: 未引用历史文件的隔离目录名（放在各 data 子目录下）。
 ORPHAN_DIR = "_orphan"
 
+#: 会被清理（隔离孤儿 + 删空目录）的 data 子目录。
+CLEANED_SUBDIRS: tuple[str, ...] = ("raw", "text")
+
+#: 旧布局的目录名形状（清理时按名字把扫描限制在旧布局上，见 :func:`_old_layout_dirs`）：
+#: ``<sha 前 2 位>``（最老的一版）与 ``<年-月>`` 桶。类型目录名直接用现布局的“格式”段（同源）。
+_SHA_PREFIX_RE = re.compile(r"^[0-9a-fA-F]{2}$")
+_MONTH_BUCKET_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+_OLD_TYPE_DIRS = frozenset(paths.DOC_TYPE_BY_SOURCE.values()) | {"other"}
+
 _RECORDS = """
     SELECT d.id AS doc_id, d.title AS doc_title, d.sha256,
-           d.raw_path, d.text_path,
-           s.title AS source_title, s.url, s.domain, s.source_type, s.meta_json
+           d.raw_path, d.text_path, d.fetched_at,
+           s.id AS source_id, s.title AS source_title, s.url, s.domain,
+           s.source_type, s.meta_json
     FROM documents d JOIN sources s ON s.id = d.source_id
     ORDER BY d.fetched_at DESC, d.rowid DESC
+"""
+
+#: 每个来源**最早**被哪次会话带出来（按写入顺序）—— 与 ``state/archive.py`` 的分组口径同一套。
+_EARLIEST_MENTIONS = """
+    SELECT source_id, session_id FROM source_mentions ORDER BY rowid
 """
 
 
@@ -58,6 +80,7 @@ class MigrationReport:
     conflicts: int = 0
     failed: int = 0
     orphans: int = 0
+    layout: str = ""
     moves: list[Move] = field(default_factory=list)
     conflict_items: list[dict[str, str]] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
@@ -76,6 +99,7 @@ class MigrationReport:
             "conflicts": self.conflicts,
             "failed": self.failed,
             "orphans": self.orphans,
+            "layout": self.layout,
             "total": len(self.moves),
             "conflict_items": list(self.conflict_items),
             "failures": list(self.failures),
@@ -112,6 +136,14 @@ def _meta_of(raw: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def earliest_sessions(db: Database) -> dict[str, str]:
+    """``{source_id: 最早那次会话的 id}`` —— 目录取它（一份资料可能被多次调研带出）。"""
+    result: dict[str, str] = {}
+    for row in db.query(_EARLIEST_MENTIONS):
+        result.setdefault(str(row["source_id"]), str(row["session_id"]))
+    return result
+
+
 def _collision_suffix(base: Path, old_raw: str, raw_abs: Path) -> str:
     """目标已存在且不是同一个文件时才冲突 → 返回 ``--2`` 之类的后缀，否则空串。"""
     old_abs = (base / old_raw).resolve() if old_raw else None
@@ -130,9 +162,17 @@ def _collision_suffix(base: Path, old_raw: str, raw_abs: Path) -> str:
         index += 1
 
 
-def plan_moves(db: Database, *, root: Path | None = None) -> list[Move]:
+def plan_moves(
+    db: Database,
+    *,
+    root: Path | None = None,
+    layout: str | tuple[str, ...] | None = None,
+) -> list[Move]:
     """算出每条资料的「旧 → 新」计划；**不碰盘、不写库**（``--dry-run`` 用的就是它）。"""
     base = (root or paths.home()).resolve()
+    segments = paths.normalize_layout(layout)
+    session_dirs = naming.session_dir_map(db)
+    earliest = earliest_sessions(db)
     moves: list[Move] = []
     for row in db.query(_RECORDS):
         old_raw = str(row["raw_path"] or "")
@@ -142,16 +182,24 @@ def plan_moves(db: Database, *, root: Path | None = None) -> list[Move]:
         meta = _meta_of(row["meta_json"])
         domain = str(row["domain"] or "") or naming.domain_of(url)
         source_type = str(row["source_type"] or "")
+        fmt = paths.doc_type_for(source_type)
         ext = _ext_of(old_raw) or _ext_from_url(url) or "bin"
         title = naming.pick_title(row["doc_title"], row["source_title"])
-        year_month = naming.year_month_for(url, meta)
+        collected = naming.collected_month(row["fetched_at"])
+        published = naming.year_month_for(url, meta)
+        session = session_dirs.get(earliest.get(str(row["source_id"]), ""), paths.UNKNOWN_SESSION)
+        placement = {
+            "session": session,
+            "fmt": fmt,
+            "collected": collected,
+            "published": published,
+            "title": title,
+            "sha256": sha256,
+            "domain": domain,
+        }
 
-        raw_abs = paths.raw_path_for_doc(
-            source_type, year_month, title, sha256, ext, domain=domain, root=base
-        )
-        text_abs = paths.text_path_for_doc(
-            source_type, year_month, title, sha256, domain=domain, root=base
-        )
+        raw_abs = paths.raw_path_for_layout(segments, ext=ext, root=base, **placement)
+        text_abs = paths.text_path_for_layout(segments, root=base, **placement)
         suffix = _collision_suffix(base, old_raw, raw_abs)
         if suffix:
             raw_abs = raw_abs.with_name(f"{raw_abs.stem}{suffix}{raw_abs.suffix}")
@@ -225,38 +273,79 @@ def _protected(base: Path, moves: list[Move]) -> set[Path]:
     return keep
 
 
-def _cleanup_old_dirs(base: Path, moves: list[Move], report: MigrationReport) -> None:
-    """隔离未被库引用的历史文件，并删掉空掉的旧 ``<2位>`` 目录。"""
-    protected = _protected(base, moves)
-    raw_root = base / "data" / "raw"
-    if raw_root.is_dir():
-        for sub in sorted(p for p in raw_root.iterdir() if p.is_dir()):
-            if sub.name == ORPHAN_DIR or len(sub.name) != 2:
-                continue
-            for item in sorted(sub.iterdir()):
-                if item.is_file() and item.resolve() not in protected:
-                    _move_to_orphan(item, raw_root / ORPHAN_DIR)
-                    report.orphans += 1
-            if not any(sub.iterdir()):
-                rel = paths.rel_to_home(sub, base)
-                sub.rmdir()
-                report.removed_dirs.append(rel)
+def _prune_dirs(dirs: list[Path], root: Path, base: Path, report: MigrationReport) -> None:
+    """自底向上删掉扫过的空目录（``root`` 自身保留；旧桶目录只在空了之后才留不住）。"""
+    for directory in sorted(dirs, key=lambda p: len(p.parts), reverse=True):
+        if directory == root or any(directory.iterdir()):
+            continue
+        rel = paths.rel_to_home(directory, base)
+        directory.rmdir()
+        report.removed_dirs.append(rel)
 
-    text_root = base / "data" / "text"
-    if text_root.is_dir():
-        for item in sorted(text_root.glob("*.txt")):
-            if item.resolve() not in protected:
-                _move_to_orphan(item, text_root / ORPHAN_DIR)
-                report.orphans += 1
+
+def _looks_like_old_level1(name: str) -> bool:
+    """旧布局第一层：``<sha 前 2 位>`` 目录，或旧的内容类型目录（也可能直接是 ``unknown``）。"""
+    return (
+        bool(_SHA_PREFIX_RE.match(name)) or name in _OLD_TYPE_DIRS or name == paths.UNKNOWN_BUCKET
+    )
+
+
+def _looks_like_old_bucket(name: str) -> bool:
+    """旧布局第二层：``<年-月>`` 桶或 ``unknown``。"""
+    return bool(_MONTH_BUCKET_RE.match(name)) or name == paths.UNKNOWN_BUCKET
+
+
+def _old_layout_dirs(root: Path) -> list[Path]:
+    """``root`` 下**已知旧布局形状**的目录（含 ``root`` 自身，由浅到深）。
+
+    **为什么不用 ``rglob('*')``**：当前布局是 ``<会话>/<格式>/``（文件在第三层），资料一多
+    整棵 ``data/raw`` 走一遍纯属浪费 —— 要清的只是**旧布局残留**，而旧布局的目录名是可枚举的：
+    ``<sha 前 2 位>/``、``<类型>/<年-月>/``、``<类型>/unknown/``。只按名字下探这两类形状，
+    **新布局的会话目录一律不进**（跳过它就是省下来的时间）。
+    """
+    dirs = [root]
+    for level1 in sorted(p for p in root.iterdir() if p.is_dir()):
+        if level1.name == ORPHAN_DIR or not _looks_like_old_level1(level1.name):
+            continue
+        dirs.append(level1)
+        for level2 in sorted(p for p in level1.iterdir() if p.is_dir()):
+            if level2.name == ORPHAN_DIR or not _looks_like_old_bucket(level2.name):
+                continue
+            dirs.append(level2)
+    return dirs
+
+
+def _cleanup_old_dirs(base: Path, moves: list[Move], report: MigrationReport) -> None:
+    """隔离未被库引用的历史文件，并删掉空掉的旧目录（布局换过之后旧桶不该继续挂着）。
+
+    扫描范围**限定在旧布局形状**（见 :func:`_old_layout_dirs`），不 ``rglob`` 整棵 ``data/raw``。
+    """
+    protected = _protected(base, moves)
+    for name in CLEANED_SUBDIRS:
+        root = base / "data" / name
+        if not root.is_dir():
+            continue
+        dirs = _old_layout_dirs(root)
+        for directory in dirs:
+            for item in sorted(directory.iterdir()):
+                if item.is_file() and item.resolve() not in protected:
+                    _move_to_orphan(item, root / ORPHAN_DIR)
+                    report.orphans += 1
+        _prune_dirs(dirs, root, base, report)
 
 
 def run_migration(
-    db: Database, *, root: Path | None = None, dry_run: bool = False
+    db: Database,
+    *,
+    root: Path | None = None,
+    dry_run: bool = False,
+    layout: str | tuple[str, ...] | None = None,
 ) -> MigrationReport:
     """执行迁移（或 ``dry_run`` 只出计划）。返回带四个计数与失败明细的报告。"""
     base = (root or paths.home()).resolve()
-    moves = plan_moves(db, root=base)
-    report = MigrationReport(moves=moves)
+    segments = paths.normalize_layout(layout)
+    moves = plan_moves(db, root=base, layout=segments)
+    report = MigrationReport(moves=moves, layout="/".join(segments))
 
     for move in moves:
         if move.kind == "skip":

@@ -180,6 +180,28 @@ class UiSettings:
 
 
 @dataclass(frozen=True)
+class LibraryProfile:
+    """资料落地布局（docs/19 §2）：**目录如何切分**，从外到内。
+
+    默认 ``("session", "format")`` = ``data/raw/<会话>/<格式>/`` —— 按会话分化、会话内按格式分类。
+    可用段（``paths.LAYOUT_SEGMENTS``）：``session``（会话，同名时目录名带短会话 id）/
+    ``format``（格式，取自 ``sources.source_type``；``type`` 是它的旧称）/
+    ``collected``（收录年月 = ``documents.fetched_at``）/ ``published``（发表年月）。
+
+    为什么做成配置：这是用户会反复改的**显示约定**，而且原来被写死在三处（``paths`` / ``tools`` /
+    迁移脚本），改一次要三处同时改对、还容易漏。现在三处都读这一个值（``docs/19 §2``）。
+    未知段**直接报错**（静默回默认 = 用户以为改了、其实还在老位置写文件）。
+    """
+
+    layout: tuple[str, ...] = paths.DEFAULT_LAYOUT
+
+    @classmethod
+    def from_raw(cls, section: object) -> LibraryProfile:
+        data = section if isinstance(section, dict) else {}
+        return cls(layout=paths.normalize_layout(data.get("layout")))
+
+
+@dataclass(frozen=True)
 class Config:
     chat: LlmProfile
     summary: LlmProfile
@@ -195,6 +217,7 @@ class Config:
     fetch_cfg: FetchSettings = field(default_factory=FetchSettings)
     search_cfg: SearchSettings = field(default_factory=SearchSettings)
     ui: UiSettings = field(default_factory=UiSettings)
+    library: LibraryProfile = field(default_factory=LibraryProfile)
 
     def api_key(self, profile: LlmProfile | None = None) -> str | None:
         return (profile or self.chat).api_key()
@@ -316,4 +339,5 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         fetch_cfg=fetch_cfg,
         search_cfg=search_cfg,
         ui=ui_cfg,
+        library=LibraryProfile.from_raw(raw.get("library")),
     )

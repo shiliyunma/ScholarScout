@@ -113,9 +113,10 @@ def archive_reindex(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """重建 ``data/library/`` 下的资料索引（全库 + 各桶）。**只读库、零模型调用**。
 
     改名/迁移后索引会过期，界面靠它一键重算，不必手改 Markdown（docs/01 §3.3、docs/19 §2）。
+    布局取 ``ctx.config.library.layout``（默认 ``<会话>/<格式>``）—— 返回里的 ``layout`` 是**实际用的**那串段名。
     """
     _params(params)
-    return library_index.write_indexes(ctx.db)
+    return library_index.write_indexes(ctx.db, layout=ctx.config.library.layout)
 
 
 def _launch_with_system(target: Path) -> None:

@@ -92,8 +92,14 @@ def save_document(
     ok: bool = True,
     error: str | None = None,
     doc_id: str | None = None,
+    fetched_at: str | None = None,
 ) -> tuple[str, bool]:
-    """按 ``(source_id, sha256)`` 去重，返回 ``(doc_id, 是否新建)``。"""
+    """按 ``(source_id, sha256)`` 去重，返回 ``(doc_id, 是否新建)``。
+
+    ``fetched_at`` 可由调用方给（**收录年月**就取它，见 ``docs/19`` §2）—— 落盘路径与库里这一列
+    必须是**同一个时间戳**，否则布局里带 ``collected`` 段时文件会落到与库里不一致的月份目录。
+    不给就用当前时间（老调用方不受影响）。
+    """
     existing = db.query_one(
         "SELECT id FROM documents WHERE source_id = ? AND sha256 = ?", (source_id, sha256)
     )
@@ -123,7 +129,7 @@ def save_document(
             extract_engine,
             extract_detail,
             1 if truncated else 0,
-            now_iso(),
+            fetched_at or now_iso(),
             http_status,
             1 if ok else 0,
             error,

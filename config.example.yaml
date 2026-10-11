@@ -125,6 +125,21 @@ paths:
   data_dir: "data"
   db_path: "run/state.db"
 
+# ===== 资料落地布局（docs/19 §2）=====
+library:
+  # **目录如何切分**，从外到内。默认 session/format =
+  #   data/raw/<会话>/<格式>/<标题>--<sha8>.<ext>   原件（全文同目录同名，只差 .txt 后缀）
+  #   data/library/<会话>/<格式>/index.md            该桶清单（全库清单另有 data/library/index.md）
+  # 可用段：
+  #   session   = 会话标题 slug（两个会话同名时追加 --<短会话 id> 区分）
+  #   format    = 格式，取自 sources.source_type（paper/doc/video/code/其他→other）
+  #   collected = 收录年月（documents.fetched_at，"我什么时候采到它"）
+  #   published = 发表年月（arXiv 号或 meta 日期，"它自己什么时候出的"）
+  #   type      = format 的旧称（等价）
+  # **未知段直接报错**（不静默写错位置）。改这里就换了全库布局，paths / source.fetch /
+  # 迁移脚本都从它读；改完跑一次 `python scripts/migrate_raw_names.py` 把老文件迁过去。
+  layout: "session/format"
+
 # ===== 装配开关（论文消融用）=====
 features:
   enable_kb: false                # kb.search 降级通道，默认关

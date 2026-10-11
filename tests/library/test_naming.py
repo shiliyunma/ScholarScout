@@ -1,4 +1,4 @@
-"""命名元数据：类型 / 年-月 / 真标题的推导口径（docs/19 §1/§2/§5）。"""
+"""命名元数据：类型 / 发表年月 / 收录年月 / 真标题 / 会话目录名的推导口径（docs/19 §1/§2/§5）。"""
 
 from __future__ import annotations
 
@@ -46,3 +46,51 @@ def test_pick_title_skips_urls_and_blanks() -> None:
 def test_domain_of_strips_www_and_lowercases() -> None:
     assert naming.domain_of("https://www.arXiv.org/abs/x") == "arxiv.org"
     assert naming.domain_of("not a url") == ""
+
+
+def test_collected_month_reads_fetched_at() -> None:
+    """**收录年月**取 ``documents.fetched_at``（"我什么时候采到它"）。"""
+    assert naming.collected_month("2026-10-05T10:00:00+08:00") == "2026-10"
+    assert naming.collected_month("2024-03-09 00:00:00") == "2024-03"
+
+
+def test_collected_month_unknown_when_unusable() -> None:
+    """取不到就 ``unknown``，绝不拿别的日期冒充（与发表年月同口径）。"""
+    assert naming.collected_month(None) == "unknown"
+    assert naming.collected_month("") == "unknown"
+    assert naming.collected_month("不是时间") == "unknown"
+    assert naming.collected_month("2024-13-01") == "unknown"  # 月份非法
+
+
+def test_session_short_id_is_last_four_alnum() -> None:
+    assert naming.session_short_id("ses_s2d2ytta") == "ytta"
+    assert naming.session_short_id("ses_ab12") == "ab12"
+    # 太短的 id 原样用（不补位数，也不编）
+    assert naming.session_short_id("x7") == "x7"
+
+
+def test_session_dir_name_uses_slug_and_short_id_on_collision() -> None:
+    assert naming.session_dir_name("调研 一 教育", "ses_ab12") == "调研-一-教育"
+    assert (
+        naming.session_dir_name("调研 一 教育", "ses_ab12", colliding=True) == "调研-一-教育--ab12"
+    )
+    # 标题取不到 → unknown，不编一个看着像会话名的字符串
+    assert naming.session_dir_name(None, "ses_ab12") == "unknown"
+
+
+def test_session_dir_names_give_colliding_sessions_short_ids() -> None:
+    """同名会话**都**带短 id（顺序无关，迁移/重建才幂等）。"""
+    got = naming.session_dir_names(
+        [("ses_ab12", "教育智能体"), ("ses_cd34", "教育智能体"), ("ses_ef56", "别的")]
+    )
+    assert got == {
+        "ses_ab12": "教育智能体--ab12",
+        "ses_cd34": "教育智能体--cd34",
+        "ses_ef56": "别的",
+    }
+
+
+def test_session_dir_names_order_independent_for_collisions() -> None:
+    forward = naming.session_dir_names([("ses_ab12", "同名"), ("ses_cd34", "同名")])
+    reverse = naming.session_dir_names([("ses_cd34", "同名"), ("ses_ab12", "同名")])
+    assert forward == reverse

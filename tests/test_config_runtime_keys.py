@@ -1,4 +1,4 @@
-"""配置读取的守卫：`RuntimeProfile` 的每个字段都必须真能从 YAML 读出来。
+"""配置读取的守卫：`RuntimeProfile` / `LibraryProfile` 的每个字段都必须真能从 YAML 读出来。
 
 **为什么要有这条**：`load_config` 里是**手写字段列表**，加了新字段却忘了接一行，
 YAML 里写什么都会被**静默忽略** —— 用户以为开了，实际没开。
@@ -12,7 +12,9 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-from scholarscout.config import RuntimeProfile, load_config
+import pytest
+
+from scholarscout.config import LibraryProfile, RuntimeProfile, load_config
 
 #: 每个字段给一个**与默认值不同**的值，能区分"读到了"与"用了默认"
 NON_DEFAULT_VALUES: dict[str, object] = {
@@ -74,3 +76,43 @@ def test_defaults_hold_when_section_is_absent(tmp_path: Path) -> None:
     config = load_config(config_path, load_env=False)
     assert config.runtime == RuntimeProfile()
     assert config.runtime.plan_by_model is False
+
+
+# ------------------------------------------------------------------ `library:` 段
+#: 资料落地布局（docs/19 §2）。**加字段就必须同步这里**，否则 YAML 里写 `library.<字段>`
+#: 会被静默忽略（与上面 runtime 同一类失败）。
+LIBRARY_NON_DEFAULT: dict[str, object] = {"layout": "collected/format"}
+
+
+def test_every_library_field_is_wired_to_a_yaml_key() -> None:
+    fields = {field.name for field in dataclasses.fields(LibraryProfile)}
+    assert fields == set(LIBRARY_NON_DEFAULT), (
+        "LibraryProfile 加了/删了字段：请同步 LIBRARY_NON_DEFAULT 与 load_config 的读取处"
+    )
+
+
+def test_library_layout_is_actually_read(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    body = "library:\n" + "".join(
+        f"  {key}: {_yaml_value(value)}\n" for key, value in LIBRARY_NON_DEFAULT.items()
+    )
+    config_path.write_text(body, encoding="utf-8")
+
+    config = load_config(config_path, load_env=False)
+
+    assert config.library.layout == ("collected", "format")
+
+
+def test_library_layout_defaults_to_session_then_format(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("search:\n  providers: ['auto']\n", encoding="utf-8")
+    assert LibraryProfile().layout == ("session", "format")
+    assert load_config(config_path, load_env=False).library.layout == ("session", "format")
+
+
+def test_library_layout_rejects_unknown_segment(tmp_path: Path) -> None:
+    """未知段**直接报错**：静默回默认 = 用户以为改了布局、其实还写在老位置。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("library:\n  layout: session/banana\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="未知的布局段"):
+        load_config(config_path, load_env=False)

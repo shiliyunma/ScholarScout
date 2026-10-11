@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 #: data/ 下允许出现的子目录（超出这个集合即视为越界）
@@ -41,6 +42,18 @@ _YEAR_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 #: 年份未知时的桶名（与 docs/05「未知年份不编」同口径）。
 UNKNOWN_BUCKET = "unknown"
+
+#: 会话目录名未知时用的段值（没有会话行 / 没有 session_id 时）。
+UNKNOWN_SESSION = "unknown"
+
+#: 布局段的合法取值（docs/19 §2）：``collected``=收录年月、``published``=发表年月、
+#: ``session``=会话（目录名，含同名时的短 id）、``format``=格式（``type`` 是它的旧称）。
+LAYOUT_SEGMENTS: tuple[str, ...] = ("collected", "published", "session", "format", "type")
+
+#: **默认布局**（docs/19 §2）：``<会话>/<格式>`` —— 按会话分化、会话内按格式分类。
+#: 这一处就是「目录如何切分」的默认值；``paths``、``tools`` 与迁移脚本都从布局参数读，
+#: 不再把布局写死在三处（用户以后要再改，只改配置里的 ``library.layout``）。
+DEFAULT_LAYOUT: tuple[str, ...] = ("session", "format")
 
 _ENV_HOME = "SCHOLARSCOUT_HOME"
 
@@ -104,8 +117,9 @@ def raw_path_for(sha256: str, ext: str, root: Path | None = None) -> Path:
 def text_path_for(doc_id: str, root: Path | None = None) -> Path:
     """抽取出的全文纯文本：``data/text/<doc_id>.txt``。
 
-    **旧口径，仅作回落**（历史数据/老测试）。生产路径一律用 :func:`text_path_for_doc`，
-    全文路径不再由 ``doc_id`` 拼 —— 改名后 ``doc_id`` 与文件名再无关系（docs/19 §4）。
+    **最老的一版口径，仅作历史回落**（库里早期数据可能记着这种路径）。生产路径一律走
+    :func:`text_path_for_layout` —— 全文路径不再由 ``doc_id`` 拼，改名后 ``doc_id`` 与文件名
+    再无关系（docs/19 §2/§4）。
     """
     if not doc_id or "/" in doc_id or "\\" in doc_id or ".." in doc_id:
         raise ValueError(f"非法 doc_id：{doc_id!r}")
@@ -167,41 +181,113 @@ def doc_basename(title: str, sha256: str, *, domain: str = "") -> str:
     return f"{slugify(title, fallback=domain)}--{sha256[:8]}"
 
 
-def raw_path_for_doc(
-    source_type: str | None,
-    year_month: str | None,
-    title: str,
-    sha256: str,
-    ext: str,
-    *,
-    domain: str = "",
-    root: Path | None = None,
-) -> Path:
-    """原件路径：``data/raw/<类型>/<年-月>/<标题>--<sha8>.<ext>``（docs/19 §2）。"""
-    bucket = doc_type_for(source_type)
-    month = year_month_bucket(year_month)
-    name = doc_basename(title, sha256, domain=domain)
-    return under_data(Path("raw") / bucket / month / f"{name}{_suffix(ext)}", root)
-
-
-def text_path_for_doc(
-    source_type: str | None,
-    year_month: str | None,
-    title: str,
-    sha256: str,
-    *,
-    domain: str = "",
-    root: Path | None = None,
-) -> Path:
-    """全文纯文本路径：**与原件同桶同名，只差后缀**（``.txt``）—— 打开目录一眼能对上。"""
-    bucket = doc_type_for(source_type)
-    month = year_month_bucket(year_month)
-    name = doc_basename(title, sha256, domain=domain)
-    return under_data(Path("text") / bucket / month / f"{name}.txt", root)
-
-
 def _suffix(ext: str) -> str:
     return ext if ext.startswith(".") else f".{ext}"
+
+
+def normalize_layout(layout: str | Iterable[str] | None) -> tuple[str, ...]:
+    """把布局参数规整成段名元组；**未知段直接报错**（宁可当场炸，也不静默写到错位置）。
+
+    接受 ``"session/format"`` 这样的字符串或 ``["session", "format"]`` 这样的序列；
+    ``None`` 用 :data:`DEFAULT_LAYOUT`。合法段见 :data:`LAYOUT_SEGMENTS`。
+    """
+    if layout is None:
+        return DEFAULT_LAYOUT
+    source = layout.split("/") if isinstance(layout, str) else layout
+    parts = tuple(str(part).strip() for part in source)
+    parts = tuple(part for part in parts if part)
+    if not parts:
+        raise ValueError("布局参数不能为空；默认是 " + "/".join(DEFAULT_LAYOUT))
+    unknown = [part for part in parts if part not in LAYOUT_SEGMENTS]
+    if unknown:
+        raise ValueError(f"未知的布局段：{unknown}；可用段：{list(LAYOUT_SEGMENTS)}")
+    return parts
+
+
+def _one_component(value: str) -> str:
+    """目录名只能是一段路径：抹掉 ``..``、把分隔符换成 ``-``（规则 §3.8：不许越出 data/）。
+
+    抹掉 ``..`` **先于**换分隔符：否则 ``../..`` 会被换成 ``..-..`` 再变成 ``---``，看着不像逃逸，
+    却也没落回 ``unknown``（``---`` 是个能骗过眼、又没意义的目录名）。
+    """
+    text = str(value or "").replace("..", "").replace("\\", "-").replace("/", "-")
+    return text.strip("-").strip()
+
+
+def layout_dir(
+    layout: str | Iterable[str] | None = None,
+    *,
+    session: str = "",
+    fmt: str = "",
+    collected: str = "",
+    published: str = "",
+) -> Path:
+    """按布局把资料落到哪一层目录拼出来（相对 ``data/raw`` / ``data/text``）。
+
+    - ``session``：**已解析好的会话目录名**（由 ``library.naming.session_dir_name`` 出，含同名短 id）；
+      缺了落 :data:`UNKNOWN_SESSION`。
+    - ``fmt``：格式目录名（``paths.doc_type_for(sources.source_type)`` 的结果），缺了落 ``other``。
+    - ``collected`` / ``published``：收录年月 / 发表年月（``YYYY-MM``）；不合规落 ``unknown``。
+    """
+    values = {
+        "collected": year_month_bucket(collected),
+        "published": year_month_bucket(published),
+        "session": _one_component(session) or UNKNOWN_SESSION,
+        "format": _one_component(fmt) or "other",
+    }
+    values["type"] = values["format"]
+    return Path(*[values[segment] for segment in normalize_layout(layout)])
+
+
+def raw_path_for_layout(
+    layout: str | Iterable[str] | None = None,
+    *,
+    session: str = "",
+    fmt: str = "",
+    collected: str = "",
+    published: str = "",
+    title: str = "",
+    sha256: str = "",
+    ext: str = "",
+    domain: str = "",
+    root: Path | None = None,
+) -> Path:
+    """按布局拼原件路径：``data/raw/<布局段…>/<标题>--<sha8>.<ext>``（docs/19 §2）。"""
+    name = doc_basename(title, sha256, domain=domain)
+    target = (
+        Path("raw")
+        / layout_dir(layout, session=session, fmt=fmt, collected=collected, published=published)
+        / f"{name}{_suffix(ext)}"
+    )
+    return under_data(target, root)
+
+
+def text_path_for_layout(
+    layout: str | Iterable[str] | None = None,
+    *,
+    session: str = "",
+    fmt: str = "",
+    collected: str = "",
+    published: str = "",
+    title: str = "",
+    sha256: str = "",
+    domain: str = "",
+    root: Path | None = None,
+) -> Path:
+    """按布局拼全文路径：**与原件同目录同名，只差后缀**（打开目录一眼能对上）。"""
+    name = doc_basename(title, sha256, domain=domain)
+    target = (
+        Path("text")
+        / layout_dir(layout, session=session, fmt=fmt, collected=collected, published=published)
+        / f"{name}.txt"
+    )
+    return under_data(target, root)
+
+
+def library_index_path(bucket: str | Path, root: Path | None = None) -> Path:
+    """某个桶的清单：``data/library/<桶目录>/index.md``（``bucket`` 为空则指全库清单）。"""
+    relative = Path("library") / (Path(bucket) if str(bucket) else Path()) / "index.md"
+    return under_data(relative, root)
 
 
 def note_path_for(note_id: str, root: Path | None = None) -> Path:
