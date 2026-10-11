@@ -6949,3 +6949,76 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 
 
+/* ─────────────────────────────────── 工具调用中的「加载圈」（浮层）
+
+   用户反馈：工具调用的间隙里模型在「想」，界面上什么都不动，不知道它活着。
+   它是一个**浮层**：绝对定位在输入框上方（bottom: calc(100% + 8px)），
+   不进入消息流的布局 —— 所以既不会把消息流顶移位，也不改任何栏位几何。
+   定位上下文是 .composer（下面给它 position: relative，它本来没有定位子元素）。
+   颜色/圆角/阴影全部用本设计真实存在的 --ui-* / --radius-* / --shadow-* 令牌，
+   **不得**用 --border / --muted-foreground 这类本设计没有的名字（会让整条声明静默失效）。 */
+
+.composer {
+  /* 只为给加载圈当定位上下文；不给别的子元素加任何定位，因此不改变现有布局。 */
+  position: relative;
+}
+
+.turn-spinner {
+  position: absolute;
+  right: 14px;
+  bottom: calc(100% + 8px);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100% - 28px);
+  padding: 4px 10px;
+  border-radius: var(--radius-lg);
+  background: var(--ui-bg-elevated);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  box-shadow: var(--shadow-sm);
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+}
+/* 必须显式写：类选择器上的 display:inline-flex（0,1,0）会压掉 UA 给 [hidden] 的
+   display:none，不补这条「隐藏」就永远藏不住。 */
+.turn-spinner[hidden] {
+  display: none;
+}
+.turn-spinner-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 加载圈本体：一圈描边 + 一段强调色，纯 CSS 旋转，无外部资源。 */
+.turn-spinner-dot {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 0.125rem solid var(--ui-stroke-tertiary);
+  border-top-color: var(--ui-accent);
+  animation: turn-spinner-spin 0.7s linear infinite;
+}
+/* 调用工具时强调一下：文案色提到主文本，环也走强调色。 */
+.turn-spinner[data-kind="tool"] {
+  color: var(--ui-text-primary);
+}
+.turn-spinner[data-kind="tool"] .turn-spinner-dot {
+  border-top-color: var(--ui-accent);
+}
+
+@keyframes turn-spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-spinner-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+

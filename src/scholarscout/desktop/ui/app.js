@@ -170,6 +170,9 @@ async function send(text) {
   el("btn-stop").hidden = false;
   bubble("user", "你").body.textContent = text;
   state.pending = makePending();
+  // 发起一轮就点亮加载圈（合成事件 "turn.start" —— 后端没有这个事件）。
+  // 之后 chat.tool_call / chat.tool_result / chat.delta / chat.done / chat.error 各自接棒。
+  turnSpinnerUpdate("turn.start");
 
   try {
     const result = await scout.call("chat.send", { session_id: state.sessionId, text: text });
@@ -199,6 +202,8 @@ async function send(text) {
     await refreshSessionUsage();
   } finally {
     state.pending = null;
+    // 无条件收掉加载圈：轮次结束了它必须消失（chat.done 没收到也要收 —— 防永久转圈）。
+    turnSpinnerReset();
     state.sending = false;
     el("btn-send").disabled = false;
     el("btn-stop").hidden = true;

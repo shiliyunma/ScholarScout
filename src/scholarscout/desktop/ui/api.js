@@ -184,6 +184,67 @@ function short(text, n) {
   return value.length > n ? value.slice(0, n) + "…" : value;
 }
 
+/* ------------------------------------------ 工具调用中的「加载圈」状态机
+   用户反馈：工具调用的间隙里模型在「想」，界面上什么都不动，不知道它活着。
+   做法 = 纯函数状态机（turnSpinnerNext / turnSpinnerText，便于 node 直测）
+        + 把状态落到 DOM 的小函数（turnSpinnerApply）。
+   **不新增后端事件** —— 复用已有的 chat.tool_call / chat.tool_result / chat.delta /
+   chat.done / chat.error；「发起一轮」那一下由前端自己发合成事件 "turn.start"
+   （后端没有这个事件，别去事件表里找）。与加载圈无关的事件返回 null（不动状态）。 */
+
+/** 事件 → 加载圈状态。prev 目前不参与判定，但保留形参以免以后加「已经收尾就别再亮」的规则。 */
+function turnSpinnerNext(prev, method, params) {
+  var p = params || {};
+  if (method === "turn.start") return { visible: true, kind: "thinking", tool: "" };
+  if (method === "chat.tool_call") {
+    return { visible: true, kind: "tool", tool: p.tool ? String(p.tool) : "" };
+  }
+  if (method === "chat.tool_result") return { visible: true, kind: "waiting", tool: "" };
+  if (method === "chat.delta") return { visible: true, kind: "writing", tool: "" };
+  if (method === "chat.done" || method === "chat.error") {
+    return { visible: false, kind: "off", tool: "" };
+  }
+  return null;
+}
+
+/** 状态 → 文案。文案集中在这一处；工具名取自 chat.tool_call 的 tool。 */
+function turnSpinnerText(state) {
+  if (!state || state.visible !== true) return "";
+  if (state.kind === "tool") return state.tool ? "正在调用 " + state.tool + " 工具" : "正在调用工具…";
+  if (state.kind === "thinking") return "正在思考…";
+  if (state.kind === "writing") return "正在生成回答…";
+  if (state.kind === "waiting") return "等待下一个动作…";
+  return "处理中…";
+}
+
+/** 当前加载圈状态（null = 还没发起任何一轮）。 */
+var turnSpinnerState = null;
+
+/** 把状态落到 DOM：只切 hidden 与文案，绝不增删消息流节点（加载圈是浮层）。 */
+function turnSpinnerApply(state) {
+  var node = el("turn-spinner");
+  if (!node) return;
+  var visible = !!(state && state.visible === true);
+  node.hidden = !visible;
+  if (!visible) return;
+  node.setAttribute("data-kind", state.kind || "");
+  var textNode = el("turn-spinner-text");
+  if (textNode) textNode.textContent = turnSpinnerText(state);
+}
+
+/** 事件 → 加载圈（唯二入口之一；另一个是 turnSpinnerReset）。 */
+function turnSpinnerUpdate(method, params) {
+  var next = turnSpinnerNext(turnSpinnerState, method, params);
+  turnSpinnerState = next;
+  turnSpinnerApply(next);
+}
+
+/** 强制复位。轮次收尾的 finally 一定调它 —— 防「无论出什么事都在转」的永久转圈。 */
+function turnSpinnerReset() {
+  turnSpinnerState = null;
+  turnSpinnerApply(null);
+}
+
 /* --------------------------------------------------------- 后端推来的事件 */
 
 window.scoutEvent = function (event) {
@@ -207,6 +268,11 @@ window.scoutEvent = function (event) {
   }
   const trace = state.pending;
   if (!trace) return;
+
+  // 加载圈：只有一轮真在跑时才动它（放在 pending 门之后）。chat.done 在下面那条
+  // if/else 链里**没有对应分支**（收尾靠 chat.send 的返回值），所以必须靠这一句
+  // 把加载圈收掉 —— 少了它就会一直转。
+  turnSpinnerUpdate(event.method, p);
 
   if (event.method === "chat.tool_call") {
     trace.add("call", "▶ " + p.tool + "（" + short(p.args_preview, 90) + "）");

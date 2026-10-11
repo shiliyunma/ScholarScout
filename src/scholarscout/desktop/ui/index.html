@@ -54,6 +54,13 @@
         <button type="button" class="ghost" data-ask="cards">生成抽背卡</button>
       </div>
       <form class="composer" id="composer">
+        <!-- 工具调用中的加载圈（浮层：绝对定位在输入框上方，不占流、不把消息流顶移位）。
+             显隐由 api.js 的 turnSpinner* 状态机控制；send() 在 finally 里无条件复位，
+             所以轮次结束一定消失（防永久转圈）。文案见 api.js 的 turnSpinnerText。 -->
+        <div class="turn-spinner" id="turn-spinner" role="status" aria-live="polite" hidden>
+          <span class="turn-spinner-dot" aria-hidden="true"></span>
+          <span class="turn-spinner-text" id="turn-spinner-text">正在思考…</span>
+        </div>
         <textarea id="input" rows="3" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
         <div class="composer-actions">
           <span class="hint" id="hint">工具调用与出处都会显示在这里</span>
