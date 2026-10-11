@@ -985,9 +985,11 @@ async function runPracticeHelp(card, box, button) {
       response: practiceResponses()[key] || "",
       stage: stage,
     });
-    out.textContent =
-      (stage === "hint" ? "【思路提示】" : "【完整讲解】") +
-      (result.text || result.reason || "（模型没有返回内容）");
+    // 收尾校正：用**最终全文**替换（流式时前端已按 practice.delta 追加了增量，这里一次性对齐，
+    // 避免重复措辞）。中途断开时后端把已收到的半句放在 text、真实原因放在 error —— 两者都要显示。
+    var body = result.text || result.reason || "（模型没有返回内容）";
+    if (result.error) body += "（流式中断，上面是已讲到的部分：" + result.error + "）";
+    out.textContent = (stage === "hint" ? "【思路提示】" : "【完整讲解】") + body;
     // 求助过 = 这张卡不会：排期记一次 fuzzy（没自测按钮之后，靠这个保证复习计划不断）
     await autoReview(card, "fuzzy", practiceResponses()[key] || "", null);
   } catch (error) {

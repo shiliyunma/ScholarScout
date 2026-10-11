@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -285,6 +286,20 @@ def note_help(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 
     card = {**cards[index], "note_id": note_id, "card_index": index + 1}
     session_id = row.get("session_id")
+    # 流式：只在桌面（有 emit）且总开关打开时开；增量为**片段**，事件名是 practice.delta
+    # （已在 rpc/server.py 的 NOTIFICATION_METHODS 登记，否则会被加上 chat. 前缀发错名）。
+    raw_emit = ctx.emit
+    on_delta: Callable[[str], None] | None = None
+    if raw_emit is not None and bool(getattr(ctx.config.runtime, "stream", False)):
+
+        def emit_practice_delta(piece: str) -> None:
+            raw_emit(
+                "practice.delta",
+                {"note_id": note_id, "card_index": index + 1, "delta": piece},
+            )
+
+        on_delta = emit_practice_delta
+
     outcome = practice.build_help(
         ctx.llm,
         ctx.db,
@@ -292,6 +307,7 @@ def note_help(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         card=card,
         response=str(params.get("response") or ""),
         stage="hint" if params.get("stage") == "hint" else "full",
+        on_delta=on_delta,
     )
     usage = outcome.get("usage") or {}
     if usage:
@@ -308,6 +324,8 @@ def note_help(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         "text": outcome["text"],
         "sources": outcome["sources"],
         "truncated": outcome["truncated"],
+        # 流式中途断开时的真实原因（正常返回时是 None）；界面据此在保留的半句后附一行说明
+        "error": outcome.get("error"),
     }
 
 

@@ -52,6 +52,20 @@ def test_practice_has_styles() -> None:
         assert selector in css, f"缺少样式 {selector}"
 
 
+def test_practice_delta_is_appended_in_the_ui() -> None:
+    """抽背流式：api.js 必须订阅 ``practice.delta`` 并把增量**追加**到提示区。
+
+    还要钉住位置 —— 它必须在 `state.pending` 那道门**之前**处理，否则抽背（没有 pending 轮次）
+    永远收不到增量。
+    """
+    text = APP_JS
+    assert '"practice.delta"' in text, "api.js 没订阅 practice.delta"
+    assert "practice-help-out" in text, "没找到抽背提示区"
+    assert text.index('"practice.delta"') < text.index("const trace = state.pending;"), (
+        "practice.delta 必须放在 pending 门前处理"
+    )
+
+
 def test_all_element_ids_used_by_js_exist_in_html() -> None:
     """通用漂移：`el("x")` 用到的 id 必须在 HTML 里存在（否则运行时静默失效）。"""
     app = APP_JS

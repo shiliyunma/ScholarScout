@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -21,12 +22,22 @@ ERROR_KINDS = ("auth", "network", "timeout", "server", "bad_response", "rate_lim
 
 
 class LlmError(RuntimeError):
-    def __init__(self, kind: str, message: str, *, http_status: int | None = None) -> None:
+    def __init__(
+        self,
+        kind: str,
+        message: str,
+        *,
+        http_status: int | None = None,
+        partial: str = "",
+    ) -> None:
         if kind not in ERROR_KINDS:
             raise ValueError(f"未知错误类型：{kind!r}")
         super().__init__(message)
         self.kind = kind
         self.http_status = http_status
+        #: **流式中途断开时已收到**的部分正文（非流式恒为空串）。
+        #: 交给调用方保留 —— 绝不静默丢掉已经说出来的半句（见 :meth:`OpenAIChatClient.chat_stream`）。
+        self.partial = partial
 
 
 @dataclass(frozen=True)
@@ -76,6 +87,13 @@ class LlmClient(Protocol):
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
+    ) -> ChatReply: ...
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        on_delta: Callable[[str], None] | None = None,
     ) -> ChatReply: ...
 
 
@@ -201,19 +219,30 @@ class OpenAIChatClient:
         self,
         messages: list[dict[str, Any]],
         *,
-        on_delta: Any = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> ChatReply:
-        """流式产出**最终回答**：边收边把累计文本交给 on_delta。
+        """流式产出**最终回答**：边收边把**增量**交给 ``on_delta``，最后返回拼好的完整回复。
 
         为什么只流这一轮：工具调用轮模型输出的是 tool_calls（不是给人读的正文），
-        而循环的硬规则是最后一轮tools=None —— 正好就是这里，所以只在这一轮开流。
+        而循环的硬规则是最后一轮 tools=None —— 正好就是这里，所以只在这一轮开流。
 
-        为什么发**累计**文本而不是增量：界面收到 chat.delta 是直接替换正文（不是追加），
-        发累计值就不用改前端；中途断线也不会留下半句话。
+        ``on_delta`` 收到的是**增量片段**（与 OpenAI SSE 的 ``delta.content`` 语义一致）：
+        主窗口把它累计后发 ``chat.delta``（前端按「替换正文」的既有形状接管），
+        抽背把它透传成 ``practice.delta`` 让前端**追加**、收尾时再用最终全文校正。
+
+        **中途断开不许静默吐半句**：已收到的部分不丢 —— 附加在 :class:`LlmError` 的
+        ``partial`` 上交给调用方，并把真实原因如实报出来。
+
+        ``usage`` 如实取：先试 OpenAI 兼容的 ``stream_options={"include_usage": true}``
+        让服务端在末尾的 chunk 里回带 usage；服务端不回就**如实留空**，不编数字
+        （token 记账宁可缺也不假，见 runtime/loop 的 record_usage 口径）。
         """
         url = self.base_url + "/chat/completions"
         payload = self._payload(messages, None)
         payload["stream"] = True
+        # 让服务端在最后一个 chunk 回带 usage；不支持的端点会忽略这个字段，
+        # 那就落到"没有 usage"（上层如实记 None，不估算）。
+        payload["stream_options"] = {"include_usage": True}
         chunks: list[str] = []
         usage: dict[str, Any] = {}
         finish_reason: str | None = None
@@ -245,13 +274,21 @@ class OpenAIChatClient:
                         if piece:
                             chunks.append(piece)
                             if on_delta is not None:
-                                on_delta("".join(chunks))
+                                on_delta(piece)  # 逐段回调**增量**，拼接由调用方负责
                         if choice.get("finish_reason"):
                             finish_reason = str(choice["finish_reason"])
         except httpx.TimeoutException as exc:
-            raise LlmError("timeout", f"模型请求超时（{self.timeout_s}s）：{exc}") from exc
+            raise LlmError(
+                "timeout",
+                f"模型请求超时（{self.timeout_s}s，已收到 {len(''.join(chunks))} 字符）：{exc}",
+                partial="".join(chunks),
+            ) from exc
         except httpx.HTTPError as exc:
-            raise LlmError("network", f"模型请求失败：{exc}") from exc
+            raise LlmError(
+                "network",
+                f"流式响应中断（已收到 {len(''.join(chunks))} 字符）：{exc}",
+                partial="".join(chunks),
+            ) from exc
 
         # 复用一次性路径的解析：把流式收下来的内容拼成同样形状的 body，
         # 这样 tool_calls/usage/finish_reason 的解析只有一处实现，不会两套逻辑漂移。

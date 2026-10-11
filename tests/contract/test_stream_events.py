@@ -20,6 +20,9 @@ SUBTASK_EVENTS = ("chat.subtask_start", "chat.subtask_done")
 #: 引入子任务前就存在的通知（回归：不能被改动或改名）
 EXISTING_EVENTS = ("chat.delta", "chat.tool_call", "chat.tool_result", "chat.done", "chat.error")
 
+#: 抽背「不会」的流式增量：**单段增量**（与 chat.delta 的累计正文不同），前端追加显示
+PRACTICE_EVENTS = ("practice.delta",)
+
 
 def _collect() -> tuple[list[dict[str, Any]], Any]:
     written: list[dict[str, Any]] = []
@@ -29,6 +32,19 @@ def _collect() -> tuple[list[dict[str, Any]], Any]:
 def test_subtask_events_are_registered_as_notifications() -> None:
     for event in SUBTASK_EVENTS:
         assert event in NOTIFICATION_METHODS, f"{event} 没登记进 NOTIFICATION_METHODS"
+
+
+def test_practice_delta_is_registered_as_a_notification() -> None:
+    """漏登记会被 make_emitter 加上 `chat.` 前缀（`chat.practice.delta`）→ 界面永远收不到。"""
+    for event in PRACTICE_EVENTS:
+        assert event in NOTIFICATION_METHODS, f"{event} 没登记进 NOTIFICATION_METHODS"
+
+
+def test_emitter_writes_practice_delta_verbatim() -> None:
+    written, emit = _collect()
+    emit("practice.delta", {"note_id": "not_1", "card_index": 1, "delta": "半"})
+    assert written[0]["method"] == "practice.delta"
+    assert written[0]["params"] == {"note_id": "not_1", "card_index": 1, "delta": "半"}
 
 
 def test_existing_events_still_registered() -> None:

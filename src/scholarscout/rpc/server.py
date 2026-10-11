@@ -27,6 +27,9 @@ NOTIFICATION_METHODS = (
     # 子 Agent P1（docs/16 §3.3）：顺序子任务的生命周期事件（**不动 chat.delta**）
     "chat.subtask_start",
     "chat.subtask_done",
+    # 抽背「不会」的流式增量（docs/01 §4）：正文风格与 chat.delta 不同 —— 它是**增量片段**、
+    # 前端追加显示，所以单列一个名字（漏登记会被加上 chat. 前缀、界面永远收不到）。
+    "practice.delta",
     # 会话标题在轮次开始前就定下来（用户一发送就能看到名字）
     "session.updated",
 )

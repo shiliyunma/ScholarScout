@@ -11,8 +11,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
+from scholarscout.providers.llm import LlmError
 from scholarscout.state import learning
 from scholarscout.state.db import Database
 
@@ -155,12 +157,36 @@ def build_help(
     card: dict[str, str],
     response: str,
     stage: str = "full",
+    on_delta: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """一次模型调用：答案 + 讲解 + 该补哪条资料。usage 一并带回给 RPC 记账。"""
+    """一次模型调用：答案 + 讲解 + 该补哪条资料。usage 一并带回给 RPC 记账。
+
+    `on_delta` 非空且客户端支持流式时改走 :meth:`chat_stream`（**增量**逐段回调，
+    界面据此实时显示）。中途断开：**已收到的部分原样交回**（`text`），真实原因放进 `error`，
+    绝不让界面只剩半句话而无解释（见 providers/llm.py 的 chat_stream 约定）。
+    """
     history = review_history(db, str(card.get("note_id") or ""), int(card.get("card_index") or 0))
     sources = gather_sources(db, session_id)
     prompt = help_prompt(card, response, history, sources, stage=stage)
-    reply = llm.chat([{"role": "user", "content": prompt}])
+    messages = [{"role": "user", "content": prompt}]
+    if on_delta is not None and callable(getattr(llm, "chat_stream", None)):
+        try:
+            reply = llm.chat_stream(messages, on_delta=on_delta)
+        except LlmError as exc:
+            partial = str(getattr(exc, "partial", "") or "")
+            if not partial:
+                raise  # 一个字都没收到：照常抛，让 RPC 如实报错
+            # 收到了半句：保留它 + 如实报原因，界面据此"先展示已讲到的、再附一行说明"。
+            return {
+                "text": partial,
+                "stage": stage,
+                "truncated": False,
+                "sources": sources,
+                "usage": {},
+                "error": f"{exc.kind}: {exc}",
+            }
+    else:
+        reply = llm.chat(messages)
     text = str(getattr(reply, "content", "") or "").strip()
     return {
         "text": text,

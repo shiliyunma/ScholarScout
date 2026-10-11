@@ -198,6 +198,13 @@ window.scoutEvent = function (event) {
     loadSessions();
     return;
   }
+  // 抽背「不会」的流式增量：直接**追加**到当前提示区（收尾时前端会用最终全文校正）。
+  // 这条与 chat 轮次无关，所以必须放在"没有 pending 就返回"之前 —— 否则抽背永远收不到增量。
+  if (event.method === "practice.delta") {
+    const out = document.querySelector(".practice-help-out");
+    if (out) out.textContent = (out.textContent || "") + (p.delta || "");
+    return;
+  }
   const trace = state.pending;
   if (!trace) return;
 

@@ -313,6 +313,12 @@ def run_turn(
     # 子任务内部消耗的工具调用数会 spend 回这个对象，于是主循环的剩余预算跟着变少。
     budget = TurnBudget(tool_budget)
     refs_total: dict[str, list[str]] = {}
+    # ---- 流式（只给"最后一轮"开）：这一轮 tools=None，模型回的是**给人读的正文**，
+    # 增量通过 chat.delta 实时推出（前端按「替换正文」的既有形状接管）。
+    # 非流式路径一字不变：没开流式时 deltas_sent 恒为 0，收尾仍照旧推一条最终 chat.delta。
+    stream_enabled = bool(getattr(ctx.config.runtime, "stream", False))
+    deltas_sent = 0
+    streamed_text = ""
     try:
         # 先把"这个会话正在跑哪一轮"记下来：界面点「停止」时按会话找到它（整轮结束前拿不到 turn_id）
         ctx.running[session_id] = turn_id
@@ -321,7 +327,33 @@ def run_turn(
                 stop_reason = "cancelled"
                 break
             tools_for_round = None if (stop_hinted or budget.remaining <= 0) else tool_decls
-            reply = ctx.llm.chat(messages, tools=tools_for_round)
+            if (
+                stream_enabled
+                and tools_for_round is None
+                and callable(getattr(ctx.llm, "chat_stream", None))
+            ):
+                # 这一轮不给工具 → 模型回的是最终正文，正好开流。
+                streamed_text = ""
+
+                def _on_delta(piece: str) -> None:
+                    nonlocal streamed_text, deltas_sent
+                    streamed_text += piece
+                    deltas_sent += 1
+                    # 推**累计**正文：前端 chat.delta 的处理是"替换正文"，累计值才能直接接管。
+                    _emit(
+                        emit,
+                        "chat.delta",
+                        {
+                            "turn_id": turn_id,
+                            "seq": deltas_sent,
+                            "kind": "text",
+                            "text": streamed_text,
+                        },
+                    )
+
+                reply = ctx.llm.chat_stream(messages, on_delta=_on_delta)
+            else:
+                reply = ctx.llm.chat(messages, tools=tools_for_round)
             _accumulate_usage(usage_total, reply)
             # **每次模型调用立即记账**：原来只在整轮结束记一次，结果是"被停止或中断的轮次
             # 把已经花掉的 token 全丢了"（真机实测：杀掉实例后该会话用量一条不剩）。
@@ -456,6 +488,11 @@ def run_turn(
     except LlmError as exc:
         stop_reason = "error"
         error_message = f"{exc.kind}: {exc}"
+        # 流式中途断开：已收到的部分不丢 —— 直接当作本轮答案（界面已经按增量显示过它），
+        # 同时如实把真实原因一起报出来（stop_reason=error + 收尾的 chat.done/错误信息）。
+        partial = str(getattr(exc, "partial", "") or "")
+        if partial:
+            final_text = partial
     except Exception as exc:
         stop_reason = "error"
         error_message = f"{type(exc).__name__}: {exc}"
@@ -513,7 +550,14 @@ def run_turn(
         token_in=usage_total.get("prompt_tokens"),
         token_out=usage_total.get("completion_tokens"),
     )
-    _emit(emit, "chat.delta", {"turn_id": turn_id, "seq": 0, "kind": "text", "text": final_text})
+    # 非流式路径：仍照旧推一条最终 chat.delta（行为一字不变）。
+    # 流式路径：增量已在上面实时推过，这里不再重发（否则前端会收到重复的收尾）。
+    if deltas_sent == 0:
+        _emit(
+            emit,
+            "chat.delta",
+            {"turn_id": turn_id, "seq": 0, "kind": "text", "text": final_text},
+        )
     _emit(
         emit,
         "chat.done",
