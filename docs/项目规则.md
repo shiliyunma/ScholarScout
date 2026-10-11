@@ -80,12 +80,14 @@
 **门槛（`scripts/check.sh`，一个不过就不合）**
 
 ```bash
-ruff check src tests
-ruff format --check src tests
-mypy src
+ruff check src tests scripts eval
+ruff format --check src tests scripts eval
+mypy src eval
 pytest -q
 python scripts/check_rules_sync.py
 python scripts/check_new_deps.py
+python scripts/scout.py --check-ui
+python scripts/make_code_map.py --check
 ```
 
 **关键路径 = 必须人工逐行 review 的文件（铁律 #5）**
