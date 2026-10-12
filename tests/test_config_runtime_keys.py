@@ -20,7 +20,7 @@ from scholarscout.config import LibraryProfile, RuntimeProfile, load_config
 NON_DEFAULT_VALUES: dict[str, object] = {
     "max_tool_calls_per_turn": 7,
     "max_context_chars": 12345,
-    "stream": True,
+    "stream": False,
     "allow_clarify": False,
     "max_history_chars": 4321,
     "plan_by_model": True,

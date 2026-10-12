@@ -44,7 +44,13 @@ class StreamingStub:
         self.chat_calls += 1
         return reply("（不该走到非流式）")
 
-    def chat_stream(self, messages: list[dict[str, Any]], *, on_delta: Any = None) -> ChatReply:
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: Any = None,
+        on_delta: Any = None,
+    ) -> ChatReply:
         self.stream_calls += 1
         for piece in self.pieces:
             if on_delta is not None:
@@ -118,7 +124,13 @@ class _PartialFailStub:
     def chat(self, messages: list[dict[str, Any]], *, tools: Any = None) -> ChatReply:
         raise AssertionError("流式轮不该走非流式")
 
-    def chat_stream(self, messages: list[dict[str, Any]], *, on_delta: Any = None) -> ChatReply:
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: Any = None,
+        on_delta: Any = None,
+    ) -> ChatReply:
         text = "已经讲了半句……"
         if on_delta is not None:
             on_delta(text)

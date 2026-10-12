@@ -86,7 +86,10 @@ class LlmProfile:
 class RuntimeProfile:
     max_tool_calls_per_turn: int = 12
     max_context_chars: int = 60000
-    stream: bool = False
+    #: 流式输出总开关：最后一轮（tools=None 的那轮）与抽背「求助」改走 `chat_stream`，
+    #: 增量经 `chat.delta` / `practice.delta` 实时推到界面。**默认开** —— 不改变计费
+    #: （同一份 token 只是更早看到字），关掉则整体退回一次性返回（脚本/评测复现更稳）。
+    stream: bool = True
     allow_clarify: bool = True
     #: 历史正文的字符预算（保头保尾裁剪，防长会话 token 线性膨胀）
     max_history_chars: int = 12000
@@ -300,7 +303,7 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         runtime=RuntimeProfile(
             max_tool_calls_per_turn=int(runtime_section.get("max_tool_calls_per_turn", 12)),
             max_context_chars=int(runtime_section.get("max_context_chars", 60000)),
-            stream=bool(runtime_section.get("stream", False)),
+            stream=bool(runtime_section.get("stream", True)),
             allow_clarify=bool(runtime_section.get("allow_clarify", True)),
             max_history_chars=int(runtime_section.get("max_history_chars", 12000)),
             compact_after_chars=int(runtime_section.get("compact_after_chars", 4000)),

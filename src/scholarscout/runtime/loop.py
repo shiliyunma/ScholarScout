@@ -313,10 +313,18 @@ def run_turn(
     # 子任务内部消耗的工具调用数会 spend 回这个对象，于是主循环的剩余预算跟着变少。
     budget = TurnBudget(tool_budget)
     refs_total: dict[str, list[str]] = {}
-    # ---- 流式（只给"最后一轮"开）：这一轮 tools=None，模型回的是**给人读的正文**，
-    # 增量通过 chat.delta 实时推出（前端按「替换正文」的既有形状接管）。
+    # ---- 流式（总开关 `runtime.stream`）：**每一轮**都开，带工具的轮次也不例外。
+    # 为什么不能只流"最后一轮"（原实现，真机复现的 bug）：那个条件要求 `tools_for_round is None`，
+    # 而 tools=None 只发生在**工具预算被用满**之后的强制收口轮。模型通常 2–3 次工具调用就自己收口，
+    # 于是流式分支**永远进不去** —— 实测：`chat_stream` 被调 0 次、`chat.delta` 只有收尾那 1 条、
+    # 一整轮 100s 里正文是一次性蹦出来的。
+    # 现在每一轮都走 `chat_stream(messages, tools=...)`：正文增量实时推出；
+    # 工具调用参数由 providers/llm.py 按 index 拼装（**不进正文增量**），
+    # 所以需要严格 JSON 的结构化调用不会被流式污染。
     # 非流式路径一字不变：没开流式时 deltas_sent 恒为 0，收尾仍照旧推一条最终 chat.delta。
-    stream_enabled = bool(getattr(ctx.config.runtime, "stream", False))
+    stream_enabled = bool(getattr(ctx.config.runtime, "stream", False)) and callable(
+        getattr(getattr(ctx, "llm", None), "chat_stream", None)
+    )
     deltas_sent = 0
     streamed_text = ""
     try:
@@ -327,12 +335,9 @@ def run_turn(
                 stop_reason = "cancelled"
                 break
             tools_for_round = None if (stop_hinted or budget.remaining <= 0) else tool_decls
-            if (
-                stream_enabled
-                and tools_for_round is None
-                and callable(getattr(ctx.llm, "chat_stream", None))
-            ):
-                # 这一轮不给工具 → 模型回的是最终正文，正好开流。
+            if stream_enabled:
+                # 这一轮可以是正文（最终答案/前言），也可以是工具调用 —— 两条都走流式：
+                # 只流正文增量，工具调用照原样从 `reply.tool_calls` 拿。
                 streamed_text = ""
 
                 def _on_delta(piece: str) -> None:
@@ -351,7 +356,7 @@ def run_turn(
                         },
                     )
 
-                reply = ctx.llm.chat_stream(messages, on_delta=_on_delta)
+                reply = ctx.llm.chat_stream(messages, tools=tools_for_round, on_delta=_on_delta)
             else:
                 reply = ctx.llm.chat(messages, tools=tools_for_round)
             _accumulate_usage(usage_total, reply)
@@ -551,12 +556,14 @@ def run_turn(
         token_out=usage_total.get("completion_tokens"),
     )
     # 非流式路径：仍照旧推一条最终 chat.delta（行为一字不变）。
-    # 流式路径：增量已在上面实时推过，这里不再重发（否则前端会收到重复的收尾）。
-    if deltas_sent == 0:
+    # 流式路径：增量已在上面实时推过，这里不再重发（否则前端会收到重复的收尾）；
+    # 但**界面最后看到的正文必须与落库的最终正文一致** —— 覆盖标记被剥掉、正文被沿用等
+    # 都会让两者不同，不补这一条界面会停在半句话上。
+    if deltas_sent == 0 or streamed_text != final_text:
         _emit(
             emit,
             "chat.delta",
-            {"turn_id": turn_id, "seq": 0, "kind": "text", "text": final_text},
+            {"turn_id": turn_id, "seq": deltas_sent, "kind": "text", "text": final_text},
         )
     _emit(
         emit,

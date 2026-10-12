@@ -93,6 +93,7 @@ class LlmClient(Protocol):
         self,
         messages: list[dict[str, Any]],
         *,
+        tools: list[dict[str, Any]] | None = None,
         on_delta: Callable[[str], None] | None = None,
     ) -> ChatReply: ...
 
@@ -219,12 +220,20 @@ class OpenAIChatClient:
         self,
         messages: list[dict[str, Any]],
         *,
+        tools: list[dict[str, Any]] | None = None,
         on_delta: Callable[[str], None] | None = None,
     ) -> ChatReply:
-        """流式产出**最终回答**：边收边把**增量**交给 ``on_delta``，最后返回拼好的完整回复。
+        """流式产出一轮回复：边收边把**正文增量**交给 ``on_delta``，最后返回拼好的完整回复。
 
-        为什么只流这一轮：工具调用轮模型输出的是 tool_calls（不是给人读的正文），
-        而循环的硬规则是最后一轮 tools=None —— 正好就是这里，所以只在这一轮开流。
+        **每一轮都能流**（含带工具的轮次）：模型的正文（前言或最终答案）增量实时回调。
+        工具调用是**分片**到达的（OpenAI 兼容 SSE 里 ``delta.tool_calls[].function.arguments``
+        按 token 切开，只有 ``index`` 能把碎块对上），所以这里按 ``index`` 自己拼装 ——
+        漏了这一步，带工具的一轮会**丢掉 tool_calls**：模型以为调了工具、循环什么都没收到，
+        整轮空转（所以本方法必须原样带上 ``tools``，绝不能为了流式就不给工具）。
+
+        **严格 JSON 不受污染**：工具参数只在 ``tool_calls`` 里拼装，绝不混进正文增量；
+        需要结构化输出的调用（没有 ``on_delta``）拿到的仍是本轮拼好的 ``tool_calls`` 与正文，
+        语义与 :meth:`chat` 一致。
 
         ``on_delta`` 收到的是**增量片段**（与 OpenAI SSE 的 ``delta.content`` 语义一致）：
         主窗口把它累计后发 ``chat.delta``（前端按「替换正文」的既有形状接管），
@@ -238,12 +247,14 @@ class OpenAIChatClient:
         （token 记账宁可缺也不假，见 runtime/loop 的 record_usage 口径）。
         """
         url = self.base_url + "/chat/completions"
-        payload = self._payload(messages, None)
+        payload = self._payload(messages, tools)
         payload["stream"] = True
         # 让服务端在最后一个 chunk 回带 usage；不支持的端点会忽略这个字段，
         # 那就落到"没有 usage"（上层如实记 None，不估算）。
         payload["stream_options"] = {"include_usage": True}
         chunks: list[str] = []
+        #: 工具调用的分片：``index`` → {id, name, arguments}（同一 index 的多块要拼起来）
+        fragments: dict[int, dict[str, str]] = {}
         usage: dict[str, Any] = {}
         finish_reason: str | None = None
         try:
@@ -270,11 +281,30 @@ class OpenAIChatClient:
                     if event.get("usage"):
                         usage = event["usage"]
                     for choice in event.get("choices") or []:
-                        piece = str((choice.get("delta") or {}).get("content") or "")
+                        delta = choice.get("delta") or {}
+                        piece = str(delta.get("content") or "")
                         if piece:
                             chunks.append(piece)
                             if on_delta is not None:
                                 on_delta(piece)  # 逐段回调**增量**，拼接由调用方负责
+                        # 工具调用：按 index 把分片拼成完整调用（增量只在 arguments 上，id/name 只有一块）
+                        for raw_call in delta.get("tool_calls") or []:
+                            if not isinstance(raw_call, dict):
+                                continue
+                            index = raw_call.get("index")
+                            slot = fragments.setdefault(
+                                int(index)
+                                if isinstance(index, int | float) and not isinstance(index, bool)
+                                else 0,
+                                {"id": "", "name": "", "arguments": ""},
+                            )
+                            slot["id"] = _append_identity(slot["id"], str(raw_call.get("id") or ""))
+                            function = raw_call.get("function")
+                            if isinstance(function, dict):
+                                slot["name"] = _append_identity(
+                                    slot["name"], str(function.get("name") or "")
+                                )
+                                slot["arguments"] += str(function.get("arguments") or "")
                         if choice.get("finish_reason"):
                             finish_reason = str(choice["finish_reason"])
         except httpx.TimeoutException as exc:
@@ -292,10 +322,20 @@ class OpenAIChatClient:
 
         # 复用一次性路径的解析：把流式收下来的内容拼成同样形状的 body，
         # 这样 tool_calls/usage/finish_reason 的解析只有一处实现，不会两套逻辑漂移。
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(chunks)}
+        if fragments:
+            message["tool_calls"] = [
+                {
+                    "id": slot["id"],
+                    "type": "function",
+                    "function": {"name": slot["name"], "arguments": slot["arguments"]},
+                }
+                for _index, slot in sorted(fragments.items())
+            ]
         body = {
             "choices": [
                 {
-                    "message": {"role": "assistant", "content": "".join(chunks)},
+                    "message": message,
                     "finish_reason": finish_reason or "stop",
                 }
             ],
@@ -387,6 +427,19 @@ class OpenAIChatClient:
             usage=usage,
             cached=cached,
         )
+
+
+def _append_identity(current: str, piece: str) -> str:
+    """拼工具调用的 ``id`` / ``name`` 分片。
+
+    为什么不能无脑相加：这两个字段**不是增量**（一个调用只有一个 id、一个函数名），
+    有的端点（DeepSeek 实测）会在同一次调用的多个 chunk 里重发整段 ——
+    直接相加会得到 ``call_1call_1``、``research.searchresearch.search``。
+    所以只在"这段内容还没收过"时追加（既兼容整段重发，也兼容真被切开写）。
+    """
+    if not piece or current.endswith(piece):
+        return current
+    return current + piece
 
 
 def create_client(profile: Any) -> OpenAIChatClient:
