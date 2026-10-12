@@ -11,8 +11,23 @@ import pytest
 from scholarscout.fetch.mineru import MineruText
 
 
-def _ctx(http: object) -> object:
+def _ctx(http: object, poll_timeout_s: float = 90.0) -> object:
+    """最小 ToolContext 替身：只要 ``require_http`` 与 ``config.fetch_cfg``。
+
+    ``config`` 不是可省的 —— 真实的 :class:`~scholarscout.runtime.toolctx.ToolContext`
+    一定有它（字段 ``config: Config``），而 MinerU 轮询预算
+    （``mineru_poll_timeout_s``）就从这里读。
+    """
+
+    class FetchCfg:
+        mineru_poll_timeout_s = poll_timeout_s
+
+    class Config:
+        fetch_cfg = FetchCfg()
+
     class Ctx:
+        config = Config()
+
         def require_http(self) -> object:
             return http
 

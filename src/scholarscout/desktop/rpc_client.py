@@ -27,8 +27,36 @@ EventSink = Callable[[str, dict[str, Any]], None]
 
 #: 读到输出结束的哨兵
 _EOF = object()
-#: 默认等待上限（秒）：排学习路线要调模型，给足时间
+#: 默认等待上限（秒）：给"一次调用 = 一次后端动作"的短调用（列表、设置、判权等）。
 DEFAULT_TIMEOUT = 180.0
+#: **整轮模型调用**的等待上限（秒）。`chat.send` 不是"一次动作"，而是**一整轮**：
+#: 一轮里可能跑十几次工具（每次出网几秒到几十秒）+ 若干次模型调用，正常 3–12 分钟。
+#: 真机 2026-10-12 的教训：一轮 6 次 `source.fetch` 的 trace 是 486s/243s（现已由分阶段超时
+#: 压到 30s 级），而 180s 的默认值会在**后端已经跑完十几步、正在写库**的时候把整轮丢掉 ——
+#: 界面按 `RpcCallError` 判"调用失败"，用户白等一场，后端其实还在跑。宁可多等，也不要丢已完成的轮次。
+#: 30 分钟是"一整轮"的保守上界（真机 P95 单任务 46s，最长的调研任务 228s）；真遇到超长轮次，
+#: 用户点「停止」（`chat.cancel` 不走这个上限）即可。
+LONG_CALL_TIMEOUTS: dict[str, float] = {"chat.send": 1800.0}
+#: 覆盖上面那个上限的环境变量（可配但不进 config.yaml —— 它是桌面壳传输层的参数，
+#: 不是产品配置；真要临时放宽，设一次环境变量即可）。
+LONG_CALL_TIMEOUT_ENV = "SCHOLARSCOUT_RPC_LONG_TIMEOUT"
+
+
+def resolve_timeout(method: str, default: float, explicit: float | None) -> float:
+    """算这一次调用该等多久：显式传入 > 长轮次上限（含环境变量覆盖）> 构造时的默认值。"""
+    if explicit is not None:
+        return explicit
+    if method not in LONG_CALL_TIMEOUTS:
+        return default
+    raw = os.environ.get(LONG_CALL_TIMEOUT_ENV)
+    if raw:
+        try:
+            # 配错了（不是数字/非正）就退回内置值：摸黑等 0 秒比等久更糟 ——
+            # 那会让每一次对话都立刻判失败。
+            return max(1.0, float(raw))
+        except ValueError:
+            pass
+    return LONG_CALL_TIMEOUTS[method]
 
 
 class RpcCallError(RuntimeError):
@@ -236,7 +264,7 @@ class RpcClient:
                 self._pending.pop(request_id, None)
             return _result_of(orphan)
         try:
-            return self._await(box, self.timeout if timeout is None else timeout)
+            return self._await(box, resolve_timeout(method, self.timeout, timeout))
         finally:
             with self._lock:
                 self._pending.pop(request_id, None)

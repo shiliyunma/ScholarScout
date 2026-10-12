@@ -56,6 +56,12 @@ def build_context(
         http_client = HttpClient(
             user_agent=cfg.fetch_cfg.user_agent,
             timeout_s=cfg.fetch_cfg.timeout_s,
+            # 分阶段超时（全表见 fetch/http.py 顶部）：建连 5s / robots 探针 5s /
+            # 整次抓取 deadline（None → timeout_s × 1.5）。不传的话所有阶段共用一个
+            # 20s 超时 ×3 次重试，真机 trace 里单次 source.fetch 就是 486s。
+            connect_timeout_s=cfg.fetch_cfg.connect_timeout_s,
+            deadline_s=cfg.fetch_cfg.deadline_s,
+            robots_timeout_s=cfg.fetch_cfg.robots_timeout_s,
             retries=cfg.fetch_cfg.retries,
             max_bytes=cfg.fetch_cfg.max_bytes,
             cache_dir=cfg.fetch_cfg.cache_dir(cfg.data_dir.parent),

@@ -97,6 +97,14 @@ search:
 # ===== 抓取 =====
 fetch:
   timeout_s: 20
+  # ---- 分阶段超时：建连 / robots 探针 / 整次抓取各给各的预算 ----
+  # 为什么不再"一个 timeout_s 管所有阶段"：旧实现所有阶段共用 20s 又被 retries=3 叠乘，
+  # 再叠上「落地页 → http:// 回落」那条不可达的路径（同一 URL 的 https 只要 1.4s），
+  # 真机 trace 里**单次 source.fetch 是 486s**，一轮 6 次 = 836s。默认值全表见 fetch/http.py 顶部。
+  connect_timeout_s: 5.0          # 建连（唯一会卡"不可达主机"的一段 → 给短值）
+  # 整次抓取的墙钟预算。null/不写 = 由出网层按 timeout_s × 1.5 算（不在两处各写一份常数）
+  deadline_s: null
+  robots_timeout_s: 5.0           # robots 探针只是副作用检查，不该拖住正式抓取
   retries: 3
   user_agent: "ScholarScout/0.1 (academic research assistant; contact: <you@example.com>)"
   max_bytes: 20000000             # 单文件下载上限 20MB（出网层硬上限：超出直接拒收）
@@ -105,6 +113,11 @@ fetch:
   # 与上面 max_bytes 的分工：max_bytes 是出网层红线（超了连字节都拿不到），
   # large_file_mb 是落盘后"要不要抽正文"的阈值。docs/19 §8.3
   large_file_mb: 20
+  # 抽取阶段（本地 pymupdf 逐页）的墙钟预算：超了就如实标 extract_status="extract_timeout" ——
+  # 宁可这一条没摘要，也不让一轮对话卡在本地解析上（实测 arXiv 800KB/54k 字符 PDF 只要 0.07–0.2s）
+  extract_timeout_s: 60.0
+  # MinerU 轮询阶段的**单次**预算（原为写死的 180s，且"直传 + URL 提交"两次调用 → 最坏 360s）
+  mineru_poll_timeout_s: 90.0
   respect_robots: true
 
 # ===== 扫描版 / 复杂版式 PDF：MinerU 官方接口（决议 8，见 docs/04 §7）=====

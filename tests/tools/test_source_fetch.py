@@ -21,7 +21,7 @@ from scholarscout.state.search import search_summaries
 from scholarscout.tools import register_tools
 from scholarscout.tools.source_fetch import PARAMETERS, SPEC, guess_source_type, source_fetch
 
-from ..conftest import StubLlm, reply
+from ..conftest import StubLlm, reply, tool_call
 
 PAGE = (
     "<html lang='zh'><head><title>教育智能体文档</title></head><body><main>"
@@ -340,3 +340,203 @@ def test_source_fetch_is_visible_to_model_via_loop(ctx: AppContext) -> None:
     assert "research.search" in names
     assert "source.fetch" in names
     assert registry.get_tools(["research"], features=ctx.config.features)
+
+
+# ---------------------------------------------------------------------------
+# 单源失败与分阶段超时（2026-10-12 补）：真机一轮 6 次 source.fetch 合计 836s，
+# 界面判"调用失败"整链停摆。两条纪律写进测试：
+#   ① 单条来源抓不到 → 工具自己回 ok=false + 原因，绝不冒泡成异常把整轮作废；
+#   ② 抽取阶段有墙钟预算，超了如实标 extract_timeout，不给整轮挂死的机会。
+# ---------------------------------------------------------------------------
+
+
+def test_dead_source_returns_ok_false_with_reason_instead_of_raising(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """连不上的来源：回 ``ok=false`` + 可读原因；同一轮里的好来源照旧完成。"""
+    _redirect_home(monkeypatch, tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "dead.example.com" in str(request.url):
+            raise httpx.ConnectError("host unreachable", request=request)
+        return httpx.Response(200, text=PAGE, headers={"content-type": "text/html; charset=utf-8"})
+
+    tool_ctx = _tool_ctx(ctx, handler, llm=StubLlm(reply(SUMMARY_TEXT)))
+
+    bad = source_fetch(tool_ctx, url="https://dead.example.com/paper")
+    assert bad["ok"] is False, "抓取失败必须是 ok=false（异常冒泡会让模型以为整轮废了）"
+    assert bad["data"]["error_kind"] == "network"
+    assert "抓取失败" in str(bad["error"]) and "dead.example.com" in str(bad["error"])
+    assert bad["refs"] == {}, "失败条目不该报出任何 source_id"
+
+    good = source_fetch(tool_ctx, url="https://docs.example.com/guide")
+    assert good["ok"] is True and good["data"]["chars"] > 0
+    assert ctx.db.scalar_int("SELECT count(*) FROM documents") == 1, "只有成功那条落库"
+
+
+def test_timeout_source_is_classified_as_timeout_not_a_crash(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超时的来源按 timeout 分类回来（原因里带 URL），调用方据此跳过这一条。"""
+    _redirect_home(monkeypatch, tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("too slow", request=request)
+
+    tool_ctx = _tool_ctx(ctx, handler, llm=StubLlm(reply(SUMMARY_TEXT)))
+    result = source_fetch(tool_ctx, url="https://slow.example.com/paper")
+
+    assert result["ok"] is False
+    assert result["data"]["error_kind"] == "timeout"
+    assert result["data"]["requested_url"] == "https://slow.example.com/paper"
+    assert ctx.db.scalar_int("SELECT count(*) FROM documents") == 0
+
+
+def _text_pdf_bytes(pages: int = 3) -> bytes:
+    """造一份**每页都有文字层**的多页 PDF（用来验"抽到一半超预算"这条路径）。"""
+    import pymupdf
+
+    document = pymupdf.open()
+    try:
+        for index in range(pages):
+            page = document.new_page()
+            page.insert_text((72, 72), f"page {index + 1}: retrieval augmented generation")
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def test_pdf_extract_stops_at_the_page_where_the_budget_runs_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """抽到一半超预算 → 停在那一页、如实标 ``extract_timeout``，并写清抽到第几页。
+
+    用假时钟（每次读都前进 1 秒）钉住"逐页检查"这件事：真机正常路径只要 0.07–0.2s，
+    靠墙钟等是**等不出**这条分支的 —— 而且 Windows 的 ``time.monotonic()`` 粒度约 15.6ms，
+    把预算压到 0 也照样"没超"（实测踩过），所以这里必须注入时钟。
+    """
+    import scholarscout.tools.source_fetch as module
+
+    class _TickingTime:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def monotonic(self) -> float:
+            self.now += 1.0
+            return self.now
+
+    monkeypatch.setattr(module, "time", _TickingTime())
+
+    text, status, engine, detail = module._pdf_text(_text_pdf_bytes(3), budget_s=0.0)
+
+    assert status == "extract_timeout"
+    assert engine == "local"
+    assert text == "", "没抽完就把半份正文当结果更糟（摘要会基于残缺正文）"
+    assert "1/3" in detail, f"要写清抽到第几页停下的，实为：{detail}"
+
+
+def test_extract_budget_comes_from_config_and_the_status_surfaces(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """工具层：抽取预算取自 ``fetch.extract_timeout_s``，超时状态如实进返回与库。
+
+    （逐页判定的逻辑由上面那条假时钟用例钉；这条钉的是**接线**：配置项真被读了、
+    ``extract_timeout`` 真能走到返回 —— 否则那个配置键就是安慰剂。）
+    """
+    import scholarscout.tools.source_fetch as module
+
+    seen: dict[str, float] = {}
+
+    def _extract_timeout(content: bytes, *, budget_s: float) -> tuple[str, str, str, str]:
+        seen["budget_s"] = budget_s
+        return "", "extract_timeout", "local", f"本地抽取超过 {budget_s:g}s（已抽 1/3 页）"
+
+    monkeypatch.setattr(module, "_pdf_text", _extract_timeout)
+    _redirect_home(monkeypatch, tmp_path)
+    ctx.config = replace(
+        ctx.config,
+        features=replace(ctx.config.features, enable_mineru=False),
+        fetch_cfg=replace(ctx.config.fetch_cfg, extract_timeout_s=12.5),
+    )
+    pdf = _text_pdf_bytes(3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
+
+    tool_ctx = _tool_ctx(ctx, handler, llm=StubLlm(reply(SUMMARY_TEXT)))
+    data = source_fetch(tool_ctx, url="https://example.com/long.pdf")["data"]
+
+    assert seen["budget_s"] == 12.5, "预算必须来自配置，不能写死在一个函数里"
+    assert data["extract_status"] == "extract_timeout"
+    assert data["extract_engine"] == "local"
+    assert "1/3" in str(data["extract_detail"])
+    assert data["chars"] == 0
+    assert (tmp_path / data["raw_path"]).is_file(), "没抽完也要留下原件"
+    assert ctx.db.scalar_int("SELECT count(*) FROM documents") == 1, "如实登记，不假装成功"
+
+
+def test_one_dead_source_does_not_kill_the_turn(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**整轮**这一层：一轮里取两条来源、第一条不可达 → 整轮照常收口。
+
+    为什么必须在整轮钉：抓取阶段的 ``FetchError`` 以前会冒泡出工具边界，模型只看到一句异常，
+    于是反复重试同一批不可达 URL，直到烧光工具预算并开始编造；而工具层回 ``ok=false``
+    是唯一能同时做到"让模型停手 + 让其余来源照旧完成"的做法（真机 2026-10-12）。
+    """
+    from scholarscout.runtime import loop
+    from scholarscout.state import sessions
+
+    _redirect_home(monkeypatch, tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "dead.example.com" in str(request.url):
+            raise httpx.ConnectError("host unreachable", request=request)
+        return httpx.Response(200, text=PAGE, headers={"content-type": "text/html; charset=utf-8"})
+
+    ctx.http = HttpClient(respect_robots=False, transport=httpx.MockTransport(handler))
+    # 桩模型的回复顺序：轮1 要工具 → 轮2 要工具 → （第二条抓完出摘要，也走这个桩）→ 轮3 收口
+    ctx.llm = StubLlm(
+        reply(
+            "",
+            tool_calls=[
+                tool_call("source.fetch", '{"url":"https://dead.example.com/paper"}', call_id="c1")
+            ],
+        ),
+        reply(
+            "",
+            tool_calls=[
+                tool_call("source.fetch", '{"url":"https://docs.example.com/guide"}', call_id="c2")
+            ],
+        ),
+        reply(SUMMARY_TEXT),
+        reply("两条来源里有一条取不到，另一条已入库并出了摘要。"),
+    )
+    session_id = sessions.create_session(ctx.db, model=ctx.config.chat.model)
+
+    result = loop.run_turn(ctx.turn_context(), session_id=session_id, text="把这两条都取回来")
+
+    assert result.stop_reason == "completed", "单源失败不许把整轮判错"
+    assert result.tool_calls == ["source.fetch", "source.fetch"], "两次调用都真的执行了"
+
+    tool_texts = [
+        str(message["content"])
+        for call in ctx.llm.calls
+        for message in call["messages"]
+        if isinstance(message, dict) and message.get("role") == "tool"
+    ]
+    assert any("抓取失败" in text and "dead.example.com" in text for text in tool_texts), (
+        "坏的那条要带原因回给模型，模型才会停手"
+    )
+    assert any("docs.example.com" in text for text in tool_texts)
+
+    # 好的一条照旧入库出摘要；坏的一条不留半条脏数据
+    assert ctx.db.scalar_int("SELECT count(*) FROM documents") == 1
+    assert ctx.db.scalar_int("SELECT count(*) FROM summaries") == 1
+    # 两次调用都记了 trace（第一条不是"崩了"：工具自己回的 ok=false，没有异常逃出去）
+    assert (
+        ctx.db.scalar_int(
+            "SELECT count(*) FROM tool_traces WHERE tool_name = 'source.fetch' AND error IS NULL"
+        )
+        == 2
+    )

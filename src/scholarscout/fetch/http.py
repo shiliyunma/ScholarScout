@@ -9,6 +9,21 @@
 - 同一 host 的请求按 ``min_interval_s`` 串行化（arXiv 要求 >= 3 秒/次）。
 - 成功响应落 ``data/cache``，默认 6 小时有效，命中即不重复出网。
 - ``429`` 尊重 ``Retry-After``；``5xx`` / 超时 / 连接错误按指数退避重试。
+
+**分阶段超时（2026-10-12 补，起因是真机 trace 里单次 ``source.fetch`` 花了 486s）**：
+
+| 阶段 | 参数 | 默认 | 为什么单独给 |
+|---|---|---|---|
+| ① 建连（DNS+TCP+TLS） | ``connect_timeout_s`` | 5s | 实测 DNS 17ms + TLS 240ms，5s 足够；连不上不该拖 20s |
+| ② 首字节 / 读取 | ``timeout_s`` | 20s | 原语义不变（大 PDF 下载慢是正常的） |
+| ③ 整次抓取（含重试与退避） | ``deadline_s`` | ``timeout_s × 1.5`` | **重试不叠乘超时**：一次"满超时"说明主机不可达、不是瞬时抖动，重试只留给快失败（429/5xx/连接被拒） |
+| ④ robots.txt 探针 | ``robots_timeout_s`` | 5s | 它是**侧查询**：不该比正文抓取还贵，且只试一次 |
+
+为什么必须分阶段：以前所有阶段共用一个 20s 超时 + 3 次重试，最坏一次抓取 =
+``robots(3×20+3=63s) + 真文件(63s) + 回落原 URL(63s) ≈ 189s``；而回落目标若是 ``http://``
+（本机不可达）再加一整段。真机库（``run/state.db``）里就是 **486.3s / 243.2s** 的单次调用，
+三条 486s 全是 ``http://arxiv.org/abs/...``，那一轮 6 次 ``source.fetch`` 合计 836s ——
+远超桌面端 180s 的响应超时，界面直接判定"调用失败"，整条链路在用户眼里停摆。
 """
 
 from __future__ import annotations
@@ -26,6 +41,11 @@ from urllib.parse import urlencode, urlparse
 import httpx
 
 DEFAULT_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+
+#: 建连阶段的默认预算（DNS + TCP + TLS）。实测 17ms + 240ms，5s 已很宽松。
+DEFAULT_CONNECT_TIMEOUT_S = 5.0
+#: robots.txt 探针的默认预算：它是侧查询，不该比正文抓取还贵。
+DEFAULT_ROBOTS_TIMEOUT_S = 5.0
 
 #: 这些主机的 robots.txt 不约束我们：它们是**官方 API**，不是待爬的网页
 #: （arXiv 的 robots 禁止 /api/query，照字面执行会让检索整体不可用）
@@ -117,6 +137,9 @@ class HttpClient:
         *,
         user_agent: str = "ScholarScout/0.1 (academic research assistant)",
         timeout_s: float = 20.0,
+        connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
+        deadline_s: float | None = None,
+        robots_timeout_s: float = DEFAULT_ROBOTS_TIMEOUT_S,
         retries: int = 3,
         backoff_base_s: float = 1.0,
         backoff_factor: float = 2.0,
@@ -130,7 +153,14 @@ class HttpClient:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.user_agent = user_agent
+        #: 阶段②：首字节 / 读取
         self.timeout_s = timeout_s
+        #: 阶段①：建连（DNS + TCP + TLS）
+        self.connect_timeout_s = connect_timeout_s
+        #: 阶段③：**整次抓取**（含全部重试与退避）的墙钟上限。None → ``timeout_s × 1.5``。
+        self.deadline_s = timeout_s * 1.5 if deadline_s is None else deadline_s
+        #: 阶段④：robots.txt 探针自己的预算
+        self.robots_timeout_s = robots_timeout_s
         self.retries = max(1, retries)
         self.backoff_base_s = backoff_base_s
         self.backoff_factor = backoff_factor
@@ -144,8 +174,12 @@ class HttpClient:
         self._sleep = sleep
         self._limiter = _RateLimiter(clock, sleep)
         self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        # 分阶段超时交给 httpx：connect 单给，read/write/pool 用 timeout_s（原语义）
+        self._timeout = httpx.Timeout(
+            connect=connect_timeout_s, read=timeout_s, write=timeout_s, pool=timeout_s
+        )
         self._client = httpx.Client(
-            timeout=httpx.Timeout(timeout_s),
+            timeout=self._timeout,
             follow_redirects=True,
             transport=transport,
             headers={"User-Agent": user_agent},
@@ -250,8 +284,16 @@ class HttpClient:
 
     def _load_robots(self, host_key: str) -> urllib.robotparser.RobotFileParser | None:
         try:
+            # robots.txt 是**侧查询**：只试一次，且用它自己的短预算 ——
+            # 以前它跟正文一样是"20s × 3 次重试"，主机不可达时光一个 robots 探针就烧 63s，
+            # 而正文抓取还没开始（真机 486s 的调用里就包含这一段）。
             result = self._request_once(
-                f"{host_key}/robots.txt", DEFAULT_ACCEPT, "robots", min_interval_s=0.0
+                f"{host_key}/robots.txt",
+                DEFAULT_ACCEPT,
+                "robots",
+                min_interval_s=0.0,
+                attempts=1,
+                request_timeout=httpx.Timeout(self.robots_timeout_s),
             )
         except (FetchError, httpx.HTTPError):
             return None
@@ -398,22 +440,40 @@ class HttpClient:
         headers: dict[str, str] | None = None,
         content_type: str | None = None,
         omit_content_type: bool = False,
+        attempts: int | None = None,
+        request_timeout: httpx.Timeout | None = None,
     ) -> FetchResult:
-        started = self._clock()
         self._limiter.wait(rate_key, min_interval_s)
+        started = self._clock()
         last_error: FetchError | None = None
         request_headers = {"Accept": accept, **(headers or {})}
+        total_attempts = max(1, self.retries if attempts is None else attempts)
 
-        for attempt in range(self.retries):
+        for attempt in range(total_attempts):
+            if attempt:
+                # ---- 阶段③：整次抓取的墙钟上限（分阶段超时的"总预算"那一层）。
+                # **重试不叠乘超时**：下一次尝试必须能装进剩余预算，装不下就停手。
+                # 一次"满超时"意味着主机不可达（不是瞬时抖动），再试一次只是白等；
+                # 而 429/5xx/连接被拒这类**快失败**仍然照常重试（预算几乎没被消耗）。
+                elapsed = self._clock() - started
+                if elapsed + self.timeout_s > self.deadline_s:
+                    break
             try:
                 if method in ("POST", "PUT"):
                     send_headers = dict(request_headers)
                     if not omit_content_type:
                         send_headers["Content-Type"] = content_type or "application/json"
                     send = self._client.post if method == "POST" else self._client.put
-                    response = send(url, headers=send_headers, content=body)
+                    response = send(
+                        url,
+                        headers=send_headers,
+                        content=body,
+                        **self._timeout_kwargs(request_timeout),
+                    )
                 else:
-                    response = self._client.get(url, headers=request_headers)
+                    response = self._client.get(
+                        url, headers=request_headers, **self._timeout_kwargs(request_timeout)
+                    )
             except httpx.TimeoutException as exc:
                 last_error = FetchError("timeout", f"请求超时（{self.timeout_s}s）：{url}", url=url)
                 last_error.__cause__ = exc
@@ -425,10 +485,18 @@ class HttpClient:
                     last_error = self._status_error(response, url)
                 else:
                     return self._ok_or_raise(response, url, started)
-            if attempt < self.retries - 1:
-                self._sleep(self._backoff_seconds(attempt, last_error))
+            if attempt < total_attempts - 1:
+                # 退避同样被夹到剩余预算内：不让 sleep 把整次抓取拖过 deadline
+                delay = self._backoff_seconds(attempt, last_error)
+                remaining = max(0.0, self.deadline_s - (self._clock() - started))
+                self._sleep(min(delay, remaining))
         assert last_error is not None  # 循环必然赋值
         raise last_error
+
+    @staticmethod
+    def _timeout_kwargs(request_timeout: httpx.Timeout | None) -> dict[str, Any]:
+        """按请求覆盖超时（robots 探针用短预算）；不覆盖时不传，免得把 ``timeout=None`` 传成"永不超时"。"""
+        return {} if request_timeout is None else {"timeout": request_timeout}
 
     def _backoff_seconds(self, attempt: int, error: FetchError | None) -> float:
         if error is not None and error.kind == "rate_limited" and error.status == 429:

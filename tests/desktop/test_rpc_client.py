@@ -11,10 +11,14 @@ from pathlib import Path
 import pytest
 
 from scholarscout.desktop.rpc_client import (
+    DEFAULT_TIMEOUT,
+    LONG_CALL_TIMEOUT_ENV,
+    LONG_CALL_TIMEOUTS,
     RpcCallError,
     RpcClient,
     default_command,
     default_env,
+    resolve_timeout,
 )
 
 
@@ -209,3 +213,47 @@ def test_real_backend_roundtrip(tmp_path: Path) -> None:
     finally:
         client.close()
     assert not client.alive
+
+
+# ---------------------------------------------------------------------------
+# 长轮次超时（2026-10-12 补）：``chat.send`` 不是"一次动作"，而是**一整轮**
+# （十几次工具 + 若干次模型调用，真机 3–12 分钟）。180s 的默认上限会在后端已经跑完十几步、
+# 正在写库的时候把整轮丢掉，界面按 `RpcCallError` 误判"调用失败"，用户白等一场。
+# 下面三条钉住"按方法给预算"这件事，并留一个可配的口子。
+# ---------------------------------------------------------------------------
+
+
+def test_chat_send_gets_a_whole_turn_budget_while_short_methods_keep_the_default() -> None:
+    assert resolve_timeout("chat.send", DEFAULT_TIMEOUT, None) == LONG_CALL_TIMEOUTS["chat.send"]
+    assert LONG_CALL_TIMEOUTS["chat.send"] >= 1800.0, "一整轮的宽限至少得是 30 分钟级"
+    assert resolve_timeout("session.list", DEFAULT_TIMEOUT, None) == DEFAULT_TIMEOUT, (
+        "列表类调用不该跟着一起等半小时"
+    )
+    assert resolve_timeout("chat.send", DEFAULT_TIMEOUT, 12.0) == 12.0, "显式传入永远优先"
+
+
+def test_long_call_budget_is_configurable_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(LONG_CALL_TIMEOUT_ENV, "42")
+    assert resolve_timeout("chat.send", DEFAULT_TIMEOUT, None) == 42.0
+
+
+def test_broken_env_override_falls_back_to_the_built_in_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """配错了就退回内置值：宁可等久，也不能让每一次对话都立刻判失败。"""
+    monkeypatch.setenv(LONG_CALL_TIMEOUT_ENV, "很久")
+    assert resolve_timeout("chat.send", DEFAULT_TIMEOUT, None) == LONG_CALL_TIMEOUTS["chat.send"]
+    monkeypatch.setenv(LONG_CALL_TIMEOUT_ENV, "0")
+    assert resolve_timeout("chat.send", DEFAULT_TIMEOUT, None) == 1.0, "非正数夹到 1 秒"
+
+
+def test_chat_send_waits_the_resolved_budget_over_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """不传 timeout 时它等的是**解析出来的那个值**（不是构造时的默认值）—— 从超时文案上看得见。"""
+    monkeypatch.setenv(LONG_CALL_TIMEOUT_ENV, "1")
+    proc = FakeProcess()
+    client = _client(proc)  # 构造时的默认是 5.0s
+    with pytest.raises(RpcCallError) as info:
+        client.call("chat.send", {"text": "嗨"})
+    assert "1 秒" in str(info.value), f"应是长轮次预算，实为：{info.value}"

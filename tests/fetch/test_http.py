@@ -329,3 +329,90 @@ def test_cache_written_metadata_is_readable(tmp_path: Path) -> None:
     meta = json.loads(metas[0].read_text(encoding="utf-8"))
     assert meta["url"] == "https://example.org/meta"
     assert meta["status"] == 200
+
+
+# ---------------------------------------------------------------------------
+# 分阶段超时（2026-10-12 补）：真机 trace 里单次 source.fetch 花过 486s，
+# 起因是所有阶段共用一个 timeout_s × retries（20s × 3）+ 回落 URL 又各来一遍。
+# 下面四条钉住"每段各给各的预算"这件事 —— 只删代码不删测试，否则 486s 会回来。
+# ---------------------------------------------------------------------------
+
+
+def test_staged_timeouts_are_wired_per_stage() -> None:
+    """建连 / 读取 / 整次 / robots 探针各是一个数，不是一个 timeout_s 打天下。"""
+    client = make_client(
+        lambda request: httpx.Response(200, text="x"),
+        timeout_s=20.0,
+        connect_timeout_s=1.5,
+    )
+    assert client._timeout.connect == 1.5, "建连阶段必须有独立（更短）的预算"
+    assert client._timeout.read == 20.0, "读取阶段沿用原来的 timeout_s 语义"
+    assert client.deadline_s == 30.0, "不显式给 deadline 时是 timeout_s × 1.5"
+    assert client.robots_timeout_s == 5.0
+    # 显式给 deadline 时以显式值为准
+    assert (
+        make_client(lambda request: httpx.Response(200, text="x"), deadline_s=7.5).deadline_s == 7.5
+    )
+
+
+def test_full_timeout_is_not_multiplied_by_retries() -> None:
+    """一次"满超时"= 主机不可达（不是瞬时抖动）→ 装不下预算就不该再试。
+
+    旧行为：3 次重试各等满 timeout_s（20s×3=60s）。真机就是这么叠出 486s 的。
+    """
+    clock = FakeClock()
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        clock.advance(20.0)  # 这一次尝试真的等满了 timeout_s
+        raise httpx.TimeoutException("too slow", request=request)
+
+    client = make_client(handler, clock=clock, timeout_s=20.0, deadline_s=30.0)
+    with pytest.raises(FetchError) as info:
+        client.fetch("https://example.org/slow")
+
+    assert info.value.kind == "timeout"
+    assert len(attempts) == 1, "整次预算 30s 装不下第二次 20s 超时 → 不该再试"
+
+
+def test_backoff_sleep_cannot_push_the_fetch_past_its_deadline() -> None:
+    """退避也要夹进剩余预算：不许 sleep 把整次抓取拖过 deadline。"""
+    clock = FakeClock()
+    slept: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="busy")
+
+    client = make_client(
+        handler,
+        clock=clock,
+        slept=slept,
+        timeout_s=20.0,
+        deadline_s=30.0,
+        backoff_base_s=100.0,  # 退避本身远超预算
+    )
+    with pytest.raises(FetchError):
+        client.fetch("https://example.org/busy")
+
+    assert slept and sum(slept) <= 30.0, f"累计退避不许超过 deadline，实为 {slept}"
+
+
+def test_robots_probe_is_one_short_side_query() -> None:
+    """robots.txt 是**侧查询**：只试一次 + 用自己的短预算（旧行为 20s×3=63s）。"""
+    clock = FakeClock()
+    probed: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("robots.txt"):
+            probed.append(url)
+            clock.advance(5.0)  # 探针耗尽自己的 5s 预算
+            raise httpx.TimeoutException("robots slow", request=request)
+        return httpx.Response(200, text="<html>ok</html>", headers={"content-type": "text/html"})
+
+    client = make_client(handler, clock=clock, respect_robots=True, timeout_s=20.0)
+    result = client.fetch("https://example.org/page")
+
+    assert len(probed) == 1, "robots 拿不到就算了（默认放行），不该重试 3 次"
+    assert result.status == 200, "探针失败不能连带把正文抓取也判死"

@@ -2,12 +2,27 @@
 
 一次调用完成：抓取 → 原件落盘 → 抽正文 → 全文落 ``data/text/`` → 入库 → 摘要入库。
 **正文不进库、不进 FTS**（决议 5/6）；库里只有元数据、摘要与文件路径。
+
+各阶段的耗时与超时（2026-10-12 实测 + 补）——出网/抽取/摘要三段各自有预算，不再共用一个总数：
+
+| 阶段 | 实测（本机，arXiv 800KB PDF） | 超时口径 |
+|---|---|---|
+| 出网（DNS+TCP+TLS+首字节+下载） | 21ms + 240ms + 70–160ms ≈ 0.3–0.6s | 分阶段：建连 5s / 读取 20s / 整次 30s（``fetch/http.py``） |
+| robots.txt 探针（非豁免主机） | 0.3s（正常）/ 最坏原先 63s | 5s、只试一次 |
+| 抽取（pymupdf 逐页） | 0.07–0.2s | ``fetch.extract_timeout_s``（默认 60s） |
+| 落盘（原件 + 全文） | 1.1ms + 1.2ms | — |
+| 写库（3 条语句） | 0.8ms | — |
+| 摘要（模型调用） | 由模型决定（``summary`` 档 ``timeout_s``，默认 60s） | 摘要档自己的超时 |
+
+**单条来源失败绝不终止整轮**：抓取阶段的 ``FetchError``（超时/403/404/过大/robots 拒绝）
+在工具内就地兜住，改成 ``ok=false`` + 可读原因返回 —— 调用方跳过这一条，其余照旧完成。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -65,8 +80,13 @@ def _file_detail(size_bytes: int, *, kind: str) -> str:
     )
 
 
-def _pdf_text(content: bytes) -> tuple[str, str, str, str]:
-    """本地 PDF 抽正文（pymupdf）。抽不到文字时如实返回 ``no_text_layer``，由调用方决定是否走 MinerU。"""
+def _pdf_text(content: bytes, *, budget_s: float) -> tuple[str, str, str, str]:
+    """本地 PDF 抽正文（pymupdf）。抽不到文字时如实返回 ``no_text_layer``，由调用方决定是否走 MinerU。
+
+    ``budget_s`` 是**抽取阶段的墙钟预算**（分阶段超时里的"抽取"那一段）：逐页循环里检查，
+    超了就停下并标 ``extract_timeout`` —— 宁可这一条没摘要（如实标注），也不让整轮卡在本地解析上。
+    实测 arXiv 800KB / 54k 字符的 PDF 只要 0.07–0.2s，所以正常路径永远碰不到它。
+    """
     try:
         import pymupdf
     except ImportError:
@@ -74,7 +94,21 @@ def _pdf_text(content: bytes) -> tuple[str, str, str, str]:
     try:
         document = pymupdf.open(stream=content, filetype="pdf")
         try:
-            pages = [document.load_page(index).get_text() for index in range(document.page_count)]
+            total = document.page_count
+            deadline = time.monotonic() + max(0.0, budget_s)
+            pages: list[str] = []
+            for index in range(total):
+                # ``>=`` 而不是 ``>``：Windows 上 ``time.monotonic()`` 走 GetTickCount64，
+                # 粒度约 15.6ms —— 同一刻度内两次读到**相等**的值，用 ``>`` 会让"预算已用尽"
+                # 变成漏判（预算 0 也照样把整份 PDF 抽完）。
+                if index and time.monotonic() >= deadline:
+                    return (
+                        "",
+                        "extract_timeout",
+                        "local",
+                        f"本地抽取超过 {budget_s:g}s（已抽 {index}/{total} 页）",
+                    )
+                pages.append(document.load_page(index).get_text())
         finally:
             document.close()
     except Exception as exc:
@@ -103,10 +137,15 @@ def _mineru_fallback(
 
     http = ctx.require_http()
     token = mineru_token()
+    # MinerU 轮询阶段的预算（分阶段超时里的"解析服务"那一段）：以前写死 180s，
+    # 而"直传 + URL 提交"是**两次**调用 → 最坏 360s。改成配置项（默认 90s 一次）。
+    poll_timeout_s = float(ctx.config.fetch_cfg.mineru_poll_timeout_s)
     direct_detail = ""
 
     if content:
-        direct = parse_pdf_bytes(http, content, filename=filename, token=token)
+        direct = parse_pdf_bytes(
+            http, content, filename=filename, token=token, timeout_s=poll_timeout_s
+        )
         if direct.ok:
             return direct.text, "ok", "mineru", f"{direct.engine} 解析（本地直传）"
         direct_detail = f"直传 {direct.state}: {direct.detail}"
@@ -114,7 +153,7 @@ def _mineru_fallback(
     if not url:
         return "", "mineru_failed", "mineru", direct_detail or "既没有本地字节也没有 URL"
 
-    result = parse_pdf_url(http, url, token=token)
+    result = parse_pdf_url(http, url, token=token, timeout_s=poll_timeout_s)
     if result.ok:
         return result.text, "ok", "mineru", f"{result.engine} 解析（URL 提交）"
     url_detail = f"URL 提交 {result.state}: {result.detail}"
@@ -138,6 +177,20 @@ def _meta_of(raw: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _fetch_failure_reason(exc: FetchError, url: str) -> str:
+    """把抓取失败翻译成**给模型看**的一句话：类型 + 原因 + 是哪个地址。
+
+    地址必须带上：模型的下一步是"换一条来源"，看不到是哪个地址失败了它只会重试同一个。
+    （``FetchError`` 的 message 有的自带 URL（超时那类），有的不带（连接失败那类），
+    所以只在没出现时才补，不重复播报。）
+    """
+    reason = f"抓取失败（{exc.kind}）：{exc}"
+    target = exc.url or url
+    if target and target not in reason:
+        reason = f"{reason}；地址：{target}"
+    return reason
+
+
 def source_fetch(
     ctx: ToolContext,
     url: str | None = None,
@@ -159,15 +212,36 @@ def source_fetch(
     # 抓的哪一种**如实记在**返回里（requested_url / fetched_url / used_landing_page）。
     direct = prefer_direct_file(url)
     fetched_url = url
-    if direct is not None:
-        try:
-            response = http.fetch(direct, cache=not force)
-        except FetchError:
-            response = http.fetch(url, cache=not force)
+    try:
+        # 优先抓真文件（arxiv `/abs/<id>` → `/pdf/<id>`）；拿不到再回落原 URL。
+        # 抓的哪一种**如实记在**返回里（requested_url / fetched_url / used_landing_page）。
+        if direct is not None:
+            try:
+                response = http.fetch(direct, cache=not force)
+            except FetchError:
+                response = http.fetch(url, cache=not force)
+            else:
+                fetched_url = direct
         else:
-            fetched_url = direct
-    else:
-        response = http.fetch(url, cache=not force)
+            response = http.fetch(url, cache=not force)
+    except FetchError as exc:
+        # **单源失败绝不终止整轮**（真机 2026-10-12 实测：一轮 6 次 source.fetch 合计 836s，
+        # 界面判\"调用失败\"整链停摆）。抓取阶段的超时 / 403 / 404 / 过大 / robots 拒绝
+        # 在工具内就地兜成 ``ok=false`` + 可读原因 —— 调用方跳过这一条，其余来源照旧完成。
+        # 以前 FetchError 会冒泡出工具边界：模型只看到一句异常，以为\"这轮废了\"，
+        # 于是反复重试同一批不可达 URL，直到烧光工具预算并开始编造。
+        return {
+            "ok": False,
+            "error": _fetch_failure_reason(exc, requested_url),
+            "data": {
+                "requested_url": requested_url,
+                "fetched_url": requested_url,
+                "used_landing_page": True,
+                "error_kind": exc.kind,
+                "status": exc.status,
+            },
+            "refs": {},
+        }
 
     content: bytes = response.content
     sha256 = hashlib.sha256(content).hexdigest()
@@ -231,7 +305,9 @@ def source_fetch(
             kind=f"超过抽取阈值 {ctx.config.fetch_cfg.large_file_mb:g}MB，未抽正文",
         )
     elif is_pdf:
-        text, extract_status, engine, extract_detail = _pdf_text(content)
+        text, extract_status, engine, extract_detail = _pdf_text(
+            content, budget_s=ctx.config.fetch_cfg.extract_timeout_s
+        )
         if not text and ctx.config.features.enable_mineru:
             # 扫描版/无文字层：走 MinerU 官方 API（契约与实测见 fetch/mineru.py 顶部）。
             # 优先用刚下载到手的字节直传，少一个"对方下不到"的失败点。
