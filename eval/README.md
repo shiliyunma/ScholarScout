@@ -15,8 +15,13 @@
 把"系统能不能用"变成**可复算的数字**：
 
 - **题集**：`sets/` —— `e1_grade.jsonl`（判权）、`e2_guard.jsonl`（守卫）、`e3_tasks.jsonl`
-  （端到端）、`e3_probe_tasks.jsonl`（只要回答、不要产物的探针题）。
+  （端到端）、`e3_probe_tasks.jsonl`（只要回答、不要产物的探针题）、`e4_dialogues.jsonl`
+  （**E4 多轮对话**：6 个对话、**合计 15 轮**（逐对话 3/3/3/2/2/2），每个对话带 gold 工具轨迹
+  与 1～2 条域外探针；末行 `p1` 是单列的主题黏着度探针，给域内 3 条 / 域外 6 条）。
 - **运行器与计分**：`run_eval.py`（跑集）、`metrics.py`（指标纯函数，不碰库、不读文件）、
+  `run_dialogues.py`（**E4 运行器**：`--plan` 离线看题面 / `--live` 真跑，走临时库）、
+  `dialogue_metrics.py`（**E4 指标纯函数**，工具调用轨迹评分，出处见 `docs` 外的
+  `Intent Recognition/08-六对话过程评测方案.md`）、
   `report.py`（渲染成可直接贴进论文的 Markdown）。
 - **语义支持度**：`verify_support.py`（判定引用"支不支持该断言"，结果落 `support_checks` 表）。
 - **产物**：`reports/` —— `<时间戳>.json`（原始数字，供复算）、`<时间戳>.md`（表格），
@@ -41,6 +46,9 @@ E3（任务集）要**真模型 + 真出网**，结果不可复现，**因此 E3
   `--ablation`（跑对照臂）、`--auto-artifacts`（E3 对照臂：每轮自动出产物）、
   `--ask-artifacts`（首轮后追发一条"请生成"，量按需生成成功率）、`--no-thinking`（关深度思考的省钱 A/B）、
   `--out`（默认 `eval/reports`）、`--only`（逗号分隔题号）、`--limit`（最多前 N 题）。
+- **`run_dialogues.py`** 参数：`--plan`（离线：只输出题面、gold 轨迹，并校验 gold 参数是否合法）、
+  `--live`（真跑，需密钥与网络；**走临时库**，跑完即删）、`--limit`（最多跑前 N 个对话）、
+  `--out`（默认 `eval/reports`）。E4 与 E3 同类：**不进门槛**。
 - **`verify_support.py`** 参数：`--session` / `--kind {topic_map,route}` / `--id` /
   `--limit`（默认 20）/ `--refresh` / `--dry-run` / `--out` / `--db`。
 - **报告不入库**：`eval/reports/` 在 `.gitignore` 里（数字随运行时间变）；论文只引用其中的数字并
