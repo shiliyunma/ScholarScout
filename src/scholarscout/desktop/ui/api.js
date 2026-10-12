@@ -184,10 +184,16 @@ function short(text, n) {
   return value.length > n ? value.slice(0, n) + "…" : value;
 }
 
-/* ------------------------------------------ 工具调用中的「加载圈」状态机
-   用户反馈：工具调用的间隙里模型在「想」，界面上什么都不动，不知道它活着。
-   做法 = 纯函数状态机（turnSpinnerNext / turnSpinnerText，便于 node 直测）
-        + 把状态落到 DOM 的小函数（turnSpinnerApply）。
+/* ------------------------------------------ 会话流内的「加载圈」与工具调用信息条
+
+   用户反馈（本轮两条）：
+     ① 加载圈原来是 .composer 里的**绝对定位浮层** —— 要求搬进**会话消息流内部**；
+     ② 工具调用过程要有反馈：像 Hermes 那样把关键信息（工具名 / 参数摘要 / 结果 / 耗时）
+        落成可见条目，并且**每一轮的正文都要看得见**（原来每轮增量都覆盖同一个正文区，
+        只有最后一轮留得下）。
+
+   做法 = 纯函数状态机 / 格式化函数（便于 node 直测）
+        + 把状态落到「进行中」气泡内部的小函数（见 app.js 的 makePending）。
    **不新增后端事件** —— 复用已有的 chat.tool_call / chat.tool_result / chat.delta /
    chat.done / chat.error；「发起一轮」那一下由前端自己发合成事件 "turn.start"
    （后端没有这个事件，别去事件表里找）。与加载圈无关的事件返回 null（不动状态）。 */
@@ -217,32 +223,99 @@ function turnSpinnerText(state) {
   return "处理中…";
 }
 
+/** 工具参数摘要：压掉空白 + 截断（默认 120 字，不刷屏）。空参数回「（无参数）」。 */
+function toolArgsSummary(preview, max) {
+  var limit = typeof max === "number" && max > 0 ? max : 120;
+  var text = String(preview === null || preview === undefined ? "" : preview)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text || text === "{}") return "（无参数）";
+  return text.length > limit ? text.slice(0, limit) + "…" : text;
+}
+
+/** refs 键 → 人话（后端 chat.tool_result 只给"报出了哪些 id"，条数就是信息量）。 */
+var TOOL_REF_LABELS = {
+  source_ids: "来源",
+  route_ids: "路线",
+  topic_ids: "主题图",
+  note_ids: "笔记",
+  card_ids: "抽背卡",
+};
+
+/** 返回摘要：ok 明确为 false 才报失败（缺字段按成功处理，与后端 result.ok 默认 True 一致）。 */
+function toolResultSummary(params) {
+  var p = params || {};
+  if (p.ok === false) return "失败";
+  var refs = p.refs || {};
+  var parts = [];
+  Object.keys(refs).forEach(function (key) {
+    var list = refs[key];
+    var n = list && list.length ? list.length : 0;
+    if (n) parts.push((TOOL_REF_LABELS[key] || key) + " " + n + " 条");
+  });
+  return parts.length ? "完成｜新增 " + parts.join(" ") : "完成";
+}
+
+/** 毫秒 → 人话。没有后端真值时**不编**：返回值里会写明是前端计时。 */
+function fmtDuration(ms) {
+  var n = Math.max(0, Math.round(Number(ms) || 0));
+  if (n < 1000) return n + " ms";
+  return (n / 1000).toFixed(n < 10000 ? 1 : 0) + " s";
+}
+
+/** 耗时文本：后端给的真实 latency_ms 优先（唯一真值）；没有才用前端自计的毫秒。 */
+function toolLatencyText(params, startedAt, now) {
+  var p = params || {};
+  var ms = p.latency_ms;
+  if (typeof ms === "number" && isFinite(ms) && ms >= 0) return fmtDuration(ms);
+  if (typeof startedAt === "number" && typeof now === "number" && now >= startedAt) {
+    return fmtDuration(now - startedAt) + "（前端计时）";
+  }
+  return "";
+}
+
+/** 流式正文分段（纯函数）：chat.delta 的 text 是**本轮累计值**
+    （runtime/loop.py 每轮把 streamed_text 清零），所以不能靠「文本变短了」猜分段。
+    分段的判据是**回合语义**：一轮的正文流一定在它的 chat.tool_call 之前收尾 ——
+    当前段落已被一次工具调用收尾过，下一个增量就属于新一轮。 */
+function replyRoundNext(prevClosed, text) {
+  return {
+    isNew: prevClosed === true,
+    text: String(text === null || text === undefined ? "" : text),
+  };
+}
+
 /** 当前加载圈状态（null = 还没发起任何一轮）。 */
 var turnSpinnerState = null;
 
-/** 把状态落到 DOM：只切 hidden 与文案，绝不增删消息流节点（加载圈是浮层）。 */
-function turnSpinnerApply(state) {
-  var node = el("turn-spinner");
-  if (!node) return;
-  var visible = !!(state && state.visible === true);
-  node.hidden = !visible;
-  if (!visible) return;
-  node.setAttribute("data-kind", state.kind || "");
-  var textNode = el("turn-spinner-text");
-  if (textNode) textNode.textContent = turnSpinnerText(state);
-}
-
-/** 事件 → 加载圈（唯二入口之一；另一个是 turnSpinnerReset）。 */
+/** 事件 → 加载圈。它**不是浮层**：落到「进行中」气泡内部的 .msg-progress 行，
+    轮次收尾时会被真正移除。没有 pending（一轮没在跑）就什么都不动 ——
+    后端补推的迟到事件不该点亮界面。 */
 function turnSpinnerUpdate(method, params) {
   var next = turnSpinnerNext(turnSpinnerState, method, params);
   turnSpinnerState = next;
-  turnSpinnerApply(next);
+  var trace = state.pending;
+  if (!trace || next === null) return;
+  if (next.visible === true) trace.showProgress(turnSpinnerText(next), next.kind, next.tool);
+  else trace.hideProgress();
 }
 
-/** 强制复位。轮次收尾的 finally 一定调它 —— 防「无论出什么事都在转」的永久转圈。 */
+/** 摘掉消息流里**所有**残留的加载圈（幂等）。这是「结束后必消失」的第二道保险：
+    正常路径由 trace.hideProgress() 收掉；异常路径（气泡对象丢了、后端没回 chat.done）
+    靠这一条兜底，绝不会永久转圈。 */
+function turnSpinnerSweep() {
+  var box = el("messages");
+  if (!box) return;
+  box.querySelectorAll(".msg-progress").forEach(function (node) {
+    node.remove();
+  });
+}
+
+/** 强制复位 + 兜底清扫。轮次收尾的 finally 一定调它。 */
 function turnSpinnerReset() {
   turnSpinnerState = null;
-  turnSpinnerApply(null);
+  if (state.pending) state.pending.hideProgress();
+  turnSpinnerSweep();
 }
 
 /* --------------------------------------------------------- 后端推来的事件 */
@@ -275,18 +348,12 @@ window.scoutEvent = function (event) {
   turnSpinnerUpdate(event.method, p);
 
   if (event.method === "chat.tool_call") {
-    trace.add("call", "▶ " + p.tool + "（" + short(p.args_preview, 90) + "）");
+    trace.addToolCall(p);
   } else if (event.method === "chat.tool_result") {
-    const refs = p.refs || {};
-    const keys = Object.keys(refs);
-    const detail = keys.length ? "｜" + keys.join(", ") : "";
-    if (p.ok) {
-      trace.add("ok", "✓ " + (p.latency_ms || 0) + " ms" + detail);
-    } else {
-      trace.add("bad", "✗ 工具失败" + detail);
-    }
+    trace.addToolResult(p);
   } else if (event.method === "chat.delta") {
-    trace.setText(p.text || "");
+    // 每轮增量都进会话流：本轮是第一段就新开一段，否则替换当前段的累计值（见 replyRoundNext）
+    trace.pushDelta(p.text || "");
   } else if (event.method === "chat.error") {
     trace.add("bad", "后端错误：" + (p.message || ""));
   }
@@ -307,7 +374,20 @@ function bubble(kind, who) {
   wrap.appendChild(body);
   el("messages").appendChild(wrap);
   el("messages").scrollTop = el("messages").scrollHeight;
-  return { wrap: wrap, body: body };
+  return { wrap: wrap, body: body, who: who_el };
+}
+
+
+/** 会话流里的一条系统提示（没有「进行中」气泡可挂时用它，别把反馈静默丢掉）。 */
+function notice(text) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg notice";
+  const body = document.createElement("div");
+  body.className = "body";
+  body.textContent = text;
+  wrap.appendChild(body);
+  el("messages").appendChild(wrap);
+  el("messages").scrollTop = el("messages").scrollHeight;
 }
 
 

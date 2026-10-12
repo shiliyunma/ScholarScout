@@ -103,25 +103,53 @@ function renderMessage(message) {
 
 function makePending() {
   const node = bubble("assistant", "ScholarScout · 进行中");
+  /* 工具调用信息条：一次调用**一条**（工具名 + 参数摘要 + 结果/状态 + 耗时）。
+     多条按发生顺序依次往下排，互不覆盖（见 addToolCall/addToolResult）。 */
+  const toolFlow = document.createElement("div");
+  toolFlow.className = "tool-flow";
+  node.body.appendChild(toolFlow);
   const traceBox = document.createElement("div");
   traceBox.className = "trace";
   node.body.appendChild(traceBox);
   const textBox = document.createElement("div");
   textBox.className = "reply";
   node.body.appendChild(textBox);
+  /* 加载圈：**在会话消息流内部**（进行中气泡的最后一行），不再是输入框上方的浮层。
+     轮次收尾时它被真正**移除**（hideProgress / turnSpinnerSweep），不是藏起来。 */
+  const progress = document.createElement("div");
+  progress.className = "msg-progress";
+  progress.setAttribute("role", "status");
+  progress.setAttribute("aria-live", "polite");
+  progress.hidden = true;
+  const progressDot = document.createElement("span");
+  progressDot.className = "msg-progress-dot";
+  progressDot.setAttribute("aria-hidden", "true");
+  const progressText = document.createElement("span");
+  progressText.className = "msg-progress-text";
+  progress.appendChild(progressDot);
+  progress.appendChild(progressText);
+  node.body.appendChild(progress);
 
   /* 流式渲染的节流：模型每秒能吐几十个增量，每个都重排一遍 DOM 会卡。
      120ms 一次肉眼已经"实时"了，末次结果直接落（见 flush）。 */
   const THROTTLE_MS = 120;
   let lastPaint = 0;
   let timer = null;
-  let buffered = "";
+  let roundText = "";        // 当前段的累计正文（chat.delta 给的是**本轮累计值**）
+  let currentRound = null;   // 当前段的 DOM 节点（一段 = 一轮模型回复）
+  let roundClosed = false;   // 当前段是否已被一次工具调用收尾（= 下一个增量属于新一轮）
   let finished = false;
+  const openRows = {};       // call_id → 还没拿到结果的工具行
+  let lastRow = null;        // 最近一条待结果的工具行（call_id 对不上时兜底）
+
+  function scrollDown() {
+    el("messages").scrollTop = el("messages").scrollHeight;
+  }
 
   function paint() {
     lastPaint = Date.now();
-    ScoutMarkdown.renderInto(textBox, buffered);
-    el("messages").scrollTop = el("messages").scrollHeight;
+    if (currentRound) ScoutMarkdown.renderInto(currentRound, roundText);
+    scrollDown();
   }
 
   function flush() {
@@ -132,6 +160,54 @@ function makePending() {
     paint();
   }
 
+  function newRound() {
+    currentRound = document.createElement("div");
+    currentRound.className = "reply-round";
+    textBox.appendChild(currentRound);
+    return currentRound;
+  }
+
+  /** 建一条工具行（草稿态：状态「运行中…」，耗时先空着）。 */
+  function createRow(tool) {
+    const row = document.createElement("div");
+    row.className = "tool-row";
+    row.setAttribute("data-tool", tool);
+    const dot = document.createElement("span");
+    dot.className = "tool-row-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const name = document.createElement("span");
+    name.className = "tool-row-name";
+    name.textContent = tool;
+    const args = document.createElement("span");
+    args.className = "tool-row-args";
+    const status = document.createElement("span");
+    status.className = "tool-row-status";
+    status.textContent = "运行中…";
+    const latency = document.createElement("span");
+    latency.className = "tool-row-latency";
+    row.appendChild(dot);
+    row.appendChild(name);
+    row.appendChild(args);
+    row.appendChild(status);
+    row.appendChild(latency);
+    toolFlow.appendChild(row);
+    return { row: row, args: args, status: status, latency: latency, startedAt: Date.now() };
+  }
+
+  function showProgress(text, kind) {
+    // 被兜底清扫摘掉过也还能补回来（正常路径不会走到这里）
+    if (!progress.parentNode) node.body.appendChild(progress);
+    progress.hidden = false;
+    progress.setAttribute("data-kind", kind || "");
+    progressText.textContent = text || "";
+    scrollDown();
+  }
+
+  /** 「结束后必消失」的正常路径：**把节点从会话流里摘掉**。 */
+  function hideProgress() {
+    if (progress.parentNode) progress.remove();
+  }
+
   return {
     add: function (cls, text) {
       const line = document.createElement("div");
@@ -140,8 +216,44 @@ function makePending() {
       traceBox.appendChild(line);
       el("messages").scrollTop = el("messages").scrollHeight;
     },
-    setText: function (text) {
-      buffered = text || "";
+    /** chat.tool_call → 落成一条工具行（工具名 + 参数摘要）。 */
+    addToolCall: function (params) {
+      const p = params || {};
+      const tool = p.tool ? String(p.tool) : "未知工具";
+      const entry = createRow(tool);
+      const argsText = toolArgsSummary(p.args_preview, 120);
+      entry.args.textContent = argsText;
+      entry.row.title = tool + "（参数：" + argsText + "）";
+      if (p.call_id) openRows[String(p.call_id)] = entry;
+      lastRow = entry;
+      roundClosed = true; // 一次工具调用 = 这一轮的正文流到此收尾
+      scrollDown();
+    },
+    /** chat.tool_result → 补齐这条工具的返回摘要/状态与耗时（按 call_id 配对）。 */
+    addToolResult: function (params) {
+      const p = params || {};
+      const key = p.call_id ? String(p.call_id) : "";
+      let entry = key ? openRows[key] : null;
+      if (entry) delete openRows[key];
+      else entry = lastRow; // call_id 缺失/对不上时的兜底
+      if (!entry) {
+        /* 后端只推了结果没推调用（理论上不会）：**补一条**，绝不让结果凭空消失 ——
+           「工具调用一条都不丢」是这个界面的契约。 */
+        entry = createRow("未知工具");
+      }
+      entry.status.textContent = toolResultSummary(p);
+      entry.latency.textContent = toolLatencyText(p, entry.startedAt, Date.now());
+      entry.row.classList.add(p.ok === false ? "is-bad" : "is-ok");
+      entry.row.setAttribute("data-status", p.ok === false ? "bad" : "ok");
+      if (entry === lastRow) lastRow = null;
+      scrollDown();
+    },
+    /** chat.delta → 每轮正文各自成段：同一轮是替换（累计值），新一轮是新开一段。 */
+    pushDelta: function (text) {
+      const next = replyRoundNext(roundClosed, text);
+      if (next.isNew || !currentRound) newRound();
+      roundClosed = false;
+      roundText = next.text;
       if (finished) {
         flush();
         return;
@@ -153,9 +265,23 @@ function makePending() {
       }
       if (!timer) timer = setTimeout(flush, THROTTLE_MS - (now - lastPaint));
     },
+    /** 收尾：后端给的**权威全文**落到最后一段（覆盖标记被剥掉等情况，界面必须与落库一致）。 */
+    setFinal: function (text) {
+      const value = String(text || "");
+      if (!value) return;
+      if (!currentRound) newRound();
+      roundText = value;
+      roundClosed = true; // 轮次已收尾，万一再来增量也该新开一段
+      finished = true;
+      flush();
+    },
+    showProgress: showProgress,
+    hideProgress: hideProgress,
     finish: function () {
       finished = true;
       flush();
+      node.who.textContent = "ScholarScout";
+      hideProgress();
     },
     node: node,
   };
@@ -177,7 +303,8 @@ async function send(text) {
   try {
     const result = await scout.call("chat.send", { session_id: state.sessionId, text: text });
     state.pending.node.wrap.classList.remove("assistant");
-    if (result.text) state.pending.setText(result.text);
+    // 后端给的是权威全文（可能与流式末次不同）→ 落到最后一段，界面与落库必须一致
+    state.pending.setFinal(result.text);
     state.pending.finish();
     state.pending.add(
       result.stop_reason === "completed" ? "ok" : "warn",
@@ -201,9 +328,10 @@ async function send(text) {
     state.pending.node.wrap.classList.add("error");
     await refreshSessionUsage();
   } finally {
-    state.pending = null;
     // 无条件收掉加载圈：轮次结束了它必须消失（chat.done 没收到也要收 —— 防永久转圈）。
+    // 必须在清 state.pending **之前**调：复位要顺着当前这个「进行中」气泡摘节点。
     turnSpinnerReset();
+    state.pending = null;
     state.sending = false;
     el("btn-send").disabled = false;
     el("btn-stop").hidden = true;
@@ -710,7 +838,8 @@ async function stopTurn() {
     const result = await scout.call("chat.cancel", { session_id: state.sessionId });
     const note = result && result.note ? result.note : "已请求取消";
     if (state.pending) state.pending.add(result && result.ok ? "warn" : "bad", note);
-    else el("hint").textContent = note;
+    // 这一轮已经收尾（没有「进行中」气泡可挂）就落一条会话流提示 —— 绝不静默丢掉反馈
+    else notice(note);
   } catch (error) {
     if (state.pending) state.pending.add("bad", "取消失败：" + error.message);
   } finally {
