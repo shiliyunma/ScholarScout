@@ -110,17 +110,11 @@ class RuntimeProfile:
     #: （默认且上限 = `max_tool_calls_per_turn` 的 1/2），记账 `usage_records.purpose="subtask"`。
     #: 放 RuntimeProfile（同 feishu 开关）是为了让 `tests/test_config_runtime_keys.py` 的守卫覆盖到它。
     subtask_enabled: bool = False
-    #: 飞书渠道回调监听开关（入口层，docs/17 §3）。**默认关**：开启后才用标准库
-    #: `http.server` 监听本地端口等飞书 POST 事件（只绑 127.0.0.1，公网交给穿透/反代）。
-    #: 放在 RuntimeProfile 里（而不是新开一个档）是为了让 `tests/test_config_runtime_keys.py`
-    #: 的守卫覆盖到它 —— 否则 YAML 里写这个键会被 `load_config` 静默忽略（D3 踩过同款坑）。
-    feishu_listener_enabled: bool = False
-    #: 回调监听端口（照 Hermes 适配器默认 8765；enabled=false 时不起服务，端口无意义）。
-    feishu_listener_port: int = 8765
-    #: 回调路径（照 Hermes 默认 `/feishu/webhook`，adapter.py:151）；可配，便于与穿透工具对齐。
-    feishu_listener_path: str = "/feishu/webhook"
+    #: 飞书渠道入站走 **websocket 长连接**（`lark-oapi`，入口层，docs/17 §3.8）：
+    #: 本机主动外连，**不需要公网地址 / 回调 URL / 隧道**，因此没有任何监听开关/端口/路径配置键
+    #: （历史上那三枚 `feishu_listener_*` 随 webhook 路线一起删了）。
     #: 飞书**出站发送器**开关（把一轮回答推回飞书，docs/17 §3.7）。**默认关**：
-    #: 关着时渠道层只记录、绝不发任何外网（与监听开关分开：监听=收，发送=发）。
+    #: 关着时渠道层只记录、绝不发任何外网（收在长连接里、发要单独开）。
     feishu_reply_enabled: bool = False
 
 
@@ -312,12 +306,6 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             max_parallel_fetches=int(runtime_section.get("max_parallel_fetches", 3)),
             # 子 Agent P1：顺序子任务总开关（默认关）。D3 同款坑：加了字段必须接这一行。
             subtask_enabled=bool(runtime_section.get("subtask_enabled", False)),
-            # 飞书渠道回调监听（入口层，docs/17 §3）。默认关；同款坑：必须接这一行。
-            feishu_listener_enabled=bool(runtime_section.get("feishu_listener_enabled", False)),
-            feishu_listener_port=int(runtime_section.get("feishu_listener_port", 8765)),
-            feishu_listener_path=str(
-                runtime_section.get("feishu_listener_path", "/feishu/webhook")
-            ),
             # 飞书出站发送（把回答推回飞书）。默认关 → 关着时渠道层绝不发任何外网。
             feishu_reply_enabled=bool(runtime_section.get("feishu_reply_enabled", False)),
         ),

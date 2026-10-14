@@ -405,12 +405,11 @@ var FEISHU_DM_OPTIONS = [
   ["all", "放行全部私聊"],
   ["allowlist", "仅白名单"]
 ];
-/*: 连接模式 / 群聊策略的中文（后端给的是枚举，界面别直接甩英文） */
+/*: 连接方式的中文（后端现在**只有 websocket 长连接**一条路：webhook 路线已删，不需要公网地址/回调/隧道） */
 var FEISHU_MODE_LABELS = {
-  webhook: "webhook（事件回调）",
-  websocket: "websocket（本项目尚未实现，仅记录）"
+  websocket: "websocket（长连接，不需要隧道）"
 };
-var FEISHU_GROUP_LABELS = { mention: "仅被 @ 时响应", disabled: "关闭群聊" };
+var FEISHU_GROUP_LABELS = { mention: "仅被 @ 时响应", disabled: "关闭群聊" };  // 群聊策略的中文
 
 /*: 倒计时用的定时器与「这一枚刚生成的配对码」（明文只在此刻可见，刷新页面即丢） */
 var feishuPairTimer = null;
@@ -516,13 +515,7 @@ async function renderFeishuCard(body) {
       ),
     );
     statusBox.appendChild(
-      feishuLine(
-        "渠道层监听",
-        (status.listener_enabled ? "开" : "关") + "（端口 " + status.listener_port + "）",
-      ),
-    );
-    statusBox.appendChild(
-      feishuLine("连接模式", FEISHU_MODE_LABELS[status.connection_mode] || status.connection_mode),
+      feishuLine("连接方式", FEISHU_MODE_LABELS[status.connection_mode] || status.connection_mode),
     );
     statusBox.appendChild(
       feishuLine("群聊策略", FEISHU_GROUP_LABELS[status.group_policy] || status.group_policy),

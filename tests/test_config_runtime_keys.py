@@ -37,12 +37,8 @@ NON_DEFAULT_VALUES: dict[str, object] = {
     "max_parallel_fetches": 5,
     # 子 Agent P1：顺序子任务总开关（默认关；开着会多花模型调用）
     "subtask_enabled": True,
-    # 飞书渠道回调监听（入口层，docs/17 §3）：开关 + 端口。默认关。
-    "feishu_listener_enabled": True,
-    "feishu_listener_port": 8766,
-    # 监听路径（可配，便于与穿透工具对齐）
-    "feishu_listener_path": "/custom/hook",
     # 飞书出站发送器开关（把回答推回飞书）。默认关。
+    # 入站（websocket 长连接）没有配置键：不需要公网地址/回调/隧道，启动入口见 scripts/feishu_ws_up.py。
     "feishu_reply_enabled": True,
 }
 

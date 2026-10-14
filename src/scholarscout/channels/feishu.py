@@ -1,4 +1,4 @@
-"""飞书渠道回调（入口层，docs/17 §3）。
+"""飞书渠道的**入口层核心**（传输无关；docs/17 §3）。
 
 ## 它在哪一层
 
@@ -6,67 +6,43 @@
 （进程内 `dispatch`），不读库、不出网、不 import `runtime/tools/state/...`
 —— 由 `tests/test_layering.py::RULES["channels"]` 钉死。
 
-## 它做四件事
+## 它做三件事
 
-1. 用标准库 `http.server` 起一个回调监听（**默认关**，见 `config.runtime.feishu_listener_*`）；
-2. 解析飞书事件回调 JSON、处理 URL 验证 `challenge`；
-3. 两层校验（verification token + 签名），密钥只从 `.env` 读；**没有密钥时不校签、明确告警**；
-4. 把消息变成一次会话请求（`session.ensure` + `chat.send`），把回复交给**注入的发送器**
-   （真实部署注入走飞书 REST 的发送器；本地桩回调注入记录器）。
+1. **解析**：把飞书事件报文（`im.message.receive_v1`）解成 `FeishuMessage`（纯函数，可单独断言）；
+2. **拦截**：群聊 `@提及` 策略 / 私聊 `pairing|all|allowlist` 策略 —— 纯函数 `authorize_message`，
+   白名单与临时放行**经 `feishu.access` RPC 取**（渠道层不读库）；
+3. **跑一轮**：一条消息 = 一次会话请求（`session.ensure` + `chat.send`），回复交给**注入的发送器**。
 
-## 接口契约（来自 Hermes 适配器，逐条带 `文件:行号`，不凭印象）
+## 传输层只有一条：官方 SDK 的长连接
 
-`plugins/platforms/feishu/adapter.py`（本机副本，4308 行）：
-- 只收 `application/json`（`:2679-2682`）；
-- body 上限 1 MB（`:155 / :2685-2687`）；
-- 限速：`app_id:path:remote_ip` 滑动窗口 60s/120 次（`:156-157 / :2776-2785`）；
-- verification token：`payload["header"]["token"]` 或 `payload["token"]`，`hmac.compare_digest`（`:2708-2717`）；
-- URL 验证：`type == "url_verification"` **先过 token** 再回 `{"challenge": ...}`（`:2719-2722`）；
-- 签名：`x-lark-signature == sha256(timestamp + nonce + encrypt_key + body)`（`:2759-2771`）；
-- 成功回包 `{"code": 0, "msg": "ok"}`（`:2746`）；拒绝回 401（`:2716-2717 / :2725-2726`）。
+入站在 `channels/feishu_ws.py`（`lark-oapi` 的 websocket 长连接，**不需要公网地址 / 回调 URL / 隧道**）。
+本模块**不碰任何 socket**：它只认"已经解好的事件报文"，因此桩事件（甚至一个 dict）就能把整条
+链路测到底（`tests/channels/test_feishu_stub.py`、`tests/channels/test_feishu_ws_stub.py`）。
 
-**回包格式上的唯一差异**（本模块有意为之）：Hermes 的拒绝回**纯文本**，这里统一回 JSON
-（`{"code":<status>,"msg":...}`），便于校验与单测；**状态码与判据逐条对齐**。
-
-## 本地自测
-
-不联网、无凭据即可跑通整条链路：见 `tests/channels/test_feishu_stub.py`
-（起真 `ThreadingHTTPServer` → POST 一份合造的飞书回调 → 断言进会话路径、回包格式、
-非法签名 401、challenge 回显）。
+> **历史（2026-10-14 用户拍板）**：此前走的是"标准库 `http.server` webhook 监听 + 内网穿透隧道"，
+> 已随本批**整体删除** —— 校验（verification token / 签名 / challenge）、限速限长、`FeishuCallbackServer`、
+> `run_listener`、`probe_listener`、`--feishu-listen`、`scripts/feishu_up.py`、`飞书一键起飞.bat`，
+> 以及 `config.runtime.feishu_listener_{enabled,port,path}` 三个配置键。
+> 取舍（**依赖最小化 vs 接入便捷**）写在 `docs/17` §1.3 与 §3.8 —— 这是本项目真实的架构决策，不是清理癖。
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 import os
-import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, cast
-from urllib.parse import urlparse
+from typing import Any
 
 from scholarscout.rpc.methods import AppContext, dispatch
 
 logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------------ 常量（对齐 Hermes）
+# ------------------------------------------------------------------ 常量
 
-#: 回调路径（Hermes 默认 `/feishu/webhook`，adapter.py:151）
-DEFAULT_PATH = "/feishu/webhook"
-#: body 上限 1 MB（Hermes `_FEISHU_WEBHOOK_MAX_BODY_BYTES`，adapter.py:155）
-MAX_BODY_BYTES = 1 * 1024 * 1024
-#: 限速滑动窗口：60s / 120 次（Hermes，adapter.py:156-157）
-RATE_WINDOW_SECONDS = 60
-RATE_LIMIT_MAX = 120
-#: 成功回包（Hermes，adapter.py:2746）
-SUCCESS_BODY: dict[str, Any] = {"code": 0, "msg": "ok"}
-#: 事件类型
+#: 唯一一条入站事件：收到消息
 RECEIVE_EVENT = "im.message.receive_v1"
-CHALLENGE_EVENT = "url_verification"
 
 Sender = Callable[[str, str], dict[str, Any]]
 Dispatcher = Callable[[AppContext, str, Any], Any]
@@ -93,9 +69,11 @@ REGISTRATION_TP_ENV = "FEISHU_REGISTRATION_TP"
 DEFAULT_REGISTRATION_FROM = "scholarscout"
 DEFAULT_REGISTRATION_TP = "scholarscout"
 
-#: 支持的连接模式。本仓库渠道层**只实现 webhook**（见模块顶注）；websocket 仅记录。
-SUPPORTED_CONNECTION_MODES = ("webhook", "websocket")
-DEFAULT_CONNECTION_MODE = "webhook"
+#: 支持的连接模式：**只有 websocket**（入站实现在 `feishu_ws.py`）。
+#: 历史上两种都"认"，但只有 webhook 能跑；现在反过来 —— `webhook` 不再被接受，
+#: 配了会**告警并回落到 websocket**（见 `connection_mode_from_env`）。
+SUPPORTED_CONNECTION_MODES = ("websocket",)
+DEFAULT_CONNECTION_MODE = "websocket"
 #: 群聊策略：mention=仅被 @ 时响应 / disabled=关闭（对齐参照体验的二选一）
 SUPPORTED_GROUP_POLICIES = ("mention", "disabled")
 DEFAULT_GROUP_POLICY = "mention"
@@ -127,9 +105,19 @@ def launcher_url(
 
 
 def connection_mode_from_env() -> str:
-    """渠道层的连接模式（读 `.env` 的 `FEISHU_CONNECTION_MODE`，键名照 Hermes adapter.py:1311）。"""
-    mode = (os.environ.get("FEISHU_CONNECTION_MODE") or DEFAULT_CONNECTION_MODE).strip().lower()
-    return mode if mode in SUPPORTED_CONNECTION_MODES else DEFAULT_CONNECTION_MODE
+    """渠道层的连接模式（读 `.env` 的 `FEISHU_CONNECTION_MODE`，键名照 Hermes adapter.py:1311）。
+
+    **只认 websocket**（唯一实现）。配了别的值（含历史遗留的 `webhook`）一律回落到 websocket 并**告警**：
+    静默按另一种模式跑起来，比当场说清楚更难查 —— 那正是"以为在收事件、其实一个都收不到"的来源。
+    """
+    raw = (os.environ.get("FEISHU_CONNECTION_MODE") or DEFAULT_CONNECTION_MODE).strip().lower()
+    if raw in SUPPORTED_CONNECTION_MODES:
+        return raw
+    logger.warning(
+        "[Feishu] FEISHU_CONNECTION_MODE=%s 不受支持（本项目只实现 websocket 长连接），按 websocket 处理",
+        raw,
+    )
+    return DEFAULT_CONNECTION_MODE
 
 
 def group_policy_from_env() -> str:
@@ -168,37 +156,16 @@ def registration_tp_from_env() -> str:
     ).strip() or DEFAULT_REGISTRATION_TP
 
 
-def probe_listener(host: str = "127.0.0.1", port: int = 8765) -> tuple[bool, str]:
-    """试绑回调端口，成功后立即释放 —— 用来确认"渠道层起得来"。
-
-    只做 `bind` / `close`，**不 serve**（避免真起服务）；端口被占就如实报错。
-    """
-    import socket
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((host, int(port)))
-    except OSError as exc:
-        return False, f"端口 {host}:{port} 不可用：{exc}"
-    finally:
-        sock.close()
-    return True, f"端口 {host}:{port} 可用"
-
-
 @dataclass(frozen=True)
 class FeishuCredentials:
-    """飞书凭据（**只从 .env / 环境变量读**，绝不硬编码、绝不入库）。"""
+    """飞书凭据（**只从 .env / 环境变量读**，绝不硬编码、绝不入库）。
+
+    长连接只需要 `app_id` + `app_secret`（用它换 token 才能连上）。历史上 webhook 还要
+    verification token / encrypt key —— 那两个键随 webhook 一起删了。
+    """
 
     app_id: str = ""
     app_secret: str = ""
-    verification_token: str = ""
-    encrypt_key: str = ""
-
-    @property
-    def has_webhook_secret(self) -> bool:
-        """webhook 模式至少要一个密钥才能校签（照 Hermes adapter.py:1417-1419）。"""
-        return bool(self.verification_token or self.encrypt_key)
 
     @property
     def can_send(self) -> bool:
@@ -211,8 +178,6 @@ def credentials_from_env() -> FeishuCredentials:
     return FeishuCredentials(
         app_id=os.environ.get("FEISHU_APP_ID", "").strip(),
         app_secret=os.environ.get("FEISHU_APP_SECRET", "").strip(),
-        verification_token=os.environ.get("FEISHU_VERIFICATION_TOKEN", "").strip(),
-        encrypt_key=os.environ.get("FEISHU_ENCRYPT_KEY", "").strip(),
     )
 
 
@@ -236,49 +201,6 @@ class FeishuMessage:
 # ------------------------------------------------------------------ 纯函数（可单独测）
 
 
-def compute_signature(timestamp: str, nonce: str, encrypt_key: str, body_bytes: bytes) -> str:
-    """`sha256(timestamp + nonce + encrypt_key + body)`（照 Hermes adapter.py:2759-2771）。"""
-    body_str = body_bytes.decode("utf-8", errors="replace")
-    return hashlib.sha256(f"{timestamp}{nonce}{encrypt_key}{body_str}".encode()).hexdigest()
-
-
-def signature_valid(headers: Mapping[str, str], body_bytes: bytes, encrypt_key: str) -> bool:
-    """定时安全地比对 `x-lark-signature`（缺任一要素即 False，不抛异常；取头大小写无关）。"""
-    lowered = {str(k).lower(): v for k, v in headers.items()}
-    timestamp = str(lowered.get("x-lark-request-timestamp", "") or "")
-    nonce = str(lowered.get("x-lark-request-nonce", "") or "")
-    signature = str(lowered.get("x-lark-signature", "") or "")
-    if not timestamp or not nonce or not signature:
-        return False
-    try:
-        computed = compute_signature(timestamp, nonce, encrypt_key, body_bytes)
-        return hmac.compare_digest(computed.encode(), signature.encode())
-    except Exception:  # pragma: no cover - 防御性兜底
-        return False
-
-
-def token_valid(payload: Mapping[str, Any], verification_token: str) -> bool:
-    """比对 body/header 里的 `token`（照 Hermes adapter.py:2708-2717）。"""
-    header = payload.get("header")
-    token = ""
-    if isinstance(header, Mapping):
-        token = str(header.get("token") or "")
-    if not token:
-        token = str(payload.get("token") or "")
-    if not token:
-        return False
-    return hmac.compare_digest(token.encode(), verification_token.encode())
-
-
-def is_challenge(payload: Mapping[str, Any]) -> bool:
-    return str(payload.get("type") or "") == CHALLENGE_EVENT
-
-
-def challenge_body(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """URL 验证的回包（照 Hermes adapter.py:2719-2722）。"""
-    return {"challenge": payload.get("challenge", "")}
-
-
 def _text_from_content(raw: Any) -> str:
     """飞书 `message.content` 是**一个 JSON 字符串**（`{"text": "..."}`）。照 Hermes 解包。"""
     if isinstance(raw, Mapping):
@@ -294,12 +216,17 @@ def _text_from_content(raw: Any) -> str:
 
 
 def parse_message_event(payload: Mapping[str, Any]) -> FeishuMessage | None:
-    """把 `im.message.receive_v1` 事件解成文本消息；非文本/非消息事件回 None。"""
+    """把 `im.message.receive_v1` 事件解成文本消息；非文本/非消息事件回 None。
+
+    `payload` 就是**长连接回调收到的那份报文**（`{"header": {...}, "event": {...}}`，形状与
+    webhook body 一致，见 Hermes adapter.py:2749-2757 的事件处理表）。缺 `header.event_type`
+    时按本函数唯一支持的事件类型处理（长连接只订阅了它，见 `channels/feishu_ws.py`）。
+    """
     header = payload.get("header")
     event_type = ""
     if isinstance(header, Mapping):
         event_type = str(header.get("event_type") or "")
-    if event_type != RECEIVE_EVENT:
+    if event_type and event_type != RECEIVE_EVENT:
         return None
     event = payload.get("event")
     message = event.get("message") if isinstance(event, Mapping) else None
@@ -434,11 +361,16 @@ class RecordingSender:
         return {"code": 0, "recorded": True, "chat_id": chat_id}
 
 
-# ------------------------------------------------------------------ 回调核心（与传输解耦）
+# ------------------------------------------------------------------ 入站核心（与传输解耦）
 
 
-class FeishuWebhook:
-    """回调处理核心：**传输无关**（不碰 socket），所以能直接单测。"""
+class FeishuMessageHandler:
+    """入站核心：**传输无关**（不碰 socket、不知道事件从哪来），所以能直接单测。
+
+    传输层（`channels/feishu_ws.py` 的长连接）只做两件事：收事件 → 调 :meth:`handle_event`。
+    这里没有任何限速/限长/校签 —— 那些是公网回调才需要的东西，长连接由官方 SDK 维护、
+    本机主动外连，不存在"谁都能往这个端口 POST"的前提（详见 docs/17 §3.3 的取舍说明）。
+    """
 
     def __init__(
         self,
@@ -448,8 +380,6 @@ class FeishuWebhook:
         sender: Sender | None = None,
         dispatcher: Dispatcher = dispatch,
         source: str = "feishu",
-        rate_limit_max: int = RATE_LIMIT_MAX,
-        rate_window_s: int = RATE_WINDOW_SECONDS,
         bot_open_id: str | None = None,
         bot_name: str | None = None,
     ) -> None:
@@ -457,10 +387,6 @@ class FeishuWebhook:
         self._credentials = credentials or credentials_from_env()
         self._dispatcher = dispatcher
         self._source = source
-        self._rate_limit_max = rate_limit_max
-        self._rate_window_s = rate_window_s
-        self._rate_counts: dict[str, list[float]] = {}
-        self._rate_lock = threading.Lock()
         #: 机器人自身身份（群聊 @提及 判定用）。默认读 `.env`，可注入替换（桩测）。
         self._bot_open_id = bot_open_id if bot_open_id is not None else bot_open_id_from_env()
         self._bot_name = bot_name if bot_name is not None else bot_name_from_env()
@@ -471,17 +397,16 @@ class FeishuWebhook:
             self._recorder = RecordingSender()
             self._sender = self._recorder
 
-        if not self._credentials.has_webhook_secret:
-            logger.warning(
-                "[Feishu] 未配置 FEISHU_VERIFICATION_TOKEN / FEISHU_ENCRYPT_KEY："
-                "回调**不校签**（仅适用于本地桩自测，勿用于公网）"
-            )
-
     @property
     def credentials(self) -> FeishuCredentials:
         return self._credentials
 
-    def _decide(self, message: FeishuMessage) -> tuple[InterceptDecision, dict[str, Any]]:
+    @property
+    def sender(self) -> Sender:
+        """当前发送器（入口层可据此报告"出站关着只记录"）。"""
+        return self._sender
+
+    def decide(self, message: FeishuMessage) -> tuple[InterceptDecision, dict[str, Any]]:
         """拿白名单状态（经 RPC）后做运行时拦截判定，返回（决定, 原始访问状态）。
 
         **渠道层不读库**：`approved` / `temp_open` / `dm_policy` 都由 `feishu.access` RPC 给出
@@ -507,7 +432,7 @@ class FeishuWebhook:
         )
         return decision, dict(access)
 
-    def _try_claim(self, message: FeishuMessage) -> bool:
+    def try_claim(self, message: FeishuMessage) -> bool:
         """未授权私聊：**先把整条消息当配对码登记**。
 
         登记成功（码对得上）就回一句回执并返回 True —— **不跑任何会话**，也不再用配对提示
@@ -532,14 +457,14 @@ class FeishuWebhook:
             return True
         return False
 
-    def _run_turn(self, message: FeishuMessage) -> None:
+    def run_turn(self, message: FeishuMessage) -> InterceptDecision:
         """一条消息 = 一次会话请求：**先过运行时拦截**，再幂等拿会话 → 跑一轮 → 回包。
 
         拦截顺序（对齐 `docs/17 §3.4`）：
         `drop` → 记日志丢弃；未授权私聊 → **先给一次配对码登记机会**（登记成功只回执、不跑会话），
-        否则 `pair` 回配对提示、`run`（含"临时放行"）才真跑。
+        否则 `pair` 回配对提示、`run`（含"临时放行"）才真跑。返回本次的处置决定。
         """
-        decision, access = self._decide(message)
+        decision, access = self.decide(message)
         if decision.action == "drop":
             logger.warning(
                 "[Feishu] 消息被丢弃（%s）chat_id=%s sender=%s",
@@ -547,17 +472,18 @@ class FeishuWebhook:
                 message.chat_id,
                 message.sender_open_id,
             )
-            return
+            return decision
         # 未授权私聊：先尝试把它当配对码登记（临时放行期间同样先试一次，否则码会被当普通消息跑掉）
         if (
             message.chat_type != "group"
             and not bool(access.get("approved"))
-            and self._try_claim(message)
+            and self.try_claim(message)
         ):
-            return
+            return InterceptDecision("pair", "pairing_claimed")
+
         if decision.action == "pair":
             self._sender(message.chat_id, decision.reply or PAIRING_PROMPT)
-            return
+            return decision
 
         ensured = self._dispatcher(
             self._ctx,
@@ -577,228 +503,24 @@ class FeishuWebhook:
             (result or {}).get("stop_reason"),
             len(reply_text),
         )
+        return decision
 
-    def _check_rate(self, rate_key: str) -> bool:
-        """滑动窗口限速（键 `app_id:path:remote_ip`，照 Hermes adapter.py:2776-2785）。"""
-        import time
-
-        now = time.time()
-        with self._rate_lock:
-            hits = [t for t in self._rate_counts.get(rate_key, []) if now - t < self._rate_window_s]
-            if len(hits) >= self._rate_limit_max:
-                self._rate_counts[rate_key] = hits
-                return False
-            hits.append(now)
-            self._rate_counts[rate_key] = hits
-            return True
-
-    def handle(
-        self, body_bytes: bytes, headers: Mapping[str, str], *, remote_ip: str = "unknown"
-    ) -> tuple[int, dict[str, Any]]:
-        """处理一条回调请求，返回 `(http_status, body_dict)`。"""
-        rate_key = f"{self._credentials.app_id}:{DEFAULT_PATH}:{remote_ip}"
-        if not self._check_rate(rate_key):
-            logger.warning("[Feishu] 回调被限速：%s", remote_ip)
-            return 429, {"code": 429, "msg": "Too Many Requests"}
-
-        if len(body_bytes) > MAX_BODY_BYTES:
-            return 413, {"code": 413, "msg": "Request body too large"}
-
-        try:
-            payload = json.loads(body_bytes.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return 400, {"code": 400, "msg": "invalid json"}
-        if not isinstance(payload, dict):
-            return 400, {"code": 400, "msg": "payload must be a JSON object"}
-
-        # 第 1 层：verification token（有配才校）
-        if self._credentials.verification_token and not token_valid(
-            payload, self._credentials.verification_token
-        ):
-            logger.warning("[Feishu] 回调被拒：verification token 不对（%s）", remote_ip)
-            return 401, {"code": 401, "msg": "Invalid verification token"}
-
-        # URL 验证：**先过 token 再回 challenge**（防未授权者证明自己控制端点）
-        if is_challenge(payload):
-            return 200, challenge_body(payload)
-
-        # 第 2 层：签名（有配才校）
-        if self._credentials.encrypt_key and not signature_valid(
-            headers, body_bytes, self._credentials.encrypt_key
-        ):
-            logger.warning("[Feishu] 回调被拒：签名不对（%s）", remote_ip)
-            return 401, {"code": 401, "msg": "Invalid signature"}
-
-        if payload.get("encrypt"):
-            return 400, {"code": 400, "msg": "encrypted payloads not supported"}
-
+    def handle_event(self, payload: Mapping[str, Any]) -> InterceptDecision | None:
+        """一条事件报文 → 解析 → 跑（或拦截）。非文本/非消息事件回 None（不当成错误）。"""
         message = parse_message_event(payload)
-        if message is not None:
-            try:
-                self._run_turn(message)
-            except Exception as exc:  # 事件处理失败也要回 200（否则飞书会重试风暴）
-                logger.warning("[Feishu] 处理消息事件失败（已回 200 结束重试）：%s", exc)
-        return 200, dict(SUCCESS_BODY)
+        if message is None:
+            logger.debug("[Feishu] 事件不是文本消息，忽略")
+            return None
+        return self.handle_message(message)
 
+    def handle_message(self, message: FeishuMessage) -> InterceptDecision:
+        """一条已解析的消息：拦截 → 跑会话 → 回包。
 
-# ------------------------------------------------------------------ stdlib HTTP 监听
-
-
-class _FeishuHTTPServer(ThreadingHTTPServer):
-    """把 webhook 与路径挂到 server 上，handler 用 `cast` 取（不用动态属性 + type: ignore）。"""
-
-    daemon_threads = True
-    webhook: FeishuWebhook
-    webhook_path: str
-
-
-class _FeishuHandler(BaseHTTPRequestHandler):
-    server_version = "ScholarScoutFeishu/0.1"
-    protocol_version = "HTTP/1.1"
-
-    def _write(self, status: int, payload: Mapping[str, Any]) -> None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_POST(self) -> None:  # http.server 规定的名字
-        server = cast(_FeishuHTTPServer, self.server)
-        if urlparse(self.path).path != server.webhook_path:
-            self._write(404, {"code": 404, "msg": "not found"})
-            return
-        content_type = str(self.headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
-        if content_type and content_type != "application/json":
-            self._write(415, {"code": 415, "msg": "Unsupported Media Type"})
-            return
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY_BYTES:
-            self._write(413, {"code": 413, "msg": "Request body too large"})
-            return
-        body = self.rfile.read(length) if length else b""
-        remote_ip = str(self.client_address[0]) if self.client_address else "unknown"
-        status, payload = server.webhook.handle(
-            body, {k.lower(): v for k, v in self.headers.items()}, remote_ip=remote_ip
-        )
-        self._write(status, payload)
-
-    def log_message(self, *args: Any) -> None:  # 静音默认 stderr 请求日志
-        return
-
-
-class FeishuCallbackServer:
-    """`ThreadingHTTPServer` 包装：只绑给定 host（默认 127.0.0.1），起后台线程。"""
-
-    def __init__(
-        self,
-        webhook: FeishuWebhook,
-        *,
-        host: str = "127.0.0.1",
-        port: int = 8765,
-        path: str = DEFAULT_PATH,
-    ) -> None:
-        self._httpd = _FeishuHTTPServer((host, port), _FeishuHandler)
-        self._httpd.webhook = webhook
-        self._httpd.webhook_path = path
-        self._thread: threading.Thread | None = None
-
-    @property
-    def address(self) -> tuple[str, int]:
-        host, port = self._httpd.server_address[:2]
-        return str(host), int(port)
-
-    @property
-    def path(self) -> str:
-        return self._httpd.webhook_path
-
-    def start(self) -> None:
-        """起后台线程 `serve_forever`（daemon，不挡进程退出）。"""
-        self._thread = threading.Thread(
-            target=self._httpd.serve_forever, name="feishu-callback", daemon=True
-        )
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._httpd.shutdown()
-        self._httpd.server_close()
-        if self._thread is not None:
-            self._thread.join(timeout=5)
-
-
-def build_server(
-    ctx: AppContext,
-    *,
-    host: str = "127.0.0.1",
-    port: int = 8765,
-    path: str = DEFAULT_PATH,
-    credentials: FeishuCredentials | None = None,
-    sender: Sender | None = None,
-    dispatcher: Dispatcher = dispatch,
-) -> FeishuCallbackServer:
-    """装配一个回调服务（**不启动**）：`FeishuWebhook` + `FeishuCallbackServer`。"""
-    webhook = FeishuWebhook(ctx, credentials=credentials, sender=sender, dispatcher=dispatcher)
-    return FeishuCallbackServer(webhook, host=host, port=port, path=path)
-
-
-# ------------------------------------------------------------------ 监听入口（docs/17 §3.8）
-
-#: 启动日志的模板：**明确打印监听地址与路径**，方便与内网穿透工具对接。
-#: 例：`[Feishu] listening on 127.0.0.1:8765/feishu/webhook`
-LISTEN_LOG_TEMPLATE = "[Feishu] listening on {host}:{port}{path}"
-#: 第二行提示（穿透工具要映射的本地地址）。
-LISTEN_HINT_TEMPLATE = (
-    "[Feishu] 内网穿透请把公网地址映射到 http://{host}:{port}{path}，"
-    "再把该公网 URL 填进飞书后台事件订阅（详见 docs/17 §3.8）"
-)
-
-
-def run_listener(
-    ctx: AppContext,
-    *,
-    sender: Sender | None = None,
-    host: str = "127.0.0.1",
-    port: int = 8765,
-    path: str = DEFAULT_PATH,
-    credentials: FeishuCredentials | None = None,
-    dispatcher: Dispatcher = dispatch,
-    say: Callable[[str], None] = print,
-    block: bool = True,
-) -> FeishuCallbackServer:
-    """起回调监听并**打印监听地址与路径**（`docs/17 §3.8`），返回已启动的 server。
-
-    - 只绑 `host`（默认 `127.0.0.1`）：公网交给内网穿透/反代，进程本身不直接暴露；
-    - `sender` 由调用方注入（真实部署注入 `fetch/feishu_send.build_sender`；缺省即 `RecordingSender`，
-      **不假装发成功**）；
-    - 打印 `LISTEN_LOG_TEMPLATE`（如 `[Feishu] listening on 127.0.0.1:8765/feishu/webhook`）
-      + `LISTEN_HINT_TEMPLATE`；日志同时经 `logger.info` 落盘；
-    - `block=True`（CLI 入口）阻塞到 Ctrl-C；`block=False` 立即返回（桩测用）。
-    """
-    import time as _time
-
-    server = build_server(
-        ctx,
-        host=host,
-        port=port,
-        path=path,
-        credentials=credentials,
-        sender=sender,
-        dispatcher=dispatcher,
-    )
-    server.start()
-    bound_host, bound_port = server.address
-    line = LISTEN_LOG_TEMPLATE.format(host=bound_host, port=bound_port, path=server.path)
-    hint = LISTEN_HINT_TEMPLATE.format(host=bound_host, port=bound_port, path=server.path)
-    logger.info(line)
-    logger.info(hint)
-    say(line)
-    say(hint)
-    if block:
+        **异常一律不外抛**：长连接的事件回调是由 SDK 的线程调的，一条坏消息把回调抛死
+        就等于整条链路静默失聪 —— 所以这里兜住、记日志、如实回一个 `drop`。
+        """
         try:
-            while True:
-                _time.sleep(3600)
-        except KeyboardInterrupt:  # Ctrl-C：优雅收尾
-            say("[Feishu] 收到中断，正在停止监听…")
-            server.stop()
-    return server
+            return self.run_turn(message)
+        except Exception as exc:
+            logger.warning("[Feishu] 处理消息失败（本条丢弃，链路继续）：%s", exc)
+            return InterceptDecision("drop", "handler_error")

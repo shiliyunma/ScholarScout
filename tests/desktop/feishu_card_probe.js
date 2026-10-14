@@ -107,9 +107,7 @@ const responses = {
     {
       app_id_set: true,
       secret_set: false,
-      listener_enabled: true,
-      listener_port: 9000,
-      connection_mode: "webhook",
+      connection_mode: "websocket",
       group_policy: "mention",
       dm_policy: "pairing",
       temp_open: false,

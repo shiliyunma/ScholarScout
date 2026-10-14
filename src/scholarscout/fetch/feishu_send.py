@@ -8,8 +8,9 @@
 
 **渠道层（`channels/`）不许 import `fetch`**（`tests/test_layering.py::RULES["channels"]`），
 所以这里提供的是**渠道层形状**的发送器工厂 :func:`build_sender`（`sender(chat_id, text) -> dict`）；
-由**入口层**（`__main__.py` 的 `--feishu-listen`）把它注入 `channels/feishu.py::run_listener`。
-渠道层只负责"一轮跑完调 `self._sender(...)`"这一处，不关心它是不是真出网。
+由**入口层**（`scripts/feishu_ws_up.py` 起长连接时）把它注入 `channels/feishu_ws.py` 的 `FeishuWsClient`，
+再随之下沉到入站核 `channels/feishu.py::FeishuMessageHandler`。渠道层只负责"一轮跑完调 `self._sender(...)`"
+这一处，不关心它是不是真出网。
 
 ## 接口契约（逐条带出处，不臆造）
 

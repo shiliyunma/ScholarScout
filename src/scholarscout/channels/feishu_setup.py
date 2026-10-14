@@ -2,7 +2,7 @@
 
 对齐 Hermes `hermes gateway setup` 里 Feishu 那套体验（`interactive_setup`，adapter.py:4162）：
 **编号问答 + 默认值可回车** → 打印（可选打开）创建入口 → 手工填 App ID/Secret（**只写 .env、不回显**）
-→ 选连接模式 → 试拉起渠道层 → 生成配对码并提示"去飞书发给机器人" → 校验 → 写白名单 + 收回临时放行
+→ 自检长连接 SDK → 生成配对码并提示"去飞书发给机器人" → 校验 → 写白名单 + 收回临时放行
 → 完成摘要 + 自检清单。
 
 三处**与参照的有意差异**（docs/18 §③，都是本项目的约束逼出来的，写清不掩盖）：
@@ -20,6 +20,10 @@
 
 所有 IO 都可注入（`ask` / `ask_secret` / `say` / `open_url` / `dispatch_fn`），
 所以桩测试能在**无凭据、无网络**下把整条流程跑完。
+
+**连接方式不做选择**（2026-10-14 用户拍板改走 A 方案）：入站只有一条 —— `lark-oapi` 的 websocket
+长连接（`channels/feishu_ws.py`），因此向导里那条"连接模式二选一"已随 webhook 路线一并删除：
+选出来也没得选，只会误导。取舍见 `docs/17` §1.3 / §3.8。
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from collections.abc import Callable
 from typing import Any
 
 from scholarscout import paths, settings_io
-from scholarscout.channels import feishu
+from scholarscout.channels import feishu, feishu_ws
 from scholarscout.rpc.errors import RpcError
 from scholarscout.rpc.methods import AppContext, dispatch
 
@@ -49,9 +53,6 @@ Say = Callable[[str], None]
 OpenUrl = Callable[[str], bool]
 Dispatch = Callable[..., Any]
 
-#: 连接模式（与参照一致的两个选项）
-_MODE_OPTIONS = ("webhook（本项目渠道层已实现）", "websocket（本项目渠道层尚未实现，仅记录）")
-_MODE_VALUES = ("webhook", "websocket")
 #: 创建方式（照参照：扫码自动 / 手工）
 _CREATE_OPTIONS = (
     "扫码/链接自动创建（联网；本机实测可用，失败则回退手工）",
@@ -266,40 +267,21 @@ def run_setup(
                 say("已取消：没有 App Secret 无法接入。")
                 return 2
 
-        # ---- 5. 连接模式 ----
-        mode_idx = _prompt_choice(ask, say, "连接模式：", _MODE_OPTIONS, 0)
-        connection_mode = _MODE_VALUES[mode_idx]
-        extra: dict[str, str] = {}
-        if connection_mode == "webhook":
-            verification_token = str(
-                ask_secret("事件订阅 Verification Token（可留空）：") or ""
-            ).strip()
-            encrypt_key = str(ask_secret("事件订阅 Encrypt Key（可留空）：") or "").strip()
-            if verification_token:
-                extra["FEISHU_VERIFICATION_TOKEN"] = verification_token
-            if encrypt_key:
-                extra["FEISHU_ENCRYPT_KEY"] = encrypt_key
-        else:
-            say("  注意：本项目渠道层目前只实现了 webhook，websocket 会被记录下来但暂不会真连。")
-
+        # ---- 5. 连接方式（不做选择：只有 websocket 长连接）----
+        say("连接方式：websocket 长连接（本机主动外连飞书；**不需要**公网地址 / 回调 URL / 隧道）")
+        sdk_ok, sdk_note = feishu_ws.probe_sdk()
+        say(("✓ 长连接 SDK：" if sdk_ok else "✗ 长连接 SDK：") + sdk_note)
         env_values = {
             "FEISHU_APP_ID": app_id,
             "FEISHU_DOMAIN": domain,
-            "FEISHU_CONNECTION_MODE": connection_mode,
-            **extra,
+            "FEISHU_CONNECTION_MODE": feishu.DEFAULT_CONNECTION_MODE,
         }
         if app_secret:
             env_values["FEISHU_APP_SECRET"] = app_secret
         _write_env(env_values)
         say("✓ 凭据已写入 .env（App Secret 只写不读、不回显）")
 
-        # ---- 6. 尝试拉起渠道层 ----
-        listener_ok, listener_note = feishu.probe_listener(
-            port=ctx.config.runtime.feishu_listener_port
-        )
-        say(("✓ 渠道层可拉起：" if listener_ok else "✗ 渠道层拉不起来：") + listener_note)
-
-        # ---- 7. DM 授权三选一 ----
+        # ---- 6. DM 授权三选一 ----
         dm_idx = _prompt_choice(ask, say, "私聊（DM）如何授权？", _DM_OPTIONS, 0)
         dm_policy = _DM_VALUES[dm_idx]
         dispatch_fn(ctx, "feishu.dm_policy", {"policy": dm_policy})
@@ -344,7 +326,9 @@ def run_setup(
         say(f"Bot: {bot_name}")
         if bot_name == "unknown":
             say("   （没探测到机器人名：本机无出网或凭据未配；不影响接入）")
-        say(f"连接模式: {connection_mode}｜群聊: {group_policy}｜DM: {dm_policy}")
+        say(
+            f"连接方式: {feishu.DEFAULT_CONNECTION_MODE}（长连接）｜群聊: {group_policy}｜DM: {dm_policy}"
+        )
         say("配置已写入 .env；重启应用即生效。")
 
         # ---- 11. 自检清单 ----
@@ -359,11 +343,13 @@ def run_setup(
         )
         say(
             _tick(
-                f"连接模式 {status['connection_mode']}",
+                f"连接方式 {status['connection_mode']}",
                 status["connection_mode"] in feishu.SUPPORTED_CONNECTION_MODES,
             )
         )
-        say(_tick(f"回调端口 {status['listener_port']}", listener_ok))
+        say(_tick("长连接 SDK（lark-oapi）已装", sdk_ok))
+        if not sdk_ok:
+            say("   下一步：python scripts/install_deps.py（装完再双击「飞书一键开机.bat」）")
         if dm_policy == "pairing":
             say(_tick(f"白名单（{len(status['allowlist'])} 个身份）", bool(status["allowlist"])))
         else:

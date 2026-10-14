@@ -2,42 +2,46 @@
 
 对应 docs/18 §③/§⑤：官网入口真实可打开、launcher 只打印**模板**（不伪造设备码）、
 密钥只写 `.env` 且不回显/不回读、配对成功写白名单并收回临时放行、自检清单打印。
+
+**连接方式固定为 websocket 长连接**（2026-10-14 用户拍板改走 A 方案）：向导里那条"连接模式二选一"
+已随 webhook 路线删除，所以这里既不喂也不断言模式选项，改而钉住"打印长连接说明 + 不需要隧道"
+与"**不再问** verification token / encrypt key"（后者曾是 webhook 的必填项）。
 """
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 from typing import Any
 
 import pytest
 
-from scholarscout.channels import feishu, feishu_setup
+from scholarscout.channels import feishu, feishu_setup, feishu_ws
 from scholarscout.rpc.methods import AppContext, dispatch
 from scholarscout.state import pairing
 from scholarscout.tools import register_tools
 
 from ..conftest import redirect_home
 
-#: 向导会直接写 `os.environ`（不经 monkeypatch），所以每个用例进出都要手动清干净
+#: 向导会直接写 `os.environ`（不经 monkeypatch），所以每个用例进出都要手动清干净。
+#: 注意这里**没有** `FEISHU_VERIFICATION_TOKEN` / `FEISHU_ENCRYPT_KEY` —— 那两个键随 webhook 一起删了，
+#: 留着会让"向导不再问它们"这条断言失去意义。
 FEISHU_ENV_KEYS = (
     "FEISHU_APP_ID",
     "FEISHU_APP_SECRET",
     "FEISHU_DOMAIN",
     "FEISHU_CONNECTION_MODE",
-    "FEISHU_VERIFICATION_TOKEN",
-    "FEISHU_ENCRYPT_KEY",
     "FEISHU_GROUP_POLICY",
     "FEISHU_HOME_CHANNEL",
     "FEISHU_DM_POLICY",
 )
 
-#: 走默认分支（回车）时的 ask 脚本：方式/域名/开浏览器/AppID/模式/DM/openid/群聊/home
+#: 走默认分支（回车）时的 ask 脚本：方式/域名/开浏览器/AppID/DM/openid/群聊/home
 #: openid 用**实测的形状**（`ou_` + 32 位小写字母数字，中间没有下划线）
 OWNER_OPEN_ID = "ou_aa206fb174402ae72345a7fe39a51ae2"
-_DEFAULT_ASK = ["", "", "", "cli_test_app", "", "", OWNER_OPEN_ID, "", ""]
-_DEFAULT_SECRET = ["sec_test_123", "", ""]
+_DEFAULT_ASK = ["", "", "", "cli_test_app", "", OWNER_OPEN_ID, "", ""]
+#: 只剩 App Secret 一处密文输入（verification token / encrypt key 已删）
+_DEFAULT_SECRET = ["sec_test_123"]
 
 
 @pytest.fixture(autouse=True)
@@ -51,12 +55,9 @@ def _clean_feishu_env(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def wizard_ctx(ctx: AppContext, tmp_path, monkeypatch: pytest.MonkeyPatch) -> AppContext:
-    """把落盘根重定向到 tmp（`.env` 不写进仓库），回调端口设成 0（必然空闲）。"""
+    """把落盘根重定向到 tmp（`.env` 不写进仓库）。"""
     redirect_home(monkeypatch, tmp_path)
     register_tools()
-    ctx.config = dataclasses.replace(
-        ctx.config, runtime=dataclasses.replace(ctx.config.runtime, feishu_listener_port=0)
-    )
     return ctx
 
 
@@ -89,14 +90,20 @@ def test_wizard_happy_path_writes_env_and_pairs(wizard_ctx: AppContext, tmp_path
     assert opened == ["https://open.feishu.cn"]
     assert "page/launcher?user_code=<USER_CODE>" in text
 
-    # 密钥只写 .env、不回显
+    # 密钥只写 .env、不回显；连接方式固定 websocket 长连接（不再有模式选择）
     env = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "FEISHU_APP_ID=cli_test_app" in env
     assert "FEISHU_APP_SECRET=sec_test_123" in env
-    assert "FEISHU_CONNECTION_MODE=webhook" in env
+    assert "FEISHU_CONNECTION_MODE=websocket" in env
+    assert "FEISHU_VERIFICATION_TOKEN" not in env and "FEISHU_ENCRYPT_KEY" not in env
     assert "FEISHU_DM_POLICY=pairing" in env
     assert "FEISHU_GROUP_POLICY=mention" in env
     assert "sec_test_123" not in text, "App Secret 被回显了"
+
+    # 长连接那一段：明说不需要公网地址/回调/隧道，且给出 SDK 自检结论
+    assert "websocket 长连接" in text
+    assert "不需要" in text and "隧道" in text
+    assert "长连接 SDK" in text
 
     # 配对成功：写白名单 + 收回临时放行
     assert pairing.is_approved(wizard_ctx.db, OWNER_OPEN_ID) is True
@@ -217,10 +224,58 @@ def test_launcher_url_template_and_entry_urls() -> None:
     assert "&from=" in feishu.LAUNCHER_URL_TEMPLATE and "&tp=" in feishu.LAUNCHER_URL_TEMPLATE
 
 
-def test_probe_listener_binds_ephemeral_port() -> None:
-    ok, note = feishu.probe_listener(port=0)
-    assert ok is True
-    assert "可用" in note
+def test_wizard_never_asks_for_webhook_only_secrets(wizard_ctx: AppContext) -> None:
+    """**不再问** verification token / encrypt key。
+
+    那两个键是 webhook 路线的必填项，随 webhook 一起删了。这里只喂一个密文值：
+    向导若还问第二处就该当场炸（`ask_secret` 脚本用完即报错），而**不是**静默多问。
+    """
+    seen: list[str] = []
+    secrets = list(_DEFAULT_SECRET)
+    out: list[str] = []
+
+    def ask_secret(prompt: str) -> str:
+        seen.append(prompt)
+        if not secrets:
+            raise AssertionError(f"又问了第二处密文（webhook 的键应已删除）：{prompt}")
+        return secrets.pop(0)
+
+    rc = feishu_setup.run_setup(
+        wizard_ctx,
+        ask=_scripted(_DEFAULT_ASK),
+        ask_secret=ask_secret,
+        say=out.append,
+        open_url=lambda url: True,
+    )
+    text = "\n".join(out)
+    assert rc == 0
+    assert len(seen) == 1 and "App Secret" in seen[0], seen
+    assert not [p for p in seen if "Verification" in p or "Encrypt" in p]
+    assert "Verification Token" not in text and "Encrypt Key" not in text
+
+
+def test_wizard_flags_missing_sdk_with_next_step(
+    wizard_ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SDK 缺装时**不假装能跑**：向导标 ✗ 并给出下一步命令，其余流程照常跑完。
+
+    桩掉 `feishu_ws.probe_sdk` 是为了让这条断言与"本机装没装 SDK"无关（门禁机器上它装着）。
+    """
+    note = "未安装 lark_oapi（PyPI 包名 lark-oapi）：先跑 `python scripts/install_deps.py`"
+    monkeypatch.setattr(feishu_ws, "probe_sdk", lambda **kwargs: (False, note))
+    out: list[str] = []
+    rc = feishu_setup.run_setup(
+        wizard_ctx,
+        ask=_scripted(_DEFAULT_ASK),
+        ask_secret=_scripted(_DEFAULT_SECRET),
+        say=out.append,
+        open_url=lambda url: True,
+    )
+    text = "\n".join(out)
+    assert rc == 0  # 缺 SDK 不阻塞向导（凭据/白名单该落的照落）
+    assert "✗ 长连接 SDK" in text and "lark-oapi" in text
+    assert "install_deps.py" in text
+    assert "✓ 长连接 SDK" not in text
 
 
 def test_connection_mode_and_group_policy_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,8 +339,8 @@ def test_auto_create_success_skips_manual_credential_prompts(
     rc = feishu_setup.run_setup(
         wizard_ctx,
         ask=_scripted(
-            ["", "", "2", "", OWNER_OPEN_ID, "", ""]
-        ),  # 方式/域名/模式(websocket)/DM/openid/群聊/home
+            ["", "", "", OWNER_OPEN_ID, "", ""]
+        ),  # 方式/域名/DM/openid/群聊/home（自动分支不问浏览器、不问 AppID）
         ask_secret=ask_secret,
         say=out.append,
         open_url=lambda url: True,

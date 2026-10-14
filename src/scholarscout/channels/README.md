@@ -23,27 +23,35 @@
 
 ## 2. 先看哪个文件
 
-1. **`feishu.py`** —— 回调核心。**先读 `FeishuWebhook`**：传输无关的 `handle(body, headers)` 做
-   限速/限长/两类校验/`challenge`/事件解析/运行时拦截；`FeishuCallbackServer` + `build_server` + `run_listener`
-   是它外面的 stdlib `http.server` 壳。
-2. **`feishu_setup.py`** —— 飞书接入向导（`--setup-feishu` 落点）：编号问答 → 打印/打开创建入口 →
-   填 App ID/Secret（只写 `.env`、不回显）→ 选连接模式 → 试拉起渠道层 → 生成配对码 → 校验 → 写白名单。
-3. `__init__.py` 只是包标记，无逻辑。
+1. **`feishu.py`** —— **传输无关的入站核**。**先读 `FeishuMessageHandler`**：`handle_event(payload)` 做
+   事件解析 / 运行时拦截（群 `@提及`、私聊 `pairing|all|allowlist`）/ `session.ensure` + `chat.send` 跑一轮 / 回包
+   （回复交给**注入的发送器**）。它**不碰任何 socket**，所以桩事件（甚至一个 dict）就能把整条链路测到底。
+2. **`feishu_ws.py`** —— **入站传输层（唯一一条）**：官方 SDK `lark-oapi` 的 **websocket 长连接**
+   （本机主动外连，**不需要公网地址 / 回调 URL / 隧道**，也不绑任何端口）。它只做两件事：收事件 → 归一成报文
+   （`event_to_payload`）→ 转交给上面那个核。
+3. **`feishu_setup.py`** —— 飞书接入向导（`--setup-feishu` 落点）：编号问答 → 打印/打开创建入口 →
+   填 App ID/Secret（只写 `.env`、不回显）→ 生成配对码 → 校验 → 写白名单（**连接方式不做二选一：只有 websocket**）。
+4. `__init__.py` 只是包标记，无逻辑。
 
 ## 3. 哪些是 API（外部可依赖的契约）
 
-- **回调核心 `feishu.py`**：
-  - `FeishuWebhook`（`handle(body_bytes, headers, *, remote_ip)` / `credentials` /
-    `_decide` / `_try_claim` / `_run_turn` / `_check_rate`）；
-  - `FeishuCallbackServer`（`start()` / `stop()` / `address` / `path`）、`build_server(ctx, *, ...)`、
-    `run_listener(ctx, *, sender=, host=, port=, path=, ...)`；
-  - 纯函数：`compute_signature(...)` / `signature_valid(...)` / `token_valid(...)` / `is_challenge(...)` /
-    `challenge_body(...)` / `parse_message_event(...)`；数据结构 `FeishuMessage`、`FeishuCredentials`、
-    `InterceptDecision`；判定 `bot_mentioned(...)` / `authorize_message(...)`；
-  - 配置读取（都读 `.env`）：`credentials_from_env()`、`connection_mode_from_env()`、`group_policy_from_env()`、
+- **入站核 `feishu.py`**：
+  - `FeishuMessageHandler`（`handle_event(payload)` / `handle_message(message)` / `decide(message)` /
+    `run_turn(message)`；构造时注入 `credentials` / `sender` / `dispatcher`）；
+  - 纯函数：`parse_message_event(...)` / `bot_mentioned(...)` / `authorize_message(...)` /
+    `_text_from_content(...)` / `_parse_mentions(...)`；数据结构 `FeishuMessage`、`FeishuCredentials`、
+    `InterceptDecision`；常量 `RECEIVE_EVENT`、`PAIRING_PROMPT`；
+  - 配置读取（都读 `.env`）：`credentials_from_env()`、`connection_mode_from_env()`
+    （**只认 websocket**，配了别的值含历史 `webhook` 会告警并回落）、`group_policy_from_env()`、
     `dm_policy_from_env()`、`bot_open_id_from_env()`、`bot_name_from_env()`；
-  - 向导辅助：`open_entry_url(domain)` / `launcher_url(user_code, *, ...)` / `probe_listener(...)`；
+  - 向导辅助：`open_entry_url(domain)` / `launcher_url(user_code, *, ...)`；
   - 默认发送器 `RecordingSender`（无凭据时**不假装发成功**，只记录 + 告警）。
+- **传输层 `feishu_ws.py`**（websocket 长连接）：
+  `build_client(ctx, *, sender=, dispatcher=, sdk=)` → `FeishuWsClient`
+  （`build_client()` / `start(*, block=True, say=)` / `stop()` / `handle_event(event)` / `running` / `client`）；
+  纯函数 `event_to_payload(event)` / `plainify(value)`；
+  `sdk_available()` / `probe_sdk()`（**只查规格、不 import** —— import 本机首次约 116 s）；
+  `load_sdk()`（全项目**唯一** import `lark_oapi` 的地方）与 `WsSdk`（桩测的替身注入点）。
 - **接入向导 `feishu_setup.py`**：`run_setup(ctx, *, ask=, ask_secret=, say=, open_url=, dispatch_fn=, ...)`
   —— 所有 IO 可注入，所以能在**无凭据、无网络**下桩跑整条流程。
 - **运行时拦截经的 RPC（渠道层只经这些说话）**：`feishu.access`（取白名单/临时放行/DM 策略）、
@@ -54,15 +62,15 @@
 
 - 维护：项目作者本人（毕设项目，非团队协作）。
 - 设计与口径（**权威副本，改口径先改它们**）：
-  - `docs/17-飞书渠道接入方案.md` §3（落点/校验/事件映射/监听/一键起飞）
+  - `docs/17-飞书渠道接入方案.md` §3（落点 / 长连接传输 / 事件映射 / 一键开机 / 人工后台步骤）
   - `docs/18-飞书接入向导迁移方案.md`（向导与联网自动建应用）
   - `docs/01-接口契约.md` §3.8（`feishu.*` 方法表与三条不变量）、§4（流式事件、`stop_reason`）
   - `docs/02-数据模型.md` §8.5（配对码与白名单表结构）、`docs/03-目录结构与规则文件.md` §2（分层）
 - 相邻落点（不在本目录，改这条链要一起看）：`rpc/feishu.py`（`feishu.*` 实现）、
   `state/pairing.py`（唯一碰 SQL 的配对/白名单）、`fetch/feishu_send.py`（出站发送器）、
-  `fetch/feishu_onboard.py`（联网探测/建应用）、`scripts/feishu_up.py` + 根目录 `飞书一键起飞.bat`（一键链路）。
-- 测试：`tests/channels/`（`test_feishu_stub.py`、`test_feishu_setup.py`）、`tests/rpc/test_feishu_methods.py`、
-  `tests/state/test_feishu_pairing.py`、`tests/scripts/test_feishu_up.py`、`tests/fetch/test_feishu_onboard.py`。
+  `fetch/feishu_onboard.py`（联网探测/建应用）、`scripts/feishu_ws_up.py` + 根目录 `飞书一键开机.bat`（一键开机）。
+- 测试：`tests/channels/`（`test_feishu_stub.py`、`test_feishu_ws_stub.py`、`test_feishu_setup.py`）、`tests/rpc/test_feishu_methods.py`、
+  `tests/state/test_feishu_pairing.py`、`tests/scripts/test_feishu_ws_up.py`、`tests/fetch/test_feishu_onboard.py`。
 - 符号与行数：`docs/代码地图/00-符号清单.md`（生成物，勿手改）。
 
 ## 改这个目录之前先知道
@@ -70,20 +78,23 @@
 - **只经 `rpc/`，不读库/不出网**：白名单状态一律走 `feishu.access`；渠道层里出现 `sqlite3` / `httpx`
   或 `import runtime/tools/state/providers` 就是越界（`tests/test_layering.py::RULES["channels"]` 当场红）。
   取访问状态失败时**保守处理**（私聊按未授权、群聊丢弃），RPC 失败绝不能变成"放行"。
-- **连接模式：本项目渠道层只实现 webhook**。代码里默认模式就是 `webhook`
-  （`DEFAULT_CONNECTION_MODE`，可用环境变量 `FEISHU_CONNECTION_MODE` 覆盖；`SUPPORTED_CONNECTION_MODES`
-  两种都认，但 `websocket` 仅在向导里被记录、不会真连）。webhook 需要**公网可达的回调地址**
-  （内网穿透/反代），见 `docs/17` §3.8/§3.9 —— 这与 Hermes 侧默认走 websocket 不是一回事。
-- **两类校验、密钥只从 `.env` 读**：verification token 与签名（`hmac.compare_digest`）都**有配才校**；
-  **没配密钥时不校签并明确告警**（仅够本地桩自测，勿用于公网）。`challenge`（`url_verification`）必须
-  **先过 token 再回**，防未授权者拿它证明自己控制了端点。
+- **连接模式：本项目渠道层只实现 websocket 长连接**。默认与唯一支持值都是 `websocket`
+  （`DEFAULT_CONNECTION_MODE` / `SUPPORTED_CONNECTION_MODES`；`FEISHU_CONNECTION_MODE` 配了别的值
+  —— 含历史遗留的 `webhook` —— 会**告警并回落到 websocket**）。长连接由本机主动外连飞书，
+  **不需要公网地址 / 回调 URL / 隧道**，也没有本地监听端口；取舍（依赖最小化 vs 接入便捷）见 `docs/17` §1.3 —— 与 Hermes 侧默认一致。
+- **长连接不校签、密钥只从 `.env` 读**：报文走 SDK 的**已认证长连接**
+  （`lark_oapi` 的 `EventDispatcherHandler._do_without_validation`），所以 verification token / 签名（HMAC）/
+  `url_verification` 挑战这一套**没有意义、已随 webhook 一并删除**（`FEISHU_VERIFICATION_TOKEN` /
+  `FEISHU_ENCRYPT_KEY` 两个键也没了）。凭据（`FEISHU_APP_ID` / `FEISHU_APP_SECRET`）仍**只从 `.env` 读、只写不回读**。
+  访问控制靠**运行时拦截**（下一条），不靠传输层校验。
 - **配对方向与本项目的取舍**：向导先生成"不带身份"的配对码 → 用户在飞书私聊把码发给机器人 →
   `feishu.pairing.claim` 回填 openid → `verify` 批准写白名单并**收回临时放行**。**明文码只在生成那一刻可见**，
   库里只存哈希（`state/pairing.py`）。**码不对不报错**（回 `claimed:false`）—— 机器人收到的普通聊天不该变成 RPC 异常。
 - **运行时拦截在会话之前**：群聊按 `@提及` 策略（`mention` 仅被 @ 时响应 / `disabled` 关闭）、
   私聊按 DM 策略（默认 `pairing`：未授权**不跑任何会话**，只回配对提示或先试登记配对码）。
   `drop` 记日志丢弃；`run` 才真跑。
-- **只绑本机回环、只收 JSON、限长限速**：监听默认只绑 `127.0.0.1`（公网交给穿透/反代）；非
-  `application/json` 直接拒；超长/超频各有对应状态码。事件处理失败**也要回 200**（否则飞书会重试风暴）。
-- **默认关**：回调监听与出站发送各由 `config.runtime.feishu_listener_*` / `feishu_reply_enabled` 开关控制，
-  默认都关；关着时渠道层**一次外网都不发**，只告警、如实回 `ok:false`。
+- **没有本地监听面**：长连接是**出站**连接（不绑端口、不暴露任何入站面），所以没有"只绑回环 / 只收 `application/json` /
+  限长限速 / 事件失败也回 200"这一层 —— 那些都是旧 webhook 的 stdlib `http.server` 壳，已随路线删除。
+  新口径是：事件处理异常在 `feishu_ws.on_message_event` 里**只记日志、绝不上抛**（上抛会顺着 SDK 收包线程让整条链路静默失聪）。
+- **入站没有开关、出站默认关**：入站由 `scripts/feishu_ws_up.py` 显式拉起（停进程即停，**没有配置键**）；
+  出站由 `config.runtime.feishu_reply_enabled` 控制，**默认关**；关着时渠道层**一次外网都不发**，只告警、如实回 `ok:false`。

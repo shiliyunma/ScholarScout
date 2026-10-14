@@ -8,6 +8,9 @@ dependencies = [
     "PyYAML>=6.0.2,<7",
     "pywebview>=5.3,<6",
     "pymupdf>=1.24,<2",
+    # 飞书入站：官方 SDK 的 websocket 长连接（本机主动外连，不需要公网地址/回调/隧道）。
+    # 审批：用户 2026-10-14 拍板"飞书改走 A"；登记在 deps-allowlist.txt 与 docs/03 §6。
+    "lark-oapi>=1.7,<2",
 ]
 
 [project.optional-dependencies]

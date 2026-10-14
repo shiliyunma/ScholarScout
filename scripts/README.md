@@ -22,7 +22,7 @@
   `collect_thesis_refs_targeted.py`、`thesis_stats.py`
 - **迁移与真机诊断**：`migrate_raw_names.py`、`diagnose_grounding.py`、`diagnose_turns.py`、
   `verify_multiturn.py`
-- **拉起外部服务**：`searxng_up.py`、`feishu_up.py`
+- **拉起外部服务**：`searxng_up.py`（自建 SearxNG）、`feishu_ws_up.py`（飞书 websocket 长连接一键开机）
 
 ## 2. 先看哪个文件
 
@@ -30,7 +30,7 @@
 2. **`bootstrap.sh` → `install_deps.py` → `scout.py`** —— 建环境、装依赖、跑 CLI 的固定三步。
 3. **`make_code_map.py`** —— 符号清单的唯一生成器（清单禁止手改）。
 4. 按需：真机自检（`check_search_sources.py`、`check_mineru.py`）、拿起外部服务
-   （`searxng_up.py`、`feishu_up.py`）。
+   （`searxng_up.py`、`feishu_ws_up.py`）。
 
 ## 3. 入口契约（用法 / 退出码）
 
@@ -53,8 +53,9 @@
 - **`make_code_map.py [--check] [--roots ...]`**：生成 `docs/代码地图/00-符号清单.md`；
   `--check` 只比结构，过期退出 1。
 - **`migrate_raw_names.py --dry-run`**：旧命名 → 当前布局；失败数为 0 才返回 0。
-- **`feishu_up.py [--allow-no-reply] [--tunnel-cmd ...]`**：退出码 0 成功 / 2 前提没满足 /
-  3 起监听失败 / 4 隧道启动失败 / 5 解析不到公网地址 / 6 公网自检失败。
+- **`feishu_ws_up.py [--check]`**：飞书**一键开机**（`lark-oapi` 的 websocket 长连接，**不需要隧道/回调地址**）。
+  先做前提自检（SDK 装没装 / 凭据有没有 / 出站开关开没开），再装配长连接客户端并**阻塞**收包；`--check` 只自检不起连接。
+  退出码 **0 正常（含 Ctrl-C）/ 2 前提没满足 / 3 起连接失败**。**首次 `import lark_oapi` 本机约 116 秒**（脚本会先打这句提示）。
 - **`searxng_up.py [--status] [--query Q]`**、**`build_exe.py [--out-dir D] [--diagnose]`**、
   **`build_bundle.py [--with-config] [--name N] [--dist-dir D]`**、**`make_icon.py [--src --out]`**、
   **`diagnose_grounding.py --task/--limit`**、**`diagnose_turns.py [--db --limit]`**、

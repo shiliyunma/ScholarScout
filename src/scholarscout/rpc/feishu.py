@@ -16,12 +16,12 @@ from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.rpc.registry import AppContext, _params, method
 from scholarscout.state import pairing
 
-#: 连接模式默认值（与 `channels/feishu.py` 的同名默认保持一致；键名照 Hermes `adapter.py:1311`）
-DEFAULT_CONNECTION_MODE = "webhook"
+#: 连接方式默认值（与 `channels/feishu.py` 的同名默认保持一致）
+DEFAULT_CONNECTION_MODE = "websocket"
 #: DM 策略默认值（配对审批）
 DEFAULT_DM_POLICY = "pairing"
-#: 允许的连接模式
-CONNECTION_MODES = ("webhook", "websocket")
+#: 允许的连接方式：**只有 websocket 长连接**（2026-10-14 用户拍板；webhook 路线已整体删除）
+CONNECTION_MODES = ("websocket",)
 #: 允许的 DM 策略（对齐参照体验的三选一：配对审批 / 放行全部 / 仅白名单）
 DM_POLICIES = ("pairing", "all", "allowlist")
 #: 允许的平台域名（照 Hermes `_ONBOARD_ACCOUNTS_URLS` 的两个键，adapter.py:198-201）
@@ -73,8 +73,7 @@ def feishu_status(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         "connection_mode": _env_mode(),
         "dm_policy": _env_dm_policy(),
         "group_policy": _env_group_policy(),
-        "listener_enabled": bool(ctx.config.runtime.feishu_listener_enabled),
-        "listener_port": int(ctx.config.runtime.feishu_listener_port),
+        # 入站是 websocket 长连接：没有监听开关/端口可报（不需要公网地址/回调/隧道）。
         # 本方法**不联网**：机器人名恒为 None，真名走 feishu.probe（联网，失败回退 unknown）
         "bot_name": None,
         "temp_open": pairing.temp_open(ctx.db),

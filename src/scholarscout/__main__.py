@@ -43,11 +43,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="飞书接入向导（逐步问答；密钥只写 .env 不回显；见 docs/18）",
     )
-    parser.add_argument(
-        "--feishu-listen",
-        action="store_true",
-        help="启动飞书回调监听（需 config.yaml 的 runtime.feishu_listener_enabled=true；见 docs/17 §3.8）",
-    )
     parser.add_argument("--db", default=None, help="数据库路径，默认 run/state.db")
     parser.add_argument("--toolsets", default="research", help="逗号分隔的工具集，默认 research")
     return parser
@@ -96,7 +91,6 @@ def main(argv: list[str] | None = None) -> int:
             args.desktop,
             args.check_ui,
             args.setup_feishu,
-            args.feishu_listen,
         )
     ):
         args.desktop = True
@@ -143,42 +137,6 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             ctx.close()
 
-    if args.feishu_listen:
-        from scholarscout.app import build_context
-        from scholarscout.channels import feishu
-        from scholarscout.fetch import feishu_send
-
-        ctx = build_context(db_path=db_target, toolsets=toolsets)
-        try:
-            runtime = ctx.config.runtime
-            if not runtime.feishu_listener_enabled:
-                print(
-                    "未开启飞书回调监听（默认关）。请在 config.yaml 里设：\n"
-                    "  runtime:\n"
-                    "    feishu_listener_enabled: true\n"
-                    "    feishu_listener_port: 8765\n"
-                    "    feishu_listener_path: /feishu/webhook\n"
-                    "（然后再跑一次 --feishu-listen）"
-                )
-                return 2
-            # 发送器：默认关（关着时只记录、绝不发任何外网）
-            if not runtime.feishu_reply_enabled:
-                print(
-                    "飞书出站发送未开启（runtime.feishu_reply_enabled=false，默认关）："
-                    "本轮的回复只会被记录、不真发。要真发请在 config.yaml 打开该键。"
-                )
-            sender = feishu_send.build_sender(ctx.http, enabled=runtime.feishu_reply_enabled)
-            # `run_listener` 返回已启动的 server（桩测要用），CLI 这边只关心"跑完正常退出"。
-            feishu.run_listener(
-                ctx,
-                sender=sender,
-                port=runtime.feishu_listener_port,
-                path=runtime.feishu_listener_path,
-            )
-            return 0
-        finally:
-            ctx.close()
-
     if args.desktop:
         from scholarscout.desktop.app import launch
 
@@ -190,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "可用：--version / --initdb / --rpc / --chat / --desktop / --setup-feishu\n"
+        "飞书入站（websocket 长连接，不需要隧道）：python scripts/feishu_ws_up.py\n"
         "桌面壳：python scripts/scout.py --desktop（需先装 pywebview）；见 docs/00-总索引.md"
     )
     return 0

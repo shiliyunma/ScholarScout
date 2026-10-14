@@ -34,7 +34,8 @@
 2. **`config.py`** —— `load_config()` 与几个 `Profile` 数据类（`Config` 是根）；密钥如何注入看它。
 3. **`app.py`** —— `build_context()`：把上面两样 + 库 + 模型 + 出网装成一个 `AppContext`。
 4. **`__main__.py`** —— CLI 子命令的分发（`--rpc` / `--chat` / `--desktop` / `--initdb` / `--setup-feishu` /
-   `--feishu-listen` / `--check-ui`…）。
+   `--check-ui`…）。**飞书入站没有 `--feishu-listen` 这种子命令了**：起长连接走 `scripts/feishu_ws_up.py`
+   （入站传输在 `channels/feishu_ws.py`，与 CLI 分开）。
 5. **`settings_io.py`** —— 设置的写入路径（白名单字段、原子写、密钥只写不回读）。
 6. **`__init__.py`** —— 只是个包标记，没有逻辑。
 
