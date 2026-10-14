@@ -38,12 +38,9 @@ runtime:
   # 开启后模型可见工具 research.delegate（docs/01 §5.18）才可用：它把互不依赖的子问题交给子任务，
   # 子任务**实际消耗的工具调用数从本轮主循环的剩余预算里扣**（同一本账）；关着时该工具回 ok=false。
   subtask_enabled: false
-  # 飞书渠道回调监听（入口层，docs/17 §3）：**默认关**。
-  # 开启后用标准库 http.server 监听本地端口等飞书 POST 事件（只绑 127.0.0.1）。
-  # 没有 .env 密钥（FEISHU_VERIFICATION_TOKEN / FEISHU_ENCRYPT_KEY）时不校签并明确告警。
-  feishu_listener_enabled: false
-  feishu_listener_port: 8765      # 照 Hermes 适配器默认；enabled=false 时不起服务
-  feishu_listener_path: /feishu/webhook   # 回调路径（照 Hermes 默认）；与穿透工具对齐用
+  # 飞书渠道（docs/17 §3.8）：入站走 **websocket 长连接**（官方 SDK `lark-oapi`），本机主动外连，
+  # **不需要公网地址 / 回调 URL / 隧道**，所以没有任何监听开关/端口/路径配置键
+  # （历史上那三枚 feishu_listener_* 随 webhook 路线一起删了；启动入口见 scripts/feishu_ws_up.py）。
   # 飞书**出站发送器**（把一轮回答推回飞书，docs/17 §3.7）：**默认关**。
   # 关着时渠道层只记录、绝不发任何外网；开启需同时配好 .env 的 FEISHU_APP_ID / FEISHU_APP_SECRET。
   feishu_reply_enabled: false
