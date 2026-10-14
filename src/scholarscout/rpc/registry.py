@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,6 +17,7 @@ from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient, LlmError
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.runtime import loop
+from scholarscout.runtime.session_runtime import DEFAULT_MAX_CONCURRENT, SessionRuntime
 from scholarscout.state.db import Database
 
 Handler = Callable[["AppContext", dict[str, Any]], Any]
@@ -34,11 +36,29 @@ class AppContext:
     cancelled: set[str] = field(default_factory=set)
     #: `session_id -> turn_id`：正在跑的轮次（界面按会话取消时用）
     running: dict[str, str] = field(default_factory=dict)
+    #: 多会话并行的工作单元池（docs/20 §2）。**懒建**：CLI / 单会话路径不该被凭空起一个线程池。
+    _session_runtime: SessionRuntime | None = field(default=None, init=False, repr=False)
+    _runtime_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def require_llm(self) -> LlmClient:
         if self.llm is None:
             raise RpcError(Code.NOT_CONFIGURED, "尚未配置模型客户端（检查 .env 的 LLM_API_KEY）")
         return self.llm
+
+    def session_runtime(self) -> SessionRuntime:
+        """拿（必要时创建）多会话工作单元池。
+
+        并发上限读 `runtime.max_parallel_sessions`（**默认 3，用户拍板**）；该配置键属第 8 步，
+        这里用 `getattr` 兜默认值 —— 先加能力、不抢后一步的配置契约。
+        """
+        limit = int(
+            getattr(self.config.runtime, "max_parallel_sessions", DEFAULT_MAX_CONCURRENT)
+            or DEFAULT_MAX_CONCURRENT
+        )
+        with self._runtime_lock:
+            if self._session_runtime is None:
+                self._session_runtime = SessionRuntime(self, max_concurrent=limit)
+            return self._session_runtime
 
     def turn_context(self) -> loop.TurnContext:
         return loop.TurnContext(
@@ -51,7 +71,22 @@ class AppContext:
         )
 
     def close(self) -> None:
-        """关掉出网客户端与数据库（HTTP 连接池不关会留句柄）。"""
+        """关掉会话运行时、出网客户端与数据库（HTTP 连接池不关会留句柄）。
+
+        **顺序要紧**：先 `shutdown()` 会话池（置取消标志 + 把工作线程摘出退出 join 名单），
+        否则关窗时进程会一直卡到正在跑的那一轮结束。
+
+        **还有轮次在跑时不关共享资源**（早退）：`shutdown()` 不 join，工作线程可能正处在
+        一轮的中间（落消息、抓网页），此时从主线程 close 掉 SQLite 连接或 HTTP 连接，
+        就是**跨线程 use-after-close** —— 本机实测是**进程级 access violation**（0xC0000005，
+        子进程驱动用例抓的，见 `tests/runtime/test_session_runtime.py::_DRIVER`）。
+        进程本来就要退了：句柄交给操作系统回收；WAL 下每次写都已提交，库不会因此损坏。
+        """
+        runtime = self._session_runtime
+        if runtime is not None:
+            runtime.shutdown()
+            if runtime.busy:
+                return
         if self.http is not None:
             self.http.close()
         self.db.close()

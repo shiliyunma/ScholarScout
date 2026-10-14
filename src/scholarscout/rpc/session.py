@@ -193,58 +193,155 @@ def _title_before_turn(ctx: AppContext, session_id: str, text: str) -> None:
         ctx.emit("session.updated", {"session_id": session_id, "title": applied, "source": "model"})
 
 
+#: `chat.send` 的两种模式（docs/20 §3.2）：`sync`=阻塞返回整轮（**默认，旧语义一字不变**）；
+#: `async`=立即返回 `turn_id`，整轮结论走 `chat.done` 事件 / `chat.result` 补取。
+_MODE_SYNC = "sync"
+_MODE_ASYNC = "async"
+
+
+def _submit_rejection(rejected: dict[str, Any]) -> RpcError:
+    """把工作单元的拒绝翻译成契约错误，**并带上"谁在跑"**（docs/20 §5.3：拒绝要如实告知）。
+
+    为什么不回一个 `{ok:false}` 的 result：`mode="sync"` 的调用方（现有界面/脚本）读的是
+    `result["text"]` 这类键，回一个形状不同的对象会让它们以别的方式崩 —— 报错才是诚实的失败。
+    """
+    reason = str(rejected.get("reason") or "rejected")
+    running = list(rejected.get("running") or [])
+    names = "、".join(str(item.get("session_id")) for item in running)
+    data = {"reason": reason, "running": running}
+    if reason == "turn_in_progress":
+        return RpcError(
+            Code.INVALID_REQUEST,
+            f"这个会话已有一轮在跑（turn_in_progress：{rejected.get('turn_id')}）"
+            "——同一会话不许两轮并行（消息序号与会话台账都会被踩坏）",
+            data,
+        )
+    if reason == "at_capacity":
+        return RpcError(
+            Code.SERVICE_UNAVAILABLE,
+            f"并发上限已满（at_capacity）：正在跑 {len(running)} 个会话（{names}）。"
+            "先停一个或等一个结束（按设计**不排队**）。",
+            data,
+        )
+    return RpcError(Code.SERVICE_UNAVAILABLE, f"本轮未被接受（{reason}）", data)
+
+
 @method("chat.send")
 def chat_send(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """发一条消息并跑一轮。
+
+    `mode="sync"`（**默认**）：行为与改造前**逐字一致** —— 阻塞到整轮结束，返回整轮结论。
+    现有界面不改一行也照常工作；`mode="async"`：立即返回 `{turn_id, session_id, accepted}`，
+    整轮结论走 `chat.done` 事件（`text` + `message_id` 已带上）或 `chat.result(turn_id)` 补取。
+    两种模式都走同一份 `SessionRuntime`（上限 3、同会话不许两轮并行）—— docs/20 §3.2。
+    """
     params = _params(params)
     session_id = _require(params, "session_id")
     text = _require(params, "text")
     if not text.strip():
         raise RpcError(Code.INVALID_PARAMS, "text 不能为空")
+    mode = str(params.get("mode") or _MODE_SYNC).strip().lower()
+    if mode not in (_MODE_SYNC, _MODE_ASYNC):
+        raise RpcError(Code.INVALID_PARAMS, f"不支持的 mode：{mode}（可用 sync / async）")
     if sessions.get_session(ctx.db, session_id) is None:
         raise RpcError(Code.NOT_FOUND, f"会话不存在：{session_id}")
     toolsets = params.get("toolsets") or list(ctx.toolsets)
     if not isinstance(toolsets, list):
         raise RpcError(Code.INVALID_PARAMS, "toolsets 必须是数组")
+    # 模型客户端在**提交之前**校验：异常变成"一轮的错误收尾"会把 NOT_CONFIGURED 这种可诊断的
+    # 配置问题藏进事件流里，而改造前它是直接抛给调用方的。
+    ctx.require_llm()
 
-    _title_before_turn(ctx, session_id, text)  # 标题在轮次前定下来（用户一发送就能看到）
-    result = loop.run_turn(
-        ctx.turn_context(),
+    runtime = ctx.session_runtime()
+    accepted = runtime.submit_turn(
         session_id=session_id,
         text=text,
         toolsets=[str(t) for t in toolsets],
         emit=ctx.emit,
+        # 标题在**工作线程里、跑轮次之前**定下来（顺序与改造前一致），
+        # 但它会调一次模型 —— 放在这里才不拖住 `mode="async"` 的立即返回。
+        before_start=lambda: _title_before_turn(ctx, session_id, text),
     )
+    if not accepted.get("ok"):
+        raise _submit_rejection(accepted)
+    turn_id = str(accepted["turn_id"])
+    if mode == _MODE_ASYNC:
+        return {"turn_id": turn_id, "session_id": session_id, "accepted": True}
+
+    result = runtime.wait(turn_id)
+    if result is None:  # 只有轮次异常结束（连结果都没留下）才会走到这里，如实报错
+        raise RpcError(Code.INTERNAL_ERROR, f"轮次异常结束：{turn_id}（结果信箱里没有它）")
     return result.as_dict()
 
 
 @method("chat.cancel")
 def chat_cancel(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
-    """请求取消一轮对话。
+    """请求取消一轮对话。**只影响被点到的那一个会话**（docs/20 §6.2）。
 
     **可以按 `session_id` 取消**（界面用这个）：整轮结束前前端拿不到 `turn_id`，
     只按 turn_id 取消的话，这个 RPC 从设计上就无法被界面调用。
-    `turn_id` 仍然接受（脚本/测试用）。
-
     执行时机是**步间检查**：正在跑的那一步（模型调用或工具调用）结束后才生效 ——
     界面上必须如实这么提示，别让用户以为点了就立刻停。
+
+    实现上按 `session_id` 找到该会话自己的取消 Event（`TurnHandle.cancel_event`）：
+    取消信号是**每轮一个对象**，所以"取消 A 误伤 B"在机制上不可能。
     """
     params = _params(params)
     turn_id = str(params.get("turn_id") or "").strip()
     session_id = str(params.get("session_id") or "").strip()
+    outcome = ctx.session_runtime().cancel(session_id=session_id or None, turn_id=turn_id or None)
+    if outcome.get("ok"):
+        return outcome
+    # 兼容阶梯（老契约，`tests/rpc/test_cancel_and_session_usage.py` 钉着四条）：
+    # ① 只给 session_id 时回退到全局 `ctx.running` 注册表找它（CLI/脚本不走工作单元池的情形）；
+    # ② 拿到 turn_id 后记进 `ctx.cancelled` —— 这是**按 turn_id 的兼容通道**（留痕），
+    #    真正生效的取消机制是那一轮自己的 Event（`TurnHandle.cancel_event`）。
     if not turn_id and session_id:
         turn_id = ctx.running.get(session_id, "")
-    if not turn_id:
+    if turn_id:
+        ctx.cancelled.add(turn_id)
+        return {
+            "ok": True,
+            "turn_id": turn_id,
+            "note": "已请求取消：当前这一步结束后生效（步间检查）",
+        }
+    return {
+        "ok": False,
+        "reason": "no_running_turn",
+        "note": "这个会话当前没有正在跑的轮次（可能已经结束）",
+    }
+
+
+@method("chat.status")
+def chat_status(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """哪些会话在跑 / 跑在什么阶段 / 容量还剩多少（docs/20 §3.2）。
+
+    多会话并行的**观测口**：界面靠它给每个在跑的会话画"进行中 + 停止"，靠 `capacity`
+    判断"还能不能再开一个"。不给 `session_id` 时连各会话的用量账一起回。
+    """
+    params = _params(params)
+    session_id = params.get("session_id")
+    return ctx.session_runtime().status(str(session_id) if session_id else None)
+
+
+@method("chat.result")
+def chat_result(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """按 `turn_id` 补取一轮的结论（迟到 / 掉线重连场景，docs/20 §3.2）。
+
+    结果信箱只留最近 32 轮；**取不到就如实说取不到**（`unknown_turn`），
+    绝不回一个"看着像结果"的空壳。
+    """
+    params = _params(params)
+    turn_id = _require(params, "turn_id")
+    result = ctx.session_runtime().result(str(turn_id))
+    if result is None:
         return {
             "ok": False,
-            "reason": "no_running_turn",
-            "note": "这个会话当前没有正在跑的轮次（可能已经结束）",
+            "reason": "unknown_turn",
+            "turn_id": turn_id,
+            "note": "结果信箱里没有这一轮（可能太旧、已被挤出，或轮次号写错了）",
         }
-    ctx.cancelled.add(turn_id)
-    return {
-        "ok": True,
-        "turn_id": turn_id,
-        "note": "已请求取消：当前这一步结束后生效（步间检查）",
-    }
+    return result.as_dict()
 
 
 # --------------------------------------------------------------------- 轨迹

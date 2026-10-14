@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -94,11 +95,22 @@ class TurnContext:
     #: 为什么需要它：界面在整轮结束前**拿不到 turn_id**（它随 `chat.done` 才回来），
     #: 所以"停止"必须能按会话取消，而不是按 turn_id（否则这个 RPC 从设计上就没法被界面调用）。
     running: dict[str, str] = field(default_factory=dict)
+    #: 本轮的取消信号（**每轮一个独立 Event**，docs/20 §6.2）。
+    #: 多会话并行时由 `SessionRuntime` 按轮注入；`None`（CLI / 老调用点）= 只看 `cancelled` 集合，
+    #: 于是改造前的语义一字不变。
+    cancel_event: threading.Event | None = None
 
     def tools(self, toolsets: Sequence[str] | None) -> list[registry.ToolSpec]:
         return registry.get_tools(toolsets, features=self.config.features)
 
     def is_cancelled(self, turn_id: str) -> bool:
+        """这一轮被取消了吗（步间检查）。
+
+        两条通道都认：**每轮的 Event**（并行下的机制保证，只可能点到这一轮）与
+        `cancelled` 集合（按 turn_id 的兼容通道；turn_id 全局唯一，所以不会误伤别的会话）。
+        """
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            return True
         return turn_id in self.cancelled
 
     def tool_context(
@@ -228,12 +240,18 @@ def run_turn(
     text: str,
     toolsets: Sequence[str] | None = None,
     emit: Emitter | None = None,
+    turn_id: str | None = None,
 ) -> TurnResult:
-    """跑一轮：发消息、调模型、执行工具、落库。异常一律收敛成 ``stop_reason``。"""
+    """跑一轮：发消息、调模型、执行工具、落库。异常一律收敛成 ``stop_reason``。
+
+    ``turn_id`` 是**预分配**的轮次号（多会话并行要它，docs/20 §2.3）：`SessionRuntime.submit_turn`
+    必须在整轮跑完**之前**就把 `turn_id` 交给界面（`mode="async"` 立即返回），所以轮次号不能等到
+    这里才生成。不传时自己生成 —— 老的调用点语义一字不变。
+    """
     # 事件信封统一带 session_id（docs/20 §3.1）：在这里绑一次，本函数与 _execute_tool 的
     # 全部事件（chat.delta/tool_call/tool_result/error/done）自动带上，调用点不必各自传。
     emit = bind_emitter(emit, session_id)
-    turn_id = sessions.new_id("trn")
+    turn_id = turn_id or sessions.new_id("trn")
     sessions.append_message(ctx.db, session_id, role="user", content=text)
 
     specs = ctx.tools(toolsets)
@@ -591,7 +609,16 @@ def run_turn(
     _emit(
         emit,
         "chat.done",
-        {"turn_id": turn_id, "stop_reason": stop_reason, "usage": usage_total, "refs": refs_total},
+        {
+            "turn_id": turn_id,
+            "stop_reason": stop_reason,
+            "usage": usage_total,
+            "refs": refs_total,
+            # 收尾事件带上**权威正文与落库消息 id**（docs/20 §3.2）：`chat.send` 不再阻塞返回时，
+            # 界面必须能从收尾事件一次落定（`chat.delta` 的累计正文是同一个值的流式版本）。
+            "text": final_text,
+            "message_id": message_id,
+        },
     )
     return TurnResult(
         turn_id=turn_id,

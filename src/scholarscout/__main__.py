@@ -126,7 +126,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             return server.serve(ctx)
         finally:
-            ctx.db.close()
+            # 关的**顺序**由 `AppContext.close()` 定：先 shutdown 会话池，再 HTTP，最后库。
+            # 只关库的话，并行工作线程仍挂在解释器退出的 join 名单上 → 关窗会卡到那一轮跑完。
+            ctx.close()
 
     if args.chat:
         return _chat_repl(db_target, toolsets)
