@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -97,6 +98,47 @@ def test_requests_are_rate_limited_per_host() -> None:
     client.fetch("https://example.org/1", min_interval_s=3.0)
     client.fetch("https://example.org/2", min_interval_s=3.0)
     assert slept == [3.0], "同 host 第二次请求前必须等满最小间隔"
+
+
+def test_rate_limiter_is_not_bypassed_under_concurrency() -> None:
+    """多会话并行抓同一个 host 不许绕过限速（docs/20 §4.2 / §6.1 的 `_RateLimiter` 加锁）。
+
+    修后是**确定**的：同一 key 的请求排队，所以 4 个并发请求里恰好 1 个不必等、
+    其余各等满一个间隔。修前的失败是**时序相关**的（两个线程可能同时读到"上次时间"），
+    所以这条是守卫而非"必红"用例 —— 起红的责任在 `tests/state/test_db_concurrent_writes.py`。
+    """
+    from scholarscout.fetch.http import _RateLimiter
+
+    now = [0.0]
+    slept: list[float] = []
+
+    def clock() -> float:
+        return now[0]
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now[0] += seconds
+
+    limiter = _RateLimiter(clock, sleep)
+    barrier = threading.Barrier(4)
+    guard = threading.Lock()
+    results: list[float] = []
+
+    def worker() -> None:
+        barrier.wait(timeout=10)
+        value = limiter.wait("arxiv.org", 3.0)
+        with guard:
+            results.append(value)
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert sorted(results) == [0.0, 3.0, 3.0, 3.0], f"并发下有人没等就发请求了：{results}"
+    assert sum(slept) == pytest.approx(9.0), f"总等待 ≠ (4-1)×3s：{slept}"
+    # 锁是按 key 的：抓另一个 host 不该排在 arxiv 后面
+    assert limiter.wait("github.com", 6.0) == 0.0
 
 
 def test_cache_hit_avoids_second_request(tmp_path: Path) -> None:

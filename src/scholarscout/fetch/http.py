@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 import urllib.robotparser
 from collections.abc import Callable, Iterable
@@ -107,28 +108,46 @@ class FetchResult:
 
 
 class _RateLimiter:
-    """按 key（一般取 host）串行化：两次请求之间至少间隔 ``min_interval_s``。"""
+    """按 key（一般取 host）串行化：两次请求之间至少间隔 ``min_interval_s``。
+
+    **并发安全**（docs/20 §4.2 / §6.1）：同一 key 的请求在同一把锁上**排队到** sleep 结束 ——
+    否则多会话并行抓同一个 host 时会各自读到"上次请求时间"、谁都不等，把限速整体绕过
+    （原来就是裸 dict，注释声称"并行不绕过限速"但代码做不到）。
+    锁是**按 key** 的：抓 arxiv 与抓 github 互不挡（跨 host 的并发抓取本来就该并行）。
+    """
 
     def __init__(self, clock: Callable[[], float], sleep: Callable[[float], None]) -> None:
         self._clock = clock
         self._sleep = sleep
         self._last: dict[str, float] = {}
+        #: 每个 key 一把锁（跨 host 不互相排队）+ 一把守护锁只保护这张表本身
+        self._locks: dict[str, threading.Lock] = {}
+        self._guard = threading.Lock()
         self.slept: list[float] = []
+
+    def _lock_for(self, key: str) -> threading.Lock:
+        with self._guard:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[key] = lock
+            return lock
 
     def wait(self, key: str, min_interval_s: float) -> float:
         if min_interval_s <= 0:
             return 0.0
-        previous = self._last.get(key)
-        now = self._clock()
-        if previous is not None:
-            remaining = min_interval_s - (now - previous)
-            if remaining > 0:
-                self._sleep(remaining)
-                self.slept.append(remaining)
-                self._last[key] = previous + min_interval_s
-                return remaining
-        self._last[key] = now
-        return 0.0
+        with self._lock_for(key):
+            previous = self._last.get(key)
+            now = self._clock()
+            if previous is not None:
+                remaining = min_interval_s - (now - previous)
+                if remaining > 0:
+                    self._sleep(remaining)
+                    self.slept.append(remaining)
+                    self._last[key] = previous + min_interval_s
+                    return remaining
+            self._last[key] = now
+            return 0.0
 
 
 class HttpClient:

@@ -295,7 +295,14 @@ def note_help(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         def emit_practice_delta(piece: str) -> None:
             raw_emit(
                 "practice.delta",
-                {"note_id": note_id, "card_index": index + 1, "delta": piece},
+                {
+                    "note_id": note_id,
+                    "card_index": index + 1,
+                    "delta": piece,
+                    # 事件必须能分派回会话（docs/20 §3.1）：抽背是某个会话里的动作，
+                    # 前端靠它把增量归位；note 没挂会话时**不伪造**一个空串。
+                    **({"session_id": session_id} if session_id else {}),
+                },
             )
 
         on_delta = emit_practice_delta

@@ -30,6 +30,7 @@ from scholarscout.providers.base import Query, SourceCard
 from scholarscout.providers.llm import ChatReply, LlmError, ToolCall
 from scholarscout.providers.settings import KNOWN
 from scholarscout.runtime import context_budget, registry
+from scholarscout.runtime.loop import bind_emitter
 from scholarscout.runtime.toolctx import ToolContext, TurnBudget
 from scholarscout.state import traces
 
@@ -337,6 +338,10 @@ def run_subtask(
     """
     turn_id = str(ctx.turn_id or "")
     goal_text = str(goal or "").strip()
+    # 子任务事件（chat.subtask_start/done）也必须带 session_id（docs/20 §3.1）：
+    # 主 loop 传进来的 emitter 已经绑过，这里再绑一次是为了**直接拿 ToolContext 起子任务**
+    # 的路径（工具/测试）也不漏 —— 绑两次键值相同，无副作用。
+    emit = bind_emitter(emit, ctx.session_id)
     if not goal_text:
         return SubTaskResult(
             goal="", text="", refs={}, tool_calls=[], usage={}, stop_reason="empty"

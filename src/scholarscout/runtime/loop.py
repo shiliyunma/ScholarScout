@@ -166,6 +166,26 @@ def _merge_refs(target: dict[str, list[str]], incoming: Any) -> None:
                 bucket.append(text)
 
 
+def bind_emitter(emit: Emitter | None, session_id: str | None) -> Emitter | None:
+    """把 ``session_id`` 绑进事件信封 —— 让"通知必带 session_id"由**机制**保证（docs/20 §3.1）。
+
+    为什么要有：事件不带 ``session_id`` 时，界面无从判断一条 ``chat.delta`` 属于哪个会话
+    （真机症状：切到 B 后 A 的回复写进 B 的气泡）。把绑定做在 emitter 上，而不是要求 8 处
+    ``_emit`` 调用点各自记得写，才不会有人漏。多绑一次无害（键值相同）。
+
+    ``emit`` 为 ``None``（CLI / 无 GUI 的测试）时**原样返回 None**：包一层空回调只会让
+    调用点误以为有事件通道。``session_id`` 为空时同样不绑 —— 绑一个空串只会伪造"合规"。
+    """
+    if emit is None or not session_id:
+        return emit
+
+    def bound(kind: str, payload: dict[str, Any]) -> None:
+        # 调用点自己的键优先（如子任务里更精确的 turn_id），但 session_id 以绑定值为准
+        emit(kind, {**payload, "session_id": session_id})
+
+    return bound
+
+
 def _emit(emit: Emitter | None, kind: str, payload: dict[str, Any]) -> None:
     if emit is not None:
         emit(kind, payload)
@@ -210,6 +230,9 @@ def run_turn(
     emit: Emitter | None = None,
 ) -> TurnResult:
     """跑一轮：发消息、调模型、执行工具、落库。异常一律收敛成 ``stop_reason``。"""
+    # 事件信封统一带 session_id（docs/20 §3.1）：在这里绑一次，本函数与 _execute_tool 的
+    # 全部事件（chat.delta/tool_call/tool_result/error/done）自动带上，调用点不必各自传。
+    emit = bind_emitter(emit, session_id)
     turn_id = sessions.new_id("trn")
     sessions.append_message(ctx.db, session_id, role="user", content=text)
 

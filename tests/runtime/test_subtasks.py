@@ -493,9 +493,19 @@ def test_subtask_events_come_in_start_done_pairs(config, db) -> None:
         "chat.subtask_start",
         "chat.subtask_done",
     ]
-    assert set(events[0][1]) == {"turn_id", "seq", "index", "goal"}
-    assert set(events[1][1]) == {"turn_id", "seq", "index", "stop_reason", "refs"}
+    # 载荷**逐键**钉住：多一个键要显式承认（docs/20 §3.1 给每条通知加了 session_id）
+    assert set(events[0][1]) == {"session_id", "turn_id", "seq", "index", "goal"}
+    assert set(events[1][1]) == {
+        "session_id",
+        "turn_id",
+        "seq",
+        "index",
+        "stop_reason",
+        "refs",
+    }
     assert events[0][1]["turn_id"] == "trn_1"
+    # 子任务事件必须能分派回会话（docs/20 §3.1）：界面靠它把子任务轨迹归位
+    assert all(payload["session_id"] == session_id for _, payload in events)
     assert [events[i][1]["index"] for i in (0, 2)] == [0, 1]
 
 
