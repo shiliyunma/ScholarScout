@@ -285,37 +285,75 @@ function replyRoundNext(prevClosed, text) {
   };
 }
 
-/** 当前加载圈状态（null = 还没发起任何一轮）。 */
-var turnSpinnerState = null;
-
-/** 事件 → 加载圈。它**不是浮层**：落到「进行中」气泡内部的 .msg-progress 行，
-    轮次收尾时会被真正移除。没有 pending（一轮没在跑）就什么都不动 ——
+/** 当前加载圈状态就放在**这个会话自己的槽**上（`slot.spinner`），不再是全局一个。
+    事件 → 加载圈。它**不是浮层**：落到「进行中」气泡内部的 .msg-progress 行，
+    轮次收尾时会被真正移除。没有进行中气泡（这一轮不是本界面发起的）就什么都不动 ——
     后端补推的迟到事件不该点亮界面。 */
-function turnSpinnerUpdate(method, params) {
-  var next = turnSpinnerNext(turnSpinnerState, method, params);
-  turnSpinnerState = next;
-  var trace = state.pending;
+function turnSpinnerUpdate(slot, method, params) {
+  if (!slot) return;
+  var next = turnSpinnerNext(slot.spinner, method, params);
+  slot.spinner = next;
+  var trace = slot.trace;
   if (!trace || next === null) return;
   if (next.visible === true) trace.showProgress(turnSpinnerText(next), next.kind, next.tool);
   else trace.hideProgress();
 }
 
-/** 摘掉消息流里**所有**残留的加载圈（幂等）。这是「结束后必消失」的第二道保险：
+/** 摘掉**某个会话的流里**残留的加载圈（幂等）。这是「结束后必消失」的第二道保险：
     正常路径由 trace.hideProgress() 收掉；异常路径（气泡对象丢了、后端没回 chat.done）
-    靠这一条兜底，绝不会永久转圈。 */
-function turnSpinnerSweep() {
-  var box = el("messages");
-  if (!box) return;
-  box.querySelectorAll(".msg-progress").forEach(function (node) {
+    靠这一条兜底，绝不会永久转圈。
+    **只扫一条流** —— 扫全局会把别的会话正在转的圈也摘掉（探针抓过这个）。
+    找根的顺序：这个会话自己的气泡 → 这个会话自己的流 → 当前显示的流；
+    都找不到就什么都不动（宁可留着，也不许动别人）。 */
+function turnSpinnerSweep(slot, sessionId) {
+  var root = null;
+  if (slot && slot.trace && slot.trace.node) {
+    root = slot.trace.node.wrap;
+  } else {
+    var entry = sessionId ? state.streams[String(sessionId)] : null;
+    if (entry && entry.node) root = entry.node;
+    else {
+      var box = el("messages");
+      root = (box && box.querySelector(".msg-stream.is-active")) || null;
+    }
+  }
+  if (!root) return;
+  root.querySelectorAll(".msg-progress").forEach(function (node) {
     node.remove();
   });
 }
 
-/** 强制复位 + 兜底清扫。轮次收尾的 finally 一定调它。 */
-function turnSpinnerReset() {
-  turnSpinnerState = null;
-  if (state.pending) state.pending.hideProgress();
-  turnSpinnerSweep();
+/** 强制复位 + 兜底清扫（**按会话**）。轮次收尾（chat.done / 发起就失败）一定调它。 */
+function turnSpinnerReset(slot, sessionId) {
+  if (slot) slot.spinner = null;
+  if (slot && slot.trace) slot.trace.hideProgress();
+  turnSpinnerSweep(slot, sessionId);
+}
+
+/* ---------------------------------------------- 事件路由（纯函数，node 直测） */
+
+/** 事件 → 它属于哪个会话（纯函数）。返回 session_id 或 null。
+
+    `chat.*` 家族与 `session.updated` 必带 `session_id`（docs/20 §3.1 的**机制保证**：
+    `bind_emitter` 在信封上注入），所以"这条事件属于谁"是查字段，不是猜。
+    拿不到 session_id 的事件一律返回 null → **不落任何会话的槽**：
+    宁可什么都不动，也绝不许落错会话（落错就是用户报的那个 bug）。 */
+function eventSessionKey(method, params) {
+  var p = params || {};
+  var raw = p.session_id;
+  if (raw === null || raw === undefined) return null;
+  var key = String(raw);
+  return key ? key : null;
+}
+
+/** 一轮完成 → 这个会话要不要打角标（纯函数）。
+
+    规则：**不是当前显示的那个会话**才打；已经是未读的保持未读
+    （不许被后来到达的其它事件顺手清掉 —— 未读只有"切过去/点掉"才清）。 */
+function unreadFromDone(doneSessionId, currentSessionId, alreadyUnread) {
+  if (!doneSessionId) return false;
+  if (alreadyUnread === true) return true;
+  return String(doneSessionId) !== String(currentSessionId || "");
 }
 
 /* --------------------------------------------------------- 后端推来的事件 */
@@ -323,7 +361,7 @@ function turnSpinnerReset() {
 window.scoutEvent = function (event) {
   if (!event || !event.method) return;
   const p = event.params || {};
-  // 标题在轮次开始前就推过来（不等这一轮跑完）——这条要在"没有 pending 就返回"之前处理
+  // 标题在轮次开始前就推过来（不等这一轮跑完）——这条要在"按槽路由"之前处理
   if (event.method === "session.updated") {
     if (state.sessionId === p.session_id && p.title) {
       const titleNode = el("chat-title");
@@ -333,36 +371,44 @@ window.scoutEvent = function (event) {
     return;
   }
   // 抽背「不会」的流式增量：直接**追加**到当前提示区（收尾时前端会用最终全文校正）。
-  // 这条与 chat 轮次无关，所以必须放在"没有 pending 就返回"之前 —— 否则抽背永远收不到增量。
+  // 这条与 chat 轮次无关，所以必须放在"按槽路由"之前 —— 否则抽背永远收不到增量。
   if (event.method === "practice.delta") {
     const out = document.querySelector(".practice-help-out");
     if (out) out.textContent = (out.textContent || "") + (p.delta || "");
     return;
   }
-  const trace = state.pending;
-  if (!trace) return;
+  /* 事件**按 session_id 路由**：只落进它自己会话的槽（docs/20 §3.1/§3.3）。
+     不是当前显示的会话也要收下 —— 它的气泡在**它自己那条流**里（切回去能看全）。
+     判据是信封上的 session_id（后端 bind_emitter 注入），不是"此刻显示的是谁"。 */
+  const key = eventSessionKey(event.method, p);
+  const slot = key ? turnSlot(key, false) : null;
+  if (!slot || !slot.trace) return; // 这一轮不是本界面发起的（没有进行中气泡）→ 不动界面
 
-  // 加载圈：只有一轮真在跑时才动它（放在 pending 门之后）。chat.done 在下面那条
-  // if/else 链里**没有对应分支**（收尾靠 chat.send 的返回值），所以必须靠这一句
-  // 把加载圈收掉 —— 少了它就会一直转。
-  turnSpinnerUpdate(event.method, p);
+  // 收尾（含权威正文 text + message_id）单独走一条：角标/计数也在那里判
+  if (event.method === "chat.done") {
+    finishTurn(key, p);
+    return;
+  }
+
+  // 加载圈：只有这个会话真在跑时才动它（只动它自己那条流的进度行）
+  turnSpinnerUpdate(slot, event.method, p);
 
   if (event.method === "chat.tool_call") {
-    trace.addToolCall(p);
+    slot.trace.addToolCall(p);
   } else if (event.method === "chat.tool_result") {
-    trace.addToolResult(p);
+    slot.trace.addToolResult(p);
   } else if (event.method === "chat.delta") {
     // 每轮增量都进会话流：本轮是第一段就新开一段，否则替换当前段的累计值（见 replyRoundNext）
-    trace.pushDelta(p.text || "");
+    slot.trace.pushDelta(p.text || "");
   } else if (event.method === "chat.error") {
-    trace.add("bad", "后端错误：" + (p.message || ""));
+    slot.trace.add("bad", "后端错误：" + (p.message || ""));
   }
 };
 
 /* ------------------------------------------------------------------ 骨架 */
 
 
-function bubble(kind, who) {
+function bubble(kind, who, sessionId) {
   const wrap = document.createElement("div");
   wrap.className = "msg " + kind;
   const who_el = document.createElement("div");
@@ -372,21 +418,22 @@ function bubble(kind, who) {
   body.className = "body";
   wrap.appendChild(who_el);
   wrap.appendChild(body);
-  el("messages").appendChild(wrap);
+  // 挂在**这个会话自己的**消息流里（不是"此刻正在显示的那条"）
+  streamBox(sessionId === undefined ? state.sessionId : sessionId).appendChild(wrap);
   el("messages").scrollTop = el("messages").scrollHeight;
   return { wrap: wrap, body: body, who: who_el };
 }
 
 
 /** 会话流里的一条系统提示（没有「进行中」气泡可挂时用它，别把反馈静默丢掉）。 */
-function notice(text) {
+function notice(text, sessionId) {
   const wrap = document.createElement("div");
   wrap.className = "msg notice";
   const body = document.createElement("div");
   body.className = "body";
   body.textContent = text;
   wrap.appendChild(body);
-  el("messages").appendChild(wrap);
+  streamBox(sessionId === undefined ? state.sessionId : sessionId).appendChild(wrap);
   el("messages").scrollTop = el("messages").scrollHeight;
 }
 

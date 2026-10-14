@@ -55,14 +55,14 @@ def test_practice_has_styles() -> None:
 def test_practice_delta_is_appended_in_the_ui() -> None:
     """抽背流式：api.js 必须订阅 ``practice.delta`` 并把增量**追加**到提示区。
 
-    还要钉住位置 —— 它必须在 `state.pending` 那道门**之前**处理，否则抽背（没有 pending 轮次）
-    永远收不到增量。
+    还要钉住位置 —— 它必须在"按 session_id 找槽"那道门**之前**处理，
+    否则抽背（不是 chat 轮次、没有会话槽）永远收不到增量。
     """
     text = APP_JS
     assert '"practice.delta"' in text, "api.js 没订阅 practice.delta"
     assert "practice-help-out" in text, "没找到抽背提示区"
-    assert text.index('"practice.delta"') < text.index("const trace = state.pending;"), (
-        "practice.delta 必须放在 pending 门前处理"
+    assert text.index('"practice.delta"') < text.index("const key = eventSessionKey("), (
+        "practice.delta 必须放在按会话找槽这道门之前处理"
     )
 
 

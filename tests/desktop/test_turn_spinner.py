@@ -124,8 +124,9 @@ def test_session_usage_moved_next_to_the_title() -> None:
 
 
 def test_pending_bubble_owns_the_progress_row() -> None:
-    """加载圈建在「进行中」气泡**内部**（node.body.appendChild(progress)），不是浮层。"""
-    make_pending = APP_JS[APP_JS.index("function makePending()") : APP_JS.index("function paint()")]
+    """加载圈建在「进行中」气泡**内部**（node.body.appendChild(progress)），不是浮层；
+    并且这个气泡挂在**它自己会话的那条流**里（makePending(sessionId)）。"""
+    make_pending = APP_JS[APP_JS.index("function makePending(") : APP_JS.index("function paint()")]
     assert 'progress.className = "msg-progress";' in make_pending
     assert 'progressText.className = "msg-progress-text";' in make_pending
     assert "progress.hidden = true;" in make_pending, "初始必须是 hidden（还没发起一轮）"
@@ -134,42 +135,56 @@ def test_pending_bubble_owns_the_progress_row() -> None:
     assert 'el("messages").appendChild(progress)' not in make_pending, (
         "加载圈不该直接挂到消息流根上（那样会掉出「进行中」气泡）"
     )
+    # 气泡必须落进"这个会话自己的流"（docs/20 第 5 步：串会话的正解）
+    assert 'bubble("assistant", "ScholarScout · 进行中", sessionId)' in make_pending, (
+        "makePending 没把 sessionId 传下去 → 气泡会挂到「此刻显示的那条流」上（老 bug）"
+    )
 
 
 def test_sweep_removes_every_leftover_progress_row() -> None:
-    """兜底清扫：把消息流里**所有** .msg-progress 摘掉（幂等）。"""
+    """兜底清扫：把**这个会话的流里**的 .msg-progress 摘掉（幂等）。
+    只扫自己那条 —— 扫全局会把别的会话正在转的圈也摘掉。"""
     assert "function turnSpinnerSweep(" in API_JS, "缺兜底清扫 turnSpinnerSweep"
     sweep = API_JS[API_JS.index("function turnSpinnerSweep(") :]
     sweep = sweep[: sweep.index("\n}")]
     assert 'querySelectorAll(".msg-progress")' in sweep
     assert "node.remove()" in sweep, "清扫必须是**移除节点**，不是 hidden=true"
+    assert "slot.trace.node.wrap" in sweep, "清扫必须限定在这个会话自己的流里"
 
 
 def test_reset_hides_and_sweeps() -> None:
-    """turnSpinnerReset = 正常路径收 + 兜底清扫，两道一起上。"""
+    """turnSpinnerReset(slot) = 正常路径收 + 兜底清扫，两道一起上。"""
     reset = API_JS[API_JS.index("function turnSpinnerReset(") :]
     reset = reset[: reset.index("\n}")]
-    assert "state.pending.hideProgress()" in reset
-    assert "turnSpinnerSweep()" in reset
+    assert "slot.trace.hideProgress()" in reset
+    assert "turnSpinnerSweep(slot, sessionId)" in reset
 
 
-def test_send_lights_on_start_and_forces_reset_in_finally() -> None:
-    """发起一轮点亮；finally 里**无条件**复位 —— 这是"结束后必消失"的最后一道保险。"""
-    assert 'turnSpinnerUpdate("turn.start")' in APP_JS, "send() 没有在发起一轮时点亮加载圈"
+def test_send_lights_on_start_and_never_leaves_a_permanent_spinner() -> None:
+    """发起一轮点亮；`mode=\"async\"` 下**不能**在 finally 里无条件复位（整轮还在跑），
+    但"永久转圈"这条保险仍然要有：只有这一轮没在跑（发起就失败）时才复位。"""
+    assert 'turnSpinnerUpdate(slot, "turn.start")' in APP_JS, "send() 没有在发起一轮时点亮加载圈"
     send_block = APP_JS[
-        APP_JS.index('const result = await scout.call("chat.send"') : APP_JS.index(
-            "async function stopTurn"
-        )
+        APP_JS.index("async function send(text)") : APP_JS.index("async function loadSessions")
     ]
+    # 闸按会话判，不是全局布尔
+    assert "if (sessionRunning(sessionId))" in send_block
+    # async：整轮结论走 chat.done，收尾在 finishTurn
+    assert 'mode: "async"' in send_block, "send() 没走 chat.send 的 async 模式"
     finally_block = send_block[send_block.rindex("finally {") :]
     finally_block = finally_block[: finally_block.index("\n  }")]
-    assert "turnSpinnerReset()" in finally_block, (
-        "finally 里必须无条件 turnSpinnerReset()，否则后端没回 chat.done 就会永久转圈"
+    assert "if (!slot.running) turnSpinnerReset(slot, sessionId);" in finally_block, (
+        "finally 里必须按「这一轮还在不在跑」决定收不收加载圈："
+        "无条件收会让 async 下的圈提前消失，不收又会在发起就失败时永久转圈"
     )
-    # 顺序不能反：复位要顺着当前这个「进行中」气泡摘节点，所以必须在清 pending 之前
-    assert finally_block.index("turnSpinnerReset()") < finally_block.index(
-        "state.pending = null"
-    ), "turnSpinnerReset() 必须在 state.pending = null 之前调用（否则摘不到那个节点）"
+    # chat.done 那条路径必须真的收圈（否则 async 下永远转），而且**按会话**收
+    finish = APP_JS[APP_JS.index("function finishTurn(") : APP_JS.index("async function send(")]
+    assert "turnSpinnerReset(slot, sessionId);" in finish, (
+        "finishTurn（chat.done）里没有按会话收掉加载圈"
+    )
+    assert finish.index("turnSpinnerReset(slot, sessionId);") < finish.index(
+        "slot.trace = null;"
+    ), "收加载圈必须在 slot.trace 置空**之前**：置空后再收会退回到「当前显示的流」，摘掉别人的圈"
 
 
 def test_update_routes_visible_to_show_and_invisible_to_hide() -> None:
@@ -184,13 +199,18 @@ def test_update_routes_visible_to_show_and_invisible_to_hide() -> None:
 
 
 def test_scout_event_routes_events_into_the_new_handlers() -> None:
-    assert "turnSpinnerUpdate(event.method, p);" in API_JS, "scoutEvent 没把事件喂给加载圈"
-    assert "trace.addToolCall(p)" in API_JS and "trace.addToolResult(p)" in API_JS
-    assert "trace.pushDelta(p.text" in API_JS, "增量没有走分段渲染"
-    # 必须放在 pending 门之后：一轮没在跑就不该动加载圈
-    assert API_JS.index("turnSpinnerUpdate(event.method, p);") > API_JS.index(
-        "const trace = state.pending;"
+    """事件按 session_id 找槽，再喂给那条流的处理器（docs/20 第 5 步）。"""
+    assert "turnSpinnerUpdate(slot, event.method, p);" in API_JS, "scoutEvent 没把事件喂给加载圈"
+    assert "slot.trace.addToolCall(p)" in API_JS and "slot.trace.addToolResult(p)" in API_JS
+    assert "slot.trace.pushDelta(p.text" in API_JS, "增量没有走分段渲染"
+    # 必须先按 session_id 找到槽，再动界面（顺序反了就是"落到此刻显示的那个气泡上"）
+    assert API_JS.index("turnSpinnerUpdate(slot, event.method, p);") > API_JS.index(
+        "const key = eventSessionKey(event.method, p);"
     )
+    # 收尾单独一条：chat.done 走 finishTurn（角标/计数在那里判）
+    assert API_JS.index('if (event.method === "chat.done")') < API_JS.index(
+        "turnSpinnerUpdate(slot, event.method, p);"
+    ), "chat.done 必须在通用分派之前被单独接走"
 
 
 def test_one_tool_row_per_call_and_result_never_adds_a_row() -> None:
@@ -235,8 +255,11 @@ def test_each_round_of_text_gets_its_own_paragraph() -> None:
 
 
 def test_final_answer_lands_in_the_last_round() -> None:
-    """收尾用后端给的**权威全文**落到最后一段 —— 界面与落库必须一致（标记被剥掉等情况）。"""
-    assert "state.pending.setFinal(result.text);" in APP_JS
+    """收尾用后端给的**权威全文**落到最后一段 —— 界面与落库必须一致（标记被剥掉等情况）。
+
+    async 下这句在 `finishTurn`（`chat.done`）里，不在 `send()` 的返回值里。
+    """
+    assert "trace.setFinal(p.text);" in APP_JS
     final = APP_JS[APP_JS.index("setFinal: function (text)") :]
     final = final[: final.index("showProgress: showProgress")]
     assert "roundClosed = true;" in final
@@ -244,8 +267,8 @@ def test_final_answer_lands_in_the_last_round() -> None:
 
 
 def test_stop_turn_falls_back_to_a_flow_notice() -> None:
-    """轮次已收尾时点「停止」→ 落一条会话流提示，**绝不静默丢反馈**（不再借 #hint）。"""
-    assert "else notice(note);" in APP_JS
+    """轮次已收尾时点「停止」→ 落一条**本会话流**里的提示，绝不静默丢反馈（不再借 #hint）。"""
+    assert "else notice(note, sessionId);" in APP_JS
     assert 'el("hint")' not in APP_JS, "还在往发送旁那个已删的 #hint 里写东西"
     assert 'wrap.className = "msg notice";' in API_JS
 

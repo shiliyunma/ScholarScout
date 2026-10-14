@@ -38,8 +38,11 @@ def test_asking_sends_a_real_user_message() -> None:
 
 
 def test_asking_is_blocked_while_a_turn_is_running() -> None:
+    """闸按会话判（docs/20 第 5 步）：读的是**这个会话自己的槽**，不是全局单飞闸。"""
     block = between(APP_JS, "function askArtifact", "function wire()")
-    assert "state.sending" in block
+    assert "sessionRunning(state.sessionId)" in block, (
+        "产物按钮的闸必须按会话判 —— 别的会话在跑不该拦住这里"
+    )
 
 
 def test_quickbar_is_styled() -> None:

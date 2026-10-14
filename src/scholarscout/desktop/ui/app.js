@@ -15,12 +15,24 @@ function renderSessions(items) {
   list.innerHTML = "";
   items.forEach(function (item) {
     const li = document.createElement("li");
+    // 角标按 session_id 找它自己的槽（渲染列表时也要带上，否则刷一次列表角标就没了）
+    li.setAttribute("data-session", item.session_id);
+    const slot = turnSlot(item.session_id, false);
     if (item.session_id === state.sessionId) li.className = "is-active";
     if (item.pinned) li.classList.add("is-pinned");
+    if (slot && slot.unread) li.classList.add("is-unread");
+    // 哪个会话在跑，一眼看得见（每会话自己的进行中状态，不是全局的）
+    if (sessionRunning(item.session_id)) li.classList.add("is-running");
     // 置顶要有可见标记：不然用户点了置顶只看到顺序变了，不知道是不是生效了
     const badge = item.pinned ? '<span class="pin-flag" title="已置顶">顶</span>' : "";
+    const dot =
+      '<span class="unread-dot" title="有新回复"' +
+      (slot && slot.unread ? "" : " hidden") +
+      "></span>" +
+      '<span class="running-dot" title="这一轮正在跑"></span>';
     li.innerHTML =
       badge +
+      dot +
       esc(short(item.title || "未命名会话", 16)) +
       '<span class="meta">' +
       esc(short(item.updated_at || "", 16)) +
@@ -88,21 +100,133 @@ function startRename(item, li) {
 
 /* ------------------------------------------------------------------ 聊天 */
 
+/* ── 每会话一个槽 + 每会话一条消息流（docs/20 §3.3，第 5–6 步）
 
-function renderMessage(message) {
+   用户原话：「在其中一个会话运行时，我想切换到其他会话，会导致本次会话出现异常」。
+   根因是界面只有**全局单飞闸 + 单一进行中槽**：A 在跑时切到 B，A 的事件会写进"此刻挂着的
+   那个气泡"（切走后那个气泡已经不在显示里），B 一旦开跑，A 的收尾就落到 B 的气泡上。
+
+   做法（两件配套的事，缺一不可）：
+     ① `state.turns[session_id]`：**每会话一个**进行中槽（trace / running / turnId / 未读）；
+     ② `state.streams[session_id]`：**每会话一条**消息流容器，切会话只切"哪条在显示"，
+        **不重建、不清屏** —— 进行中的气泡留在它自己那条流里，别的事件也只会写进自己的流。
+   于是"串会话"在结构上不可能：A 的正文物理上不在 B 的那条流里。 */
+
+/** 会话 → 消息流容器（`#messages` 的子节点；同一时刻只有一条带 .is-active）。 */
+function streamBox(sessionId) {
+  const key = String(sessionId || "");
+  if (!key) return el("messages");
+  let entry = state.streams[key];
+  if (!entry) {
+    const node = document.createElement("div");
+    node.className = "msg-stream";
+    node.setAttribute("data-session", key);
+    el("messages").appendChild(node);
+    entry = state.streams[key] = { node: node, rendered: false, pendingHistory: false };
+  }
+  return entry.node;
+}
+
+/** 切到某个会话的流：只动 `.is-active`，**不做任何 DOM 重建**。 */
+function activateStream(sessionId) {
+  const key = String(sessionId || "");
+  const box = el("messages");
+  // index.html 里的占位说明（不是 .msg-stream）在第一次挂流时清掉
+  Array.prototype.slice.call(box.children).forEach(function (child) {
+    if (!child.classList.contains("msg-stream")) child.remove();
+  });
+  /* 顺序不能反：**先建出这条流**，再统一切 `.is-active`。
+     反了的话，首次打开某个会话时它的节点是在切类的循环**之后**才创建的，
+     于是它永远拿不到 `.is-active` → `.msg-stream{display:none}` 让整个消息区空白
+     （真机表现：刚进应用看不到任何消息，再点一次同一个会话才出来）。 */
+  const target = streamBox(key);
+  Object.keys(state.streams).forEach(function (other) {
+    state.streams[other].node.classList.toggle("is-active", other === key);
+  });
+  return target;
+}
+
+/** 每会话一个「进行中」槽（键 = session_id）。create=true 时没有就建。 */
+function turnSlot(sessionId, create) {
+  const key = String(sessionId || "");
+  if (!key) return null;
+  let slot = state.turns[key];
+  if (!slot && create) {
+    slot = state.turns[key] = {
+      turnId: "",
+      messageId: "",
+      trace: null,
+      running: false,
+      unread: false,
+      spinner: null,
+    };
+  }
+  return slot || null;
+}
+
+/** 这个会话自己有没有一轮在跑（别的会话在跑不算）。 */
+function sessionRunning(sessionId) {
+  const slot = state.turns[String(sessionId || "")];
+  return !!(slot && slot.running);
+}
+
+/** 发送钮 / 停止钮跟着**当前显示的这个会话**的槽走。 */
+function syncSendState() {
+  const running = sessionRunning(state.sessionId);
+  el("btn-send").disabled = running;
+  el("btn-stop").hidden = !running;
+  renderRunning();
+}
+
+/** 左栏「这一轮正在跑」标记：从 `state.turns` 现算，**起跑与收尾都刷**。
+    只在列表重渲染时算会让它落后一整轮（真机表现：B 已经开跑，左栏还没标记；
+    探针在"B 也开跑了"那条断言上抓到过）。 */
+function renderRunning() {
+  document.querySelectorAll("#session-list li[data-session]").forEach(function (li) {
+    li.classList.toggle("is-running", sessionRunning(li.getAttribute("data-session")));
+  });
+}
+
+/** 有未读的会话数（读 `state.turns`，不问后端）。 */
+function unreadCount() {
+  return Object.keys(state.turns).filter(function (key) {
+    return state.turns[key].unread === true;
+  }).length;
+}
+
+/** 角标 + 顶栏计数：全部从 `state.turns` 同步算出来，不依赖后端往返。
+    清除时机：切到那个会话（openSession 里清）或点顶栏计数跳过去。 */
+function renderUnread() {
+  document.querySelectorAll("#session-list li[data-session]").forEach(function (li) {
+    const slot = turnSlot(li.getAttribute("data-session"), false);
+    const unread = !!(slot && slot.unread);
+    li.classList.toggle("is-unread", unread);
+    const dot = li.querySelector(".unread-dot");
+    if (dot) dot.hidden = !unread;
+  });
+  const badge = el("unread-count");
+  const count = unreadCount();
+  if (badge) {
+    badge.hidden = count === 0;
+    badge.textContent = count ? count + " 个会话有新回复" : "";
+  }
+  return count;
+}
+
+function renderMessage(message, sessionId) {
   if (message.role === "user") {
-    bubble("user", "你").body.textContent = message.content || "";
+    bubble("user", "你", sessionId).body.textContent = message.content || "";
     return;
   }
   if (message.role === "tool") return; // 工具结果在轨迹里看，不铺在正文
   if (message.role === "assistant" && (message.content || "").trim()) {
-    ScoutMarkdown.renderInto(bubble("assistant", "ScholarScout").body, message.content);
+    ScoutMarkdown.renderInto(bubble("assistant", "ScholarScout", sessionId).body, message.content);
   }
 }
 
 
-function makePending() {
-  const node = bubble("assistant", "ScholarScout · 进行中");
+function makePending(sessionId) {
+  const node = bubble("assistant", "ScholarScout · 进行中", sessionId);
   /* 工具调用信息条：一次调用**一条**（工具名 + 参数摘要 + 结果/状态 + 耗时）。
      多条按发生顺序依次往下排，互不覆盖（见 addToolCall/addToolResult）。 */
   const toolFlow = document.createElement("div");
@@ -288,53 +412,113 @@ function makePending() {
 }
 
 
-async function send(text) {
-  if (state.sending || !state.sessionId) return;
-  state.sending = true;
-  el("btn-send").disabled = true;
-  // 一轮 3–12 分钟，必须能停：后端按下一次「步间检查」生效
-  el("btn-stop").hidden = false;
-  bubble("user", "你").body.textContent = text;
-  state.pending = makePending();
-  // 发起一轮就点亮加载圈（合成事件 "turn.start" —— 后端没有这个事件）。
-  // 之后 chat.tool_call / chat.tool_result / chat.delta / chat.done / chat.error 各自接棒。
-  turnSpinnerUpdate("turn.start");
+/** 一轮收尾（`chat.done`）：**只落进它自己会话的槽**，角标与计数也在这里判。
 
-  try {
-    const result = await scout.call("chat.send", { session_id: state.sessionId, text: text });
-    state.pending.node.wrap.classList.remove("assistant");
+    为什么收尾搬到这里：`chat.send(mode="async")` 立刻返回 `turn_id`、整轮还没结束，
+    最后的权威正文（`text`）与落库消息 id 只有 `chat.done` 带得回来。
+    `chat.done` 的 `session_id` 由 `bind_emitter` 注入（docs/20 §3.1），所以"这一轮的结论
+    属于谁"是**机制保证**，不靠猜。 */
+function finishTurn(sessionId, params) {
+  const p = params || {};
+  const slot = turnSlot(sessionId, true);
+  const trace = slot.trace;
+  if (trace) {
+    trace.node.wrap.classList.remove("assistant");
     // 后端给的是权威全文（可能与流式末次不同）→ 落到最后一段，界面与落库必须一致
-    state.pending.setFinal(result.text);
-    state.pending.finish();
-    state.pending.add(
-      result.stop_reason === "completed" ? "ok" : "warn",
-      "stop_reason=" + result.stop_reason + "｜工具 " + (result.tool_calls || []).length + " 次"
+    trace.setFinal(p.text);
+    trace.finish();
+    // 工具次数从这条流自己的工具行数出来（async 下 chat.done 不带 tool_calls）
+    const rows = trace.node.wrap.querySelectorAll(".tool-row").length;
+    trace.add(
+      p.stop_reason === "completed" ? "ok" : "warn",
+      "stop_reason=" + (p.stop_reason || "unknown") + "｜工具 " + rows + " 次",
     );
-    const usage = result.usage || {};
+    const usage = p.usage || {};
     if (usage.prompt_tokens || usage.completion_tokens) {
       // 把每一轮的真实 token 摆出来 —— 用户抱怨"缓存没效果、账单很高"，界面就该给得出数字
-      state.pending.add(
+      trace.add(
         "ok",
         "token 输入 " + fmtTokens(usage.prompt_tokens) + " ／ 输出 " + fmtTokens(usage.completion_tokens) +
         (usage.cached_tokens ? "（命中缓存 " + fmtTokens(usage.cached_tokens) + "）" : ""),
       );
     }
-    await refreshSide();
-    // 首条消息发出后标题才有值 → 刷一次会话列表，让新标题立刻出现
-    await loadSessions();
-    await refreshSessionUsage();
+    if (p.error) trace.add("bad", "本轮错误：" + p.error);
+  }
+  slot.running = false;
+  /* 收加载圈必须在 `slot.trace` 置空**之前**：它要顺着**这个会话自己的**气泡摘进度行；
+     置空之后再收，清扫就只能退回到"当前显示的那条流"→ 会摘掉**别人**正在转的圈
+     （探针在"A 收尾不该影响 B"上抓到过）。 */
+  turnSpinnerReset(slot, sessionId);
+  slot.trace = null;
+  slot.messageId = p.message_id || "";
+  /* 提醒（应用内那部分）：这一轮不是**当前显示**的会话完成的 → 左栏打角标 + 顶栏计数。
+     切过去或点顶栏计数即清除（清除在 openSession / 计数按钮里）。 */
+  slot.unread = unreadFromDone(sessionId, state.sessionId, slot.unread);
+  renderUnread();
+  syncSendState();
+  refreshSessionUsage();
+  // 列表里的消息条数变了 → 刷一次（刷不动也不影响这一轮的收尾）
+  loadSessions().catch(function () {
+    /* 后端不可用时列表不刷新，界面仍停在已收尾的状态 */
+  });
+  const entry = state.streams[String(sessionId)];
+  if (entry && entry.pendingHistory && sessionId === state.sessionId) {
+    // 极端时序（历史还没渲染完就又发了一轮）：轮次已收尾，这时重绘历史不会再抹掉进行中气泡
+    entry.pendingHistory = false;
+    renderHistory(sessionId).catch(function () {
+      /* 重绘失败就保留现场 */
+    });
+  }
+}
+
+
+async function send(text) {
+  const sessionId = state.sessionId;
+  if (!sessionId) return;
+  /* 闸**按会话判**：只拦"这个会话自己在跑"。
+     原来是全局单飞闸（全应用一份布尔）→ A 在跑时 B 的发送被静默丢掉，
+     这就是用户看到的第一个症状（切到别的会话发不出去）。 */
+  if (sessionRunning(sessionId)) {
+    notice("这个会话已经有一轮在跑：等它结束或点「停止」。想同时干活，切到别的会话另起一轮。", sessionId);
+    return;
+  }
+  const slot = turnSlot(sessionId, true);
+  slot.unread = false;
+  slot.messageId = "";
+  bubble("user", "你", sessionId).body.textContent = text;
+  slot.trace = makePending(sessionId);
+  slot.running = true;
+  slot.spinner = null;
+  // 发起一轮就点亮加载圈（合成事件 "turn.start" —— 后端没有这个事件）。
+  // 之后 chat.tool_call / chat.tool_result / chat.delta / chat.done / chat.error 各自接棒。
+  turnSpinnerUpdate(slot, "turn.start");
+  syncSendState();
+  renderUnread();
+
+  try {
+    /* `mode="async"`：**立即**返回 `turn_id`，不再阻塞整轮（一轮 3–12 分钟）——
+       于是 A 在跑时能立刻切到 B 发问。收尾走 chat.done → finishTurn()。
+       后端仍然同会话不许两轮并行，且上限 3 个会话（拒绝时这里抛错，如实落进本会话的流）。 */
+    const accepted = await scout.call("chat.send", {
+      session_id: sessionId,
+      text: text,
+      mode: "async",
+    });
+    slot.turnId = accepted && accepted.turn_id ? String(accepted.turn_id) : "";
+    refreshSide().catch(function () {
+      /* 右侧面板刷不动不影响这一轮 */
+    });
   } catch (error) {
-    state.pending.add("bad", "调用失败：" + error.message);
-    state.pending.node.wrap.classList.add("error");
-    await refreshSessionUsage();
+    // 本轮根本没跑起来（turn_in_progress / at_capacity / 缺 key）→ 落在**本会话**的流里
+    slot.running = false;
+    slot.trace.add("bad", "调用失败：" + error.message);
+    slot.trace.node.wrap.classList.add("error");
+    el("status").textContent = "本轮未发出：" + error.message;
   } finally {
-    // 无条件收掉加载圈：轮次结束了它必须消失（chat.done 没收到也要收 —— 防永久转圈）。
-    // 必须在清 state.pending **之前**调：复位要顺着当前这个「进行中」气泡摘节点。
-    turnSpinnerReset();
-    state.pending = null;
-    state.sending = false;
-    el("btn-send").disabled = false;
-    el("btn-stop").hidden = true;
+    /* async 下**不能**在这里无条件复位加载圈：整轮还在跑（收尾在 finishTurn）。
+       只有"这一轮没在跑"（发起就失败）时才收 —— 防"永久转圈"这条保险仍然成立。 */
+    if (!slot.running) turnSpinnerReset(slot, sessionId);
+    syncSendState();
   }
 }
 
@@ -355,9 +539,16 @@ async function newSession() {
   // 不要传 title：让后端在首条用户消息到来时自动命名（传了占位标题就永远轮不到自动命名）
   const created = await scout.call("session.create", {});
   state.sessionId = created.session_id;
-  el("messages").innerHTML =
-    '<p class="empty">新会话已建好（标题会在你发出第一句后自动生成）。试试：「帮我找教育智能体方向的入门资料」</p>';
+  const stream = activateStream(created.session_id);
+  // 新会话历史本来就是空的：标成"已渲染"，后面切回来不会清屏重绘
+  state.streams[String(created.session_id)].rendered = true;
+  const empty = document.createElement("p");
+  empty.className = "empty";
+  empty.textContent = "新会话已建好（标题会在你发出第一句后自动生成）。试试：「帮我找教育智能体方向的入门资料」";
+  stream.appendChild(empty);
   await loadSessions();
+  renderUnread();
+  syncSendState();
 }
 
 
@@ -387,19 +578,52 @@ function collectRefs(messages) {
 }
 
 
-async function openSession(sessionId) {
-  state.sessionId = sessionId;
-  const payload = await scout.call("session.messages", { session_id: sessionId, limit: 200 });
+/** 把一个会话的历史从库里渲染进它自己的流（**只做一次**）。
+    之后这个会话的消息都靠事件直接写进这条流 —— 再清屏重绘会把**进行中气泡**抹掉，
+    而那正是用户报的"切会话出异常"的老根源。 */
+async function renderHistory(sessionId) {
+  const key = String(sessionId);
+  const stream = streamBox(key);
+  const payload = await scout.call("session.messages", { session_id: key, limit: 200 });
   const items = payload.items || [];
-  el("messages").innerHTML = "";
-  items.forEach(renderMessage);
+  stream.innerHTML = "";
+  items.forEach(function (message) {
+    renderMessage(message, key);
+  });
   if (!items.length) {
-    el("messages").innerHTML = '<p class="empty">这个会话还没有消息。</p>';
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "这个会话还没有消息。";
+    stream.appendChild(empty);
   }
+  const entry = state.streams[key];
+  if (entry) entry.rendered = true;
   const refs = collectRefs(items);
   await renderRoutes(refs.route_ids || []);
+}
+
+
+async function openSession(sessionId) {
+  state.sessionId = sessionId;
+  const slot = turnSlot(sessionId, false);
+  // 切到它 = 看过了 → 角标与计数即清
+  if (slot) slot.unread = false;
+  /* 切流：只换"哪条在显示"，**不重建**。A 的进行中气泡留在它自己那条流里，
+     切回来时连同已经收到的工具条目/正文一起原样在那（这就是"切会话不丢也不混"）。 */
+  activateStream(sessionId);
+  const entry = state.streams[String(sessionId)];
+  if (entry && !entry.rendered) {
+    if (slot && slot.trace) {
+      // 这一轮已经在跑、历史还没渲染过：**不能**此刻重绘（会抹掉进行中气泡）
+      entry.pendingHistory = true;
+    } else {
+      await renderHistory(sessionId);
+    }
+  }
   await loadSessions();
+  renderUnread();
   await refreshSessionUsage();  // 累计用量跟着会话走，不是全局
+  syncSendState();
 }
 
 /* -------------------------------------------------------------- 资料库 */
@@ -589,8 +813,9 @@ async function deleteSession(item) {
 function askArtifact(kind) {
   var text = ASK_TEXTS[kind];
   if (!text) return;
-  if (state.sending) {
-    el("status").textContent = "上一轮还没结束，等它跑完再点";
+  // 闸按会话判（原来读全局单飞闸：别的会话在跑会把这里也拦住）
+  if (sessionRunning(state.sessionId)) {
+    el("status").textContent = "本会话有一轮还没结束，等它跑完再点";
     return;
   }
   send(text);
@@ -646,7 +871,11 @@ function wire() {
 
   el("composer").addEventListener("submit", function (event) {
     event.preventDefault();
-    if (state.sending) return;  // 上一轮没跑完别叠加（后端也会拦，但界面该先拦住）
+    // 只拦"这个会话自己在跑"（后端也会拦同会话两轮，界面该先拦住）
+    if (sessionRunning(state.sessionId)) {
+      notice("这个会话已经有一轮在跑：等它结束或点「停止」（别的会话不受影响）。", state.sessionId);
+      return;
+    }
     const input = el("input");
     const text = input.value.trim();
     if (!text) return;
@@ -655,6 +884,13 @@ function wire() {
   });
 
   el("btn-stop").addEventListener("click", stopTurn);
+  // 顶栏计数：点它跳到第一个有新回复的会话（跳过去即清除角标）
+  el("unread-count").addEventListener("click", function () {
+    const key = Object.keys(state.turns).filter(function (sessionId) {
+      return state.turns[sessionId].unread === true;
+    })[0];
+    if (key) openSession(key);
+  });
 
   // 抽背「练」模式：开始 / 关闭 / 看答案，以及键盘 1/2/3（会了/模糊/不会 的顺序见按钮）
   el("btn-practice").addEventListener("click", function () {
@@ -722,11 +958,17 @@ function wire() {
 
 var state = {
   sessionId: null,
-  sending: false,
+  /*: 每会话一个「进行中」槽（键 = session_id，docs/20 §3.3）：
+      `{ turnId, messageId, trace, running, unread, spinner }`。
+      **没有全局单飞闸、没有单一进行中槽**了 —— A 在跑时切到 B，A 的事件仍然只落进 A 的槽。
+      （这两个老坑的名字已从代码里消失，回归即为 bug，测试按名字钉着。） */
+  turns: {},
+  /*: 每会话一条消息流容器：`{ [session_id]: { node, rendered, pendingHistory } }`。
+      切会话只切"哪条在显示"，绝不重建 —— 进行中气泡留在它自己那条流里。 */
+  streams: {},
   routes: [],
   cards: [],
   practice: null,
-  pending: null,
   theme: "auto",
   history: false,
   noteKind: "note",
@@ -829,21 +1071,38 @@ async function refreshSessionUsage() {
 }
 
 
-// 「停止」：按会话取消（整轮结束前拿不到 turn_id），并如实说明生效时机
+// 「停止」：**只取消当前显示的这个会话**（按 session_id 传，后端按会话找它那一轮的取消 Event）。
+// 别的会话在跑不受影响；这个会话没有在跑的轮次时如实说（并且提示还有谁在跑）。
+// 生效时机照旧如实写：**步间检查** —— 当前这一步结束后才停。
 async function stopTurn() {
-  if (!state.sessionId) return;
+  const sessionId = state.sessionId;
+  if (!sessionId) return;
   const button = el("btn-stop");
   button.disabled = true;
   try {
-    const result = await scout.call("chat.cancel", { session_id: state.sessionId });
-    const note = result && result.note ? result.note : "已请求取消";
-    if (state.pending) state.pending.add(result && result.ok ? "warn" : "bad", note);
+    const result = await scout.call("chat.cancel", { session_id: sessionId });
+    const ok = !!(result && result.ok);
+    const note = (result && result.note) || (ok ? "已请求取消" : "这个会话没有在跑的轮次");
+    const slot = turnSlot(sessionId, false);
+    if (ok && slot && slot.trace) slot.trace.add("warn", note);
     // 这一轮已经收尾（没有「进行中」气泡可挂）就落一条会话流提示 —— 绝不静默丢掉反馈
-    else notice(note);
+    else notice(note, sessionId);
+    if (!ok) {
+      const others = Object.keys(state.turns).filter(function (other) {
+        return sessionRunning(other) && other !== sessionId;
+      });
+      if (others.length) {
+        el("status").textContent =
+          "「停止」只停当前会话；另外还有 " + others.length + " 个会话在跑（分别切过去停）。";
+      }
+    }
   } catch (error) {
-    if (state.pending) state.pending.add("bad", "取消失败：" + error.message);
+    const slot = turnSlot(sessionId, false);
+    if (slot && slot.trace) slot.trace.add("bad", "取消失败：" + error.message);
+    else notice("取消失败：" + error.message, sessionId);
   } finally {
     button.disabled = false;
+    syncSendState();
   }
 }
 

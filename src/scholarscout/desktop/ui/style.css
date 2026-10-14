@@ -7148,3 +7148,80 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 
 
+
+/* ─────────────────────────── ④ 每会话一条消息流 + 未读角标 / 顶栏计数（docs/20 第 5-6 步）
+
+   用户在 A 会话跑着的时候切到 B，界面原来只有一个"进行中槽"（挂在当前显示的气泡上）→
+   A 的收尾会落到 B 的气泡里。现在**每个会话一条消息流容器**：切会话只切"哪条在显示"，
+   同一时刻只有一条 .is-active，其余 display:none（不占空间、不参与滚动）。
+   .msg-stream 自己复刻 #messages 的 12px 段间距 —— 包一层之后气泡间距一个像素都不许变。 */
+.msg-stream {
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+}
+.msg-stream.is-active {
+  display: flex;
+}
+
+/* 会话行上的未读角标：一个低调的小圆点（用户要的"提醒"的应用内部分，切过去即清）。
+   必须显式写 [hidden] —— 类选择器上的 display 会压掉 UA 给 [hidden] 的 display:none。 */
+.unread-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 999px;
+  vertical-align: middle;
+  background: var(--ui-accent);
+}
+.unread-dot[hidden] {
+  display: none;
+}
+#session-list li.is-unread {
+  color: var(--ui-text-primary);
+  font-weight: 600;
+}
+
+/* 「这个会话自己有一轮在跑」的标记（每会话状态，不是全局的） */
+.running-dot {
+  display: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 999px;
+  vertical-align: middle;
+  background: var(--ui-text-tertiary);
+  animation: scout-running-pulse 1.4s ease-in-out infinite;
+}
+#session-list li.is-running .running-dot {
+  display: inline-block;
+}
+@keyframes scout-running-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+#session-list li.is-running .running-dot[hidden] {
+  display: none;
+}
+
+/* 顶栏计数：点它跳到第一个有新回复的会话（跳过去即清除角标）。
+   比顶栏其它按钮矮一点，避免把顶栏撑高。 */
+.unread-count {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  color: var(--ui-text-secondary);
+  background: var(--ui-bg-elevated);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.unread-count:hover {
+  color: var(--ui-text-primary);
+  border-color: var(--ui-stroke-primary);
+}
+.unread-count[hidden] {
+  display: none;
+}
