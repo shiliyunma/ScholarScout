@@ -43,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="飞书接入向导（逐步问答；密钥只写 .env 不回显；见 docs/18）",
     )
+    parser.add_argument(
+        "--channel",
+        default=None,
+        metavar="PLATFORM",
+        help="渠道子进程（supervisor 拉起；本轮只支持 feishu；见 docs/21 §4）",
+    )
     parser.add_argument("--db", default=None, help="数据库路径，默认 run/state.db")
     parser.add_argument("--toolsets", default="research", help="逗号分隔的工具集，默认 research")
     return parser
@@ -91,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             args.desktop,
             args.check_ui,
             args.setup_feishu,
+            args.channel,
         )
     ):
         args.desktop = True
@@ -111,6 +118,12 @@ def main(argv: list[str] | None = None) -> int:
         from scholarscout.desktop import assets
 
         return assets.main()
+
+    if args.channel:
+        # 渠道子进程（由 channels/supervisor.py 拉起）：只当 RPC 客户端、不自己开库（docs/21 §4）
+        from scholarscout.channels import runner
+
+        return runner.main([str(args.channel)])
 
     if args.rpc:
         from scholarscout.app import build_context

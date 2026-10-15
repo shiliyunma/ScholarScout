@@ -32,6 +32,8 @@ NOTIFICATION_METHODS = (
     "practice.delta",
     # 会话标题在轮次开始前就定下来（用户一发送就能看到名字）
     "session.updated",
+    # 渠道中心（docs/21 §5.1）：渠道子进程的起停/连接状态变化 → 界面状态点随它变
+    "channel.state",
 )
 
 

@@ -469,6 +469,511 @@ function feishuButton(parent, label, handler) {
 }
 
 
+/* ==========================================================================
+   渠道中心卡片（docs/21 §3 第 1/2/3/7 项 + §5.1 的 `channel.*` 接口）
+
+   为什么单独一张卡而不是把飞书卡改大：`channel.*` 是**把 platform 提成参数**的统一命名空间
+   （docs/21 §5.1），卡片形状与平台无关（§7 的三平台同构骨架）；飞书那张卡保留原样，
+   老调用方与老测试一行都不用改。落在**现有设置浮层**里（`#settings-body`），不新增浮层。
+
+   四条硬约定（与后端同一套，见 docs/21 §5.2/§6）：
+   ① 凭据**只写不回读**：界面只显示「已配置 ｜ 尾 4 位」，输入框是 `type=password`
+      且保存后**立即清空**；
+   ② 没在跑时点「停止」显示「当前未运行」，**不假装成功**；
+   ③ 引导清单的每一勾由后端 `channel.guide` 探测决定，探不到就如实显示未完成；
+   ④ 自动建应用的链接由飞书服务端签发（`verification_uri_complete`），本项目**不伪造**；
+      成功后的 App Secret 由后端直接落 `.env`，界面永远拿不到它。
+   ========================================================================== */
+
+/*: 渠道状态 → 状态点颜色（**只用本设计真实存在的 `--ui-*` 令牌**） */
+var CHANNEL_DOT = {
+  running: "--ui-green",
+  starting: "--ui-yellow",
+  error: "--ui-red",
+  stopped: "--ui-text-tertiary"
+};
+/*: 渠道状态的中文（不认识的取值照实显示原值，不猜） */
+var CHANNEL_STATE_LABELS = {
+  stopped: "已停止",
+  starting: "启动中",
+  running: "运行中",
+  error: "错误"
+};
+/*: 平台显示名（后端 `channel.status` 会回 `label`，这里只作兜底） */
+var CHANNEL_LABELS = { feishu: "飞书" };
+/*: 单次设备码轮询窗口（秒）。**必须小于桌面传输层 180s 的默认等待上限** ——
+   超了会把「人还没点确认」误判成「调用失败」。 */
+var CHANNEL_ONBOARD_WINDOW = 60;
+/*: 短密钥的脱敏尾号占位（与后端 `rpc/channel.py::_tail` 同一口径，别在界面里补齐成 4 位） */
+var CHANNEL_TAIL_HIDDEN = "****";
+
+/*: 正在进行的「自动创建应用」：{device_code, interval, deadline}；为 null = 没在跑 */
+var channelOnboard = null;
+var channelOnboardTimer = null;
+
+
+function channelClearOnboard() {
+  if (channelOnboardTimer) {
+    clearTimeout(channelOnboardTimer);
+    channelOnboardTimer = null;
+  }
+  channelOnboard = null;
+}
+
+
+function channelDot(state) {
+  var dot = document.createElement("span");
+  dot.className = "channel-dot";
+  dot.style.background = "var(" + (CHANNEL_DOT[state] || "--ui-text-tertiary") + ")";
+  dot.title = CHANNEL_STATE_LABELS[state] || String(state || "");
+  return dot;
+}
+
+
+function channelLine(label, value, kind) {
+  var row = document.createElement("div");
+  row.className = "channel-line";
+  var name = document.createElement("span");
+  name.textContent = label;
+  var val = document.createElement("span");
+  val.className = "channel-value" + (kind ? " is-" + kind : "");
+  val.textContent = value;
+  row.appendChild(name);
+  row.appendChild(val);
+  return row;
+}
+
+
+function channelButton(parent, label, handler) {
+  var button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.textContent = label;
+  button.addEventListener("click", function () {
+    Promise.resolve(handler()).catch(function (error) {
+      el("settings-note").textContent = "渠道操作失败：" + error.message;
+    });
+  });
+  parent.appendChild(button);
+  return button;
+}
+
+
+function channelAgo(iso) {
+  /* 把 ISO 时间戳翻成「多久以前」。读不到就说「还没收到过消息」，不编一个时间。 */
+  if (!iso) return "还没收到过消息";
+  var ts = Date.parse(iso);
+  if (isNaN(ts)) return String(iso);
+  var seconds = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (seconds < 60) return seconds + " 秒前";
+  if (seconds < 3600) return Math.round(seconds / 60) + " 分钟前";
+  if (seconds < 86400) return Math.round(seconds / 3600) + " 小时前";
+  return Math.round(seconds / 86400) + " 天前";
+}
+
+
+function channelSecretText(credentials) {
+  /* 凭据的**只读文案**：只有「已配置／未配置」与脱敏尾号，任何密钥值都不许进来。 */
+  if (!credentials || !credentials.secret_set) return "未配置";
+  var tail = String(credentials.tail || "");
+  if (!tail || tail === CHANNEL_TAIL_HIDDEN) return "已配置";
+  return "已配置 " + CHANNEL_TAIL_HIDDEN + tail;
+}
+
+
+async function renderChannelCard(body) {
+  channelClearOnboard();
+  var group = document.createElement("div");
+  group.className = "set-group channel-card";
+  var head = document.createElement("h4");
+  head.textContent = "渠道（channel.*）";
+  group.appendChild(head);
+  group.appendChild(
+    plainHint(
+      "渠道跑在**独立子进程**里：关掉窗口也继续收消息，崩了不影响界面。" +
+        "凭据只写 `.env`（原子写），这里**只显示「已配置／尾号」**，任何密钥值都不回显；" +
+        "「停止」在没在跑时会明确告诉你「当前未运行」。",
+    ),
+  );
+
+  var headRow = document.createElement("div");
+  headRow.className = "channel-head";
+  group.appendChild(headRow);
+
+  var credBox = document.createElement("div");
+  credBox.className = "channel-cred";
+  group.appendChild(credBox);
+
+  var connBox = document.createElement("div");
+  connBox.className = "channel-conn";
+  group.appendChild(connBox);
+
+  var guideBox = document.createElement("div");
+  guideBox.className = "channel-guide";
+  group.appendChild(guideBox);
+
+  var probeOut = document.createElement("p");
+  probeOut.className = "hint channel-probe-out";
+
+  var appIdInput = document.createElement("input");
+  appIdInput.type = "password";
+  appIdInput.placeholder = "App ID（cli_…，只写不回读）";
+  appIdInput.autocomplete = "off";
+  var secretInput = document.createElement("input");
+  secretInput.type = "password";
+  secretInput.placeholder = "App Secret（只写不回读）";
+  secretInput.autocomplete = "off";
+
+  var onboardBox = document.createElement("div");
+  onboardBox.className = "channel-onboard";
+  group.appendChild(onboardBox);
+  var onboardOut = document.createElement("p");
+  onboardOut.className = "hint channel-onboard-out";
+
+  body.appendChild(group);
+
+  async function saveCredentials() {
+    var fields = {};
+    var appId = String(appIdInput.value || "").trim();
+    var secret = String(secretInput.value || "").trim();
+    /* 空串在后端 = 清除，所以要保存就**只提交填了的字段**（否则会顺手清掉另一个）。 */
+    if (appId) fields.app_id = appId;
+    if (secret) fields.app_secret = secret;
+    if (!Object.keys(fields).length) {
+      el("settings-note").textContent = "没有要保存的内容（要清除凭据请点「清除凭据」）";
+      return;
+    }
+    try {
+      var result = await scout.call("channel.set_credentials", {
+        platform: "feishu",
+        fields: fields
+      });
+      appIdInput.value = "";
+      secretInput.value = ""; // 保存后立即清空：绝不把密钥留在界面里
+      el("settings-note").textContent =
+        "已写入 .env：" +
+        (result.written || []).join("、") +
+        "（值不回读、不回显）" +
+        (result.restart_required ? "；渠道正在跑，改完请点「停止」再「启动」" : "");
+      await refresh();
+    } catch (error) {
+      el("settings-note").textContent = "保存失败：" + error.message;
+    }
+  }
+
+  async function clearCredentials() {
+    try {
+      var result = await scout.call("channel.set_credentials", {
+        platform: "feishu",
+        fields: { app_id: "", app_secret: "" }
+      });
+      el("settings-note").textContent =
+        "已清除 " + (result.cleared || []).join("、") + "（`.env` 里连键名一起删掉）";
+      await refresh();
+    } catch (error) {
+      el("settings-note").textContent = "清除失败：" + error.message;
+    }
+  }
+
+  async function startChannel() {
+    try {
+      var result = await scout.call("channel.start", { platform: "feishu" });
+      el("settings-note").textContent =
+        result.note === "already_running"
+          ? "渠道已经在跑（pid " + result.pid + "）—— 不会起第二个实例"
+          : "已起渠道子进程（pid " +
+            result.pid +
+            "）：关掉窗口它也会继续收消息。日志：" +
+            result.log_path;
+      await refresh();
+    } catch (error) {
+      el("settings-note").textContent = "启动失败：" + error.message;
+    }
+  }
+
+  async function stopChannel() {
+    try {
+      var result = await scout.call("channel.stop", { platform: "feishu" });
+      if (!result.ok) {
+        /* 铁律：没在跑就说没在跑，不假装成功 */
+        el("settings-note").textContent =
+          result.reason === "not_running"
+            ? "当前未运行（没有可停的渠道进程）"
+            : "停止失败：" + (result.note || result.reason || "未知原因");
+      } else {
+        el("settings-note").textContent = "已停止渠道子进程（pid " + result.pid + "）";
+      }
+      await refresh();
+    } catch (error) {
+      el("settings-note").textContent = "停止失败：" + error.message;
+    }
+  }
+
+  async function selfCheck() {
+    probeOut.textContent = "正在联网自检（只探测，不发消息）…";
+    try {
+      var result = await scout.call("channel.test", { platform: "feishu", mode: "probe" });
+      probeOut.textContent = result.ok
+        ? "自检通过：机器人名 " +
+          result.bot_name +
+          "（耗时 " +
+          result.latency_ms +
+          " ms；token 值不回传）"
+        : "自检未通过：" + (result.error || "未知原因");
+    } catch (error) {
+      probeOut.textContent = "自检失败：" + error.message;
+    }
+  }
+
+  function paintStatus(status) {
+    headRow.textContent = "";
+    headRow.appendChild(channelDot(status.state));
+    var name = document.createElement("strong");
+    name.textContent = status.label || CHANNEL_LABELS[status.platform] || status.platform;
+    headRow.appendChild(name);
+    var stateText = document.createElement("span");
+    stateText.className = "hint channel-state";
+    stateText.textContent = CHANNEL_STATE_LABELS[status.state] || String(status.state || "");
+    headRow.appendChild(stateText);
+    var actions = document.createElement("div");
+    actions.className = "set-seg channel-actions";
+    channelButton(actions, "启动", startChannel);
+    channelButton(actions, "停止", stopChannel);
+    channelButton(actions, "自检", selfCheck);
+    headRow.appendChild(actions);
+
+    var cred = status.credentials || {};
+    var ok = cred.app_id_set && cred.secret_set;
+    credBox.textContent = "";
+    credBox.appendChild(
+      channelLine(
+        "凭据",
+        "App ID " +
+          (cred.app_id_set ? "已配置" : "未配置") +
+          " ｜ App Secret " +
+          channelSecretText(cred),
+        ok ? "ok" : "off",
+      ),
+    );
+    var inputs = document.createElement("div");
+    inputs.className = "channel-inputs";
+    inputs.appendChild(appIdInput);
+    inputs.appendChild(secretInput);
+    var clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "ghost";
+    clearBtn.textContent = "清除凭据";
+    clearBtn.addEventListener("click", clearCredentials);
+    var credActions = document.createElement("div");
+    credActions.className = "set-seg";
+    channelButton(credActions, "保存凭据", saveCredentials);
+    credActions.appendChild(clearBtn);
+    credBox.appendChild(inputs);
+    credBox.appendChild(credActions);
+
+    connBox.textContent = "";
+    connBox.appendChild(
+      channelLine(
+        "连接",
+        status.connected
+          ? "长连已建立"
+          : status.state === "running"
+            ? "进程在跑，但长连还没建立"
+            : "未连接",
+        status.connected ? "ok" : "off",
+      ),
+    );
+    connBox.appendChild(channelLine("重连次数", String(status.reconnects || 0)));
+    connBox.appendChild(
+      channelLine(
+        "最后一条消息",
+        channelAgo(status.last_message_at) +
+          (status.last_message_from ? "（来自 " + status.last_message_from + "）" : ""),
+      ),
+    );
+    connBox.appendChild(
+      channelLine(
+        "最后一次错误",
+        status.last_error ? String(status.last_error) : "无",
+        status.last_error ? "bad" : "",
+      ),
+    );
+    connBox.appendChild(
+      channelLine(
+        "渠道进程",
+        status.pid ? "pid " + status.pid + "（日志 " + status.log_path + "）" : "未运行",
+      ),
+    );
+    if (!status.sdk_ready) {
+      connBox.appendChild(
+        channelLine("长连接 SDK", status.sdk_detail || "未就绪", "bad"),
+      );
+    }
+    connBox.appendChild(
+      channelLine(
+        "平台硬限",
+        "重置 App Secret 没有 API（只能人工重置）；开机器人能力 / 勾事件 / 发布都要在后台点",
+      ),
+    );
+    connBox.appendChild(probeOut);
+  }
+
+  function paintGuide(guide) {
+    guideBox.textContent = "";
+    guideBox.appendChild(
+      plainHint("接入清单（每一步的完成状态由后端 channel.guide 探测，探不到就如实显示未完成）："),
+    );
+    (guide.steps || []).forEach(function (step) {
+      var row = document.createElement("div");
+      row.className = "channel-step";
+      var mark = document.createElement("span");
+      mark.className = "channel-step-mark";
+      mark.textContent = step.done ? "✅" : "⬜";
+      row.appendChild(mark);
+      var text = document.createElement("div");
+      text.className = "channel-step-text";
+      var title = document.createElement("div");
+      title.textContent = step.title;
+      text.appendChild(title);
+      var detail = document.createElement("div");
+      detail.className = "hint";
+      detail.textContent = step.detail;
+      text.appendChild(detail);
+      row.appendChild(text);
+      if (step.deeplink) {
+        var open = document.createElement("button");
+        open.type = "button";
+        open.className = "ghost channel-deeplink";
+        open.textContent = "打开后台";
+        open.addEventListener("click", function () {
+          openExternalUrl(step.deeplink);
+        });
+        row.appendChild(open);
+      }
+      guideBox.appendChild(row);
+    });
+    if ((guide.blockers || []).length) {
+      var list = document.createElement("ul");
+      list.className = "list channel-blockers";
+      guide.blockers.forEach(function (item) {
+        var li = document.createElement("li");
+        li.textContent = item;
+        list.appendChild(li);
+      });
+      guideBox.appendChild(list);
+    }
+  }
+
+  function paintOnboardIdle() {
+    onboardBox.textContent = "";
+    onboardBox.appendChild(
+      plainHint(
+        "也可以点下面这个让**飞书签发凭据**（设备码流程）：链接由飞书服务端生成，" +
+          "你在飞书里点一下确认，拿到凭据后自动写进 `.env`（App Secret 只写不回读）。",
+      ),
+    );
+    var actions = document.createElement("div");
+    actions.className = "set-seg";
+    channelButton(actions, "自动创建应用", beginOnboard);
+    onboardBox.appendChild(actions);
+    onboardBox.appendChild(onboardOut);
+  }
+
+  async function beginOnboard() {
+    channelClearOnboard();
+    onboardOut.textContent = "正在向飞书申请设备码…";
+    var begin;
+    try {
+      begin = await scout.call("feishu.onboard.begin", { platform: "feishu" });
+    } catch (error) {
+      onboardOut.textContent = "发起自动创建失败：" + error.message + "（可以走上面的手工清单）";
+      return;
+    }
+    onboardOut.textContent = "请在飞书里打开这条链接并点「确认」（链接由飞书签发，本项目不伪造）：";
+    var link = document.createElement("a");
+    link.className = "channel-link";
+    link.href = "#";
+    link.textContent = begin.qr_url;
+    link.addEventListener("click", function (event) {
+      event.preventDefault(); // 点链接不许把整个界面顶掉（走桥接的 webbrowser.open）
+      openExternalUrl(begin.qr_url);
+    });
+    onboardOut.appendChild(link);
+    var state = {
+      device_code: begin.device_code,
+      interval: Math.max(1, Number(begin.interval || 5)),
+      deadline: Date.now() + Math.max(60, Number(begin.expire_in || 600)) * 1000
+    };
+    channelOnboard = state;
+    channelOnboardTimer = setTimeout(pollOnboard, 0);
+  }
+
+  function scheduleOnboard(state) {
+    channelOnboardTimer = setTimeout(pollOnboard, state.interval * 1000);
+  }
+
+  async function pollOnboard() {
+    var state = channelOnboard;
+    if (!state) return;
+    var result;
+    try {
+      /* 一次调用只等一个短窗口（< 传输层 180s 上限），没完成就下一轮 —— 免得「人还没点」
+         被当成「调用失败」。总时长由飞书给的 expire_in 兜住。 */
+      result = await scout.call("feishu.onboard.poll", {
+        platform: "feishu",
+        device_code: state.device_code,
+        interval: state.interval,
+        expire_in: CHANNEL_ONBOARD_WINDOW
+      });
+    } catch (error) {
+      channelClearOnboard();
+      onboardOut.textContent = "轮询失败：" + error.message + "（可重试，或走手工清单）";
+      return;
+    }
+    if (channelOnboard !== state) return; // 期间被取消/重开：丢掉这次结果
+    if (result.ok) {
+      channelClearOnboard();
+      onboardOut.textContent =
+        "已自动创建并写入 .env：app_id " +
+        result.app_id +
+        "（App Secret 只写不回读，界面只显示「已配置」）";
+      el("settings-note").textContent = "自动创建完成：凭据已写进 .env，卡片已刷新";
+      await refresh();
+      return;
+    }
+    if (Date.now() >= state.deadline) {
+      channelClearOnboard();
+      onboardOut.textContent =
+        "创建未在有效期内完成（" + (result.reason || "超时") + "）—— 可重试或走手工清单";
+      return;
+    }
+    scheduleOnboard(state);
+  }
+
+  async function refresh() {
+    var status;
+    try {
+      status = await scout.call("channel.status", { platform: "feishu" });
+    } catch (error) {
+      headRow.textContent = "读不到渠道状态：" + error.message;
+      return;
+    }
+    paintStatus(status);
+    var guide;
+    try {
+      guide = await scout.call("channel.guide", { platform: "feishu" });
+    } catch (error) {
+      guideBox.textContent = "读不到接入清单：" + error.message;
+      return;
+    }
+    paintGuide(guide);
+  }
+
+  paintOnboardIdle();
+  await refresh();
+}
+
+
 async function renderFeishuCard(body) {
   feishuClearTimer();
   feishuPair = null; // 明文码只在此刻可见：重开设置面板就不再显示旧的
@@ -792,6 +1297,9 @@ async function openSettings() {
 
   // 飞书接入卡片（凭据有无 / 渠道开关 / 当前策略 / 配对码与倒计时 / 「获取我的 id」引导 / 自检）
   await renderFeishuCard(body);
+
+  // 渠道中心卡片（channel.* 统一命名空间：启停 / 凭据只写不回读 / 连接状态 / 接入清单 / 自动建应用）
+  await renderChannelCard(body);
 
   // MinerU：开关开着但没配 token —— 现在**不是错误**（扫描版走免 Token 的预签名直传也能用），
   // 但要说清能力边界：免 Token 的 Agent 通道限 ≤10MB / ≤20 页，更大或要更高精度才需要 Token。

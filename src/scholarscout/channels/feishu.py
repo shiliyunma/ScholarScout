@@ -33,9 +33,9 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
-from scholarscout.rpc.methods import AppContext, dispatch
+from scholarscout.rpc.registry import dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,24 @@ logger = logging.getLogger(__name__)
 RECEIVE_EVENT = "im.message.receive_v1"
 
 Sender = Callable[[str, str], dict[str, Any]]
-Dispatcher = Callable[[AppContext, str, Any], Any]
+
+#: 渠道层认上下文为**不透明对象**：`FeishuMessageHandler` 一个 ctx 字段都不读，只把它原样递给
+#: `dispatcher`。主进程给的是 `rpc.registry.AppContext`，渠道子进程给的是
+#: `channels.remote.RemoteContext`（没有 db/llm/http，且**刻意**不是 AppContext 的子类）——
+#: 标 `Any` 是如实描述这层的鸭子类型，不是放宽检查。
+ChannelContext = Any
+Dispatcher = Callable[[ChannelContext, str, Any], Any]
+
+
+class MessageHandler(Protocol):
+    """入站处理器的形状：只有 `handle_event`。
+
+    `FeishuMessageHandler` 与 `channels/runner.py::StatefulHandler`（包一层顺手记"最后一条消息"）
+    都满足它 —— 两者互不相识，靠结构化兼容；这里若写死成 `FeishuMessageHandler`，
+    会把**有意**包的那一层判成类型错误。
+    """
+
+    def handle_event(self, payload: Any) -> Any: ...
 
 
 # ---------------------------------------------------------------- 接入向导用到的常量与探测（docs/18）
@@ -374,7 +391,7 @@ class FeishuMessageHandler:
 
     def __init__(
         self,
-        ctx: AppContext,
+        ctx: ChannelContext,
         *,
         credentials: FeishuCredentials | None = None,
         sender: Sender | None = None,

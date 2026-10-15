@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from scholarscout.channels import feishu
-from scholarscout.rpc.methods import AppContext, dispatch
+from scholarscout.rpc.registry import dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -162,11 +162,11 @@ class FeishuWsClient:
     `feishu.FeishuMessageHandler`，发送器由入口层注入 —— 渠道层不出网）。
     """
 
-    ctx: AppContext
+    ctx: feishu.ChannelContext
     sender: feishu.Sender | None = None
     dispatcher: feishu.Dispatcher = dispatch
     credentials: feishu.FeishuCredentials | None = None
-    handler: feishu.FeishuMessageHandler | None = None
+    handler: feishu.MessageHandler | None = None
     sdk: WsSdk | None = None
     app_id: str = ""
     app_secret: str = ""
@@ -312,7 +312,7 @@ START_LOG_TEMPLATE = (
 
 
 def build_client(
-    ctx: AppContext,
+    ctx: feishu.ChannelContext,
     *,
     sender: feishu.Sender | None = None,
     dispatcher: feishu.Dispatcher = dispatch,

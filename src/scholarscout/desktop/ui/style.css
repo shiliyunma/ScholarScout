@@ -7225,3 +7225,80 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .unread-count[hidden] {
   display: none;
 }
+
+/* ───────────────────────────────────────────────────────────── 渠道中心卡片（docs/21 §3）
+   与「飞书接入」卡并列的另一组；配色只用本设计真实存在的 --ui-* 令牌，
+   写不存在的令牌会让整条声明在计算值阶段静默失效。 */
+.channel-card .channel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.channel-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ui-text-tertiary);
+}
+.channel-actions {
+  margin-left: auto;
+}
+.channel-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  color: var(--ui-text-secondary);
+}
+.channel-value {
+  color: var(--ui-text-primary);
+  text-align: right;
+}
+.channel-value.is-ok {
+  color: var(--ui-green);
+}
+.channel-value.is-off {
+  color: var(--ui-text-tertiary);
+}
+.channel-value.is-bad {
+  color: var(--ui-red);
+}
+.channel-inputs {
+  display: flex;
+  gap: 6px;
+}
+.channel-inputs input {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--ui-bg-input);
+  color: var(--ui-text-primary);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+.channel-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
+}
+.channel-step-mark {
+  flex: 0 0 auto;
+}
+.channel-step-text {
+  flex: 1 1 auto;
+  color: var(--ui-text-primary);
+}
+.channel-deeplink {
+  flex: 0 0 auto;
+}
+.channel-link {
+  color: var(--ui-accent);
+  cursor: pointer;
+  word-break: break-all;
+}
+.channel-blockers {
+  color: var(--ui-text-tertiary);
+}

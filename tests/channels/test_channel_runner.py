@@ -1,0 +1,287 @@
+"""渠道**子进程入口**（`channels/runner.py`）与 `channels/remote.py` 的测试 —— 全桩、离线、不装 SDK。
+
+为什么值得（这是 docs/21 §4 选 B 方案后新长出来的两类风险）：
+
+1. **子进程会变成"第二个写库者"** —— 所以钉住"子进程侧的上下文没有 db"（渠道包不许开库）；
+2. **子进程的 stdout 是协议通道** —— 往那里打一行日志就等于往 JSON-RPC 里掺垃圾，
+   所以断言"跑完 stdout 一个字都没有、日志全在 stderr"；
+3. **出站回复必须经 RPC 走主进程**（子进程不出网）—— 断言发一条回复 = 一次 `channel.send` RPC。
+"""
+
+from __future__ import annotations
+
+import io
+import json
+from pathlib import Path
+
+import pytest
+
+from scholarscout.channels import feishu, remote, runner, supervisor
+
+from ..conftest import redirect_home
+
+PAYLOAD = {
+    "header": {"event_type": "im.message.receive_v1"},
+    "event": {
+        "message": {
+            "message_id": "om_test",
+            "chat_id": "oc_test",
+            "chat_type": "p2p",
+            "message_type": "text",
+            "content": json.dumps({"text": "帮我找教育智能体方向的入门资料"}),
+        },
+        "sender": {"sender_id": {"open_id": "ou_me"}, "sender_type": "user"},
+    },
+}
+
+
+@pytest.fixture(autouse=True)
+def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    redirect_home(monkeypatch, tmp_path)
+    for key in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DM_POLICY"):
+        monkeypatch.delenv(key, raising=False)
+    yield
+    supervisor.stop("feishu", wait_s=5.0)
+
+
+class FakeStdio:
+    """桩 RPC 客户端：记住每一次调用，并按方法名给回包。"""
+
+    def __init__(self, replies: dict[str, dict] | None = None) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.replies = replies or {}
+
+    def call(self, ctx: object, method: str, params: object = None) -> dict:
+        del ctx
+        self.calls.append((method, dict(params) if isinstance(params, dict) else {}))
+        return dict(self.replies.get(method, {}))
+
+    def request(self, method: str, params: dict | None = None) -> dict:
+        self.calls.append((method, dict(params) if params else {}))
+        return dict(self.replies.get(method, {"ok": True, "message_id": "om_123456"}))
+
+    def methods(self) -> list[str]:
+        return [name for name, _ in self.calls]
+
+
+class FakeSdkClient:
+    """桩 SDK 长连接客户端（`lark_oapi.ws.Client` 的替身）：只记参数，不连网。"""
+
+    def __init__(self) -> None:
+        self.on_reconnecting = None
+        self.on_reconnected = None
+
+
+class FakeWs:
+    """桩长连接客户端：`build_client()` 给桩 SDK 客户端，`start()` 立刻返回。"""
+
+    def __init__(self, ctx: object, **kwargs: object) -> None:
+        self.ctx = ctx
+        self.kwargs = kwargs
+        self.sdk_client = FakeSdkClient()
+        self.started = False
+        self.says: list[str] = []
+
+    def build_client(self) -> FakeSdkClient:
+        return self.sdk_client
+
+    def start(self, *, block: bool = True, say=print) -> FakeWs:  # type: ignore[no-untyped-def]
+        self.started = True
+        self.says.append(say("stub 长连接启动") or "stub")
+        return self
+
+
+def _ws_factory(holder: dict) -> object:
+    def factory(ctx: object, **kwargs: object) -> FakeWs:
+        ws = FakeWs(ctx, **kwargs)
+        holder["ws"] = ws
+        return ws
+
+    return factory
+
+
+# ------------------------------------------------------------------ 传输层（remote）
+
+
+def test_stdio_client_round_trip_ignores_notifications() -> None:
+    """发一行、等到自己的响应；期间推来的通知（没有 id）必须跳过，不能当成响应。"""
+    lines = io.StringIO(
+        '{"jsonrpc":"2.0","method":"chat.delta","params":{"text":"x"}}\n'
+        '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n'
+    )
+    out = io.StringIO()
+    client = remote.StdioClient(stdin=lines, stdout=out)
+    assert client.request("channel.list", {}) == {"ok": True}
+    assert json.loads(out.getvalue().strip())["method"] == "channel.list"
+
+
+def test_stdio_client_maps_error_and_eof() -> None:
+    error_line = io.StringIO(
+        '{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"缺参数：platform"}}\n'
+    )
+    client = remote.StdioClient(stdin=error_line, stdout=io.StringIO())
+    with pytest.raises(remote.RemoteError) as info:
+        client.request("channel.status", {})
+    assert info.value.code == -32602 and "缺参数" in str(info.value)
+
+    eof_client = remote.StdioClient(stdin=io.StringIO(""), stdout=io.StringIO())
+    with pytest.raises(remote.RemoteError):
+        eof_client.request("channel.list", {})
+
+
+def test_remote_context_has_no_database() -> None:
+    """**子进程侧的上下文里根本没有 db**：想直接开库的代码会当场炸，而不是悄悄写出第二份连接。"""
+    context = remote.RemoteContext()
+    assert context.db is None
+    assert "db" in vars(remote.RemoteContext), (
+        "`db = None` 要显式写在类上，让人一眼看到「子进程不开库」"
+    )
+    with pytest.raises(remote.RemoteError):
+        context.require_llm()
+
+
+# ------------------------------------------------------------------ 前提检查
+
+
+def test_unknown_platform_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    code = runner.run("wechat")
+    assert code == runner.EXIT_PREREQ
+    assert "只做" in capsys.readouterr().err
+
+
+def test_missing_credentials_write_error_state(capsys: pytest.CaptureFixture[str]) -> None:
+    code = runner.run("feishu", sdk_probe=lambda: (True, "ok"))
+    assert code == runner.EXIT_PREREQ
+    assert "凭据未配置" in capsys.readouterr().err
+    state = supervisor.read_state("feishu")
+    assert state["state"] == "error"
+    assert "凭据未配置" in str(state["last_error"])
+
+
+def test_missing_sdk_tells_the_next_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SDK 没装：退出码 2 + **说清下一步跑哪条命令**（不许只说"不行"）。"""
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    code = runner.run(
+        "feishu",
+        sdk_probe=lambda: (False, "未安装 lark_oapi：先跑 `python scripts/install_deps.py`"),
+    )
+    assert code == runner.EXIT_PREREQ
+    assert "install_deps.py" in capsys.readouterr().err
+    assert supervisor.read_state("feishu")["state"] == "error"
+
+
+# ------------------------------------------------------------------ 起长连接（全桩）
+
+
+def test_run_wires_remote_context_and_keeps_stdout_clean(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """跑通装配 → 起连接 → 收尾；**stdout 一个字都不能有**（它是 JSON-RPC 通道）。"""
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    stdio = FakeStdio()
+    holder: dict = {}
+    code = runner.run(
+        "feishu", client=stdio, sdk_probe=lambda: (True, "ok"), ws_factory=_ws_factory(holder)
+    )
+    assert code == runner.EXIT_OK
+    captured = capsys.readouterr()
+    assert captured.out == "", "子进程不许往 stdout 打任何东西（那是协议通道）"
+    assert "长连接启动" in captured.err
+
+    ws = holder["ws"]
+    assert isinstance(ws.ctx, remote.RemoteContext)
+    assert ws.ctx.db is None, "子进程侧不开库（docs/20 单写纪律）"
+    assert ws.started is True
+    # 状态：起连接时 running，收尾后 stopped
+    assert supervisor.read_state("feishu")["state"] == "stopped"
+    # 两个公开钩子都接上了（F4：长连接没有公开的关闭接口，但有状态钩子）
+    assert callable(ws.sdk_client.on_reconnecting)
+    assert callable(ws.sdk_client.on_reconnected)
+
+
+def test_message_event_goes_through_rpc_and_reply_is_sent_by_the_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一条消息 → 经 RPC 跑一轮 → 回复**经 `channel.send` 由主进程发**（子进程不出网）。"""
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    monkeypatch.setenv("FEISHU_DM_POLICY", "all")
+    stdio = FakeStdio(
+        {
+            "feishu.access": {"approved": True, "temp_open": False, "dm_policy": "all"},
+            "session.ensure": {"session_id": "ses_1"},
+            "chat.send": {"text": "这是主进程跑出来的回答", "stop_reason": "completed"},
+        }
+    )
+    holder: dict = {}
+    runner.run(
+        "feishu", client=stdio, sdk_probe=lambda: (True, "ok"), ws_factory=_ws_factory(holder)
+    )
+
+    handler = holder["ws"].kwargs["handler"]
+    decision = handler.handle_event(PAYLOAD)
+    assert decision is not None and decision.action == "run"
+    assert "feishu.access" in stdio.methods()
+    assert "session.ensure" in stdio.methods() and "chat.send" in stdio.methods()
+
+    sent = [params for name, params in stdio.calls if name == "channel.send"]
+    assert sent, "回复必须经 channel.send 交给主进程发（子进程不自己出网）"
+    assert sent[0]["chat_id"] == "oc_test" and sent[0]["text"] == "这是主进程跑出来的回答"
+    # 顺手记下"最后一条消息"（界面状态行要用）
+    state = supervisor.read_state("feishu")
+    assert state["last_message_at"] and state["last_message_from"] == "ou_me"
+
+
+def test_reconnect_hooks_update_the_state_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    holder: dict = {}
+    runner.run(
+        "feishu", client=FakeStdio(), sdk_probe=lambda: (True, "ok"), ws_factory=_ws_factory(holder)
+    )
+    sdk_client = holder["ws"].sdk_client
+    sdk_client.on_reconnecting()
+    state = supervisor.read_state("feishu")
+    assert state["connected"] is False and state["reconnects"] == 1
+    sdk_client.on_reconnected()
+    state = supervisor.read_state("feishu")
+    assert state["connected"] is True and state["reconnects"] == 1
+
+
+def test_build_client_failure_is_reported_and_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """装配失败（真 SDK 没装等）→ 退出码 3 + 状态 error 写明原因，不静默。"""
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+
+    class Boom(FakeWs):
+        def build_client(self) -> FakeSdkClient:
+            raise RuntimeError("未安装 lark_oapi")
+
+    def factory(ctx: object, **kwargs: object) -> FakeWs:
+        return Boom(ctx, **kwargs)
+
+    code = runner.run(
+        "feishu", client=FakeStdio(), sdk_probe=lambda: (True, "ok"), ws_factory=factory
+    )
+    assert code == runner.EXIT_START_FAILED
+    state = supervisor.read_state("feishu")
+    assert state["state"] == "error" and "lark_oapi" in str(state["last_error"])
+
+
+# ------------------------------------------------------------------ 凭据来源
+
+
+def test_credentials_come_from_the_inherited_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """凭据由**继承的进程环境**拿到（不落第二份副本，docs/21 §6）。"""
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    creds = feishu.credentials_from_env()
+    assert creds.can_send is True and creds.app_id == "cli_x"
+    assert not list(Path(supervisor.channel_dir()).glob("*")), "读凭据不该在 run/ 下落任何东西"
+    # 子进程侧**不碰** Database 这个类型：谁在渠道进程路径上 import 了它，谁就是"第二个写库者"的入口
+    for module in (remote, runner, supervisor):
+        assert "Database" not in vars(module), f"{module.__name__} 不许 import Database"

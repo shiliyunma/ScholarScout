@@ -319,3 +319,58 @@ def _write_registration_credentials(result: feishu_onboard.RegistrationResult) -
     for key, value in values.items():
         if value:
             os.environ[key] = value
+
+
+# --------------------------------------------------------- channel.* 兼容别名（双写期）
+#
+# docs/21 §5.1：新增 `channel.*` 是把 platform 提成参数，**不是重写**；`feishu.*` 继续可用。
+# 只对飞书有意义的几条（guide / test / set_credentials / start / stop）在这里补同名别名，
+# 指向 `rpc/channel.py` 的**同一份实现**（不是抄一份 —— 抄一份就是两套行为）。
+# `feishu.status` / `probe` / `access` / `dm_policy` / `pairing.*` / `onboard.*` 保持原样不动，
+# 老调用方与老测试一行都不用改。
+
+
+def _as_feishu(params: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(_params(params))
+    merged["platform"] = "feishu"
+    return merged
+
+
+@method("feishu.guide")
+def feishu_guide(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """`channel.guide` 的兼容别名（platform 固定 feishu）。"""
+    from scholarscout.rpc import channel
+
+    return channel.channel_guide(ctx, _as_feishu(params))
+
+
+@method("feishu.test")
+def feishu_test(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """`channel.test` 的兼容别名（platform 固定 feishu）。"""
+    from scholarscout.rpc import channel
+
+    return channel.channel_test(ctx, _as_feishu(params))
+
+
+@method("feishu.set_credentials")
+def feishu_set_credentials(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """`channel.set_credentials` 的兼容别名（platform 固定 feishu）。"""
+    from scholarscout.rpc import channel
+
+    return channel.channel_set_credentials(ctx, _as_feishu(params))
+
+
+@method("feishu.start")
+def feishu_start(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """`channel.start` 的兼容别名（platform 固定 feishu）。"""
+    from scholarscout.rpc import channel
+
+    return channel.channel_start(ctx, _as_feishu(params))
+
+
+@method("feishu.stop")
+def feishu_stop(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """`channel.stop` 的兼容别名（platform 固定 feishu）。"""
+    from scholarscout.rpc import channel
+
+    return channel.channel_stop(ctx, _as_feishu(params))
