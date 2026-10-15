@@ -117,8 +117,13 @@ def run(
                 "只会收到消息、跑完一轮并**记录**回复，不会真发回飞书。"
             )
         sender = sender_factory(ctx.http, enabled=enabled)
+        # 入站即时回执（docs/17 §3.11）：单进程直跑时没有父进程注入环境变量，所以在这里
+        # 从配置对象显式传下去；空串 = 用户关掉了回执（如实说出来，别让人以为坏了）。
+        ack = getattr(ctx.config.runtime, "feishu_ack_text", None)
+        if isinstance(ack, str) and not ack.strip():
+            say("！入站即时回执已关（runtime.feishu_ack_text 为空）：要等整轮跑完才会收到回应。")
         say(FIRST_IMPORT_HINT)
-        client = client_factory(ctx, sender=sender)
+        client = client_factory(ctx, sender=sender, ack_text=ack)
         try:
             client.start()
         except KeyboardInterrupt:

@@ -142,6 +142,7 @@ def run(
     credentials: feishu.FeishuCredentials | None = None,
     sdk_probe: Callable[[], tuple[bool, str]] | None = None,
     ws_factory: Callable[..., feishu_ws.FeishuWsClient] | None = None,
+    ack_text: str | None = None,
     say: Callable[[str], None] = log,
 ) -> int:
     """跑渠道子进程（**阻塞**直到长连接结束或被父进程 kill）。退出码见模块常量。"""
@@ -173,8 +174,14 @@ def run(
     stdio = client or remote.StdioClient()
     ctx = remote.RemoteContext(dispatcher=stdio.call)
     sender = remote_sender(stdio, name)
+    # 入站即时回执文案（docs/17 §3.11）：`ack_text` 显式给了就用它，否则读父进程注入的
+    # `FEISHU_ACK_TEXT`（`supervisor.config_env` 从 `runtime.feishu_ack_text` 翻译下来），
+    # 都没有才回渠道核心的缺省。**空串是合法值**（= 关掉回执），不能让 `or` 把它兜掉。
+    ack = ack_text if ack_text is not None else feishu.ack_text_from_env()
     handler = StatefulHandler(
-        feishu.FeishuMessageHandler(ctx, credentials=creds, sender=sender, dispatcher=stdio.call),
+        feishu.FeishuMessageHandler(
+            ctx, credentials=creds, sender=sender, dispatcher=stdio.call, ack_text=ack
+        ),
         platform=name,
         root=root,
     )
@@ -187,6 +194,7 @@ def run(
             credentials=creds,
             handler=handler,
             sdk=sdk,
+            ack_text=ack,
         )
         sdk_client = ws.build_client()
     except Exception as exc:

@@ -31,10 +31,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from scholarscout.config import DEFAULT_FEISHU_ACK_TEXT
 from scholarscout.rpc.registry import dispatch
 
 logger = logging.getLogger(__name__)
@@ -157,6 +160,62 @@ def bot_open_id_from_env() -> str:
 def bot_name_from_env() -> str:
     """机器人名字（键名照 Hermes `FEISHU_BOT_NAME`，adapter.py:1318）。"""
     return os.environ.get("FEISHU_BOT_NAME", "").strip()
+
+
+# ---------------------------------------------------------------- 入站即时回执（docs/17 §3.11）
+
+#: 回执文案的**注入通道**（不是用户配置项）：用户在 `config.yaml` 里改 `runtime.feishu_ack_text`，
+#: 父进程起渠道子进程时把它写进这个环境变量（`channels/supervisor.py::config_env`）。
+#: 渠道层读不到 `config.yaml`（子进程没有配置对象），所以必须有这么一条注入通道 ——
+#: 与 `FEISHU_DM_POLICY` / 凭据的走法一致（环境继承）。
+ACK_TEXT_ENV = "FEISHU_ACK_TEXT"
+
+#: 回执去重窗口：只记最近这么多条 `message_id`（飞书重推都紧跟着原事件，窗口够用）。
+#: 定成有界是**必须的**：长连接进程跑几天，无界集合就是一条内存泄漏。
+ACK_DEDUPE_SIZE = 256
+
+
+def ack_text_from_env() -> str:
+    """回执文案：环境变量优先，缺省回 `config.DEFAULT_FEISHU_ACK_TEXT`（"已接受消息，正在处理中"）。
+
+    **空串是合法值**（= 关掉回执），所以不能用 `or` 兜默认 —— 那会把"用户显式关掉"吃掉。
+    """
+    raw = os.environ.get(ACK_TEXT_ENV)
+    if raw is None:
+        return DEFAULT_FEISHU_ACK_TEXT
+    return raw.strip()
+
+
+class RecentMessageIds:
+    """**有界**的 `message_id` 去重器（回执用）：`mark()` 返回 True 表示"头一回见"。
+
+    为什么必须有：飞书会**重推同一事件**（长连接重连 / 平台重试），一条消息回两次回执
+    用户就会看到双份"已接受消息"。去重键用飞书的 `message_id`（同一条消息稳定不变）。
+
+    **拿不到 id 时不判重**（`mark("")` 恒 True）：宁可多回一条，也绝不能把后面所有消息
+    都当成"重复"吞掉 —— 那是一条静默失聪的链路。
+
+    线程安全：SDK 的收包回调跑在它自己的线程里，可能并发进来。
+    """
+
+    def __init__(self, maxsize: int = ACK_DEDUPE_SIZE) -> None:
+        self._maxsize = max(1, int(maxsize))
+        self._lock = threading.Lock()
+        self._order: deque[str] = deque()
+        self._seen: set[str] = set()
+
+    def mark(self, key: str) -> bool:
+        """记下这个 key；返回 True 表示首次见到（调用方据此决定"要不要回执"）。"""
+        if not key:
+            return True
+        with self._lock:
+            if key in self._seen:
+                return False
+            self._seen.add(key)
+            self._order.append(key)
+            while len(self._order) > self._maxsize:
+                self._seen.discard(self._order.popleft())
+            return True
 
 
 def registration_from_env() -> str:
@@ -399,6 +458,8 @@ class FeishuMessageHandler:
         source: str = "feishu",
         bot_open_id: str | None = None,
         bot_name: str | None = None,
+        ack_text: str | None = None,
+        ack_dedupe_size: int = ACK_DEDUPE_SIZE,
     ) -> None:
         self._ctx = ctx
         self._credentials = credentials or credentials_from_env()
@@ -407,6 +468,11 @@ class FeishuMessageHandler:
         #: 机器人自身身份（群聊 @提及 判定用）。默认读 `.env`，可注入替换（桩测）。
         self._bot_open_id = bot_open_id if bot_open_id is not None else bot_open_id_from_env()
         self._bot_name = bot_name if bot_name is not None else bot_name_from_env()
+        #: 入站即时回执文案（docs/17 §3.11）。默认读 `.env` 的 `FEISHU_ACK_TEXT`
+        #: （由入口层从 `runtime.feishu_ack_text` 注入）；**空串 = 关掉回执**。
+        self._ack_text = ack_text.strip() if ack_text is not None else ack_text_from_env()
+        #: 回执去重（按飞书 message_id）：同一条消息重推只回执一次。
+        self._seen_messages = RecentMessageIds(ack_dedupe_size)
 
         if sender is not None:
             self._sender: Sender = sender
@@ -422,6 +488,11 @@ class FeishuMessageHandler:
     def sender(self) -> Sender:
         """当前发送器（入口层可据此报告"出站关着只记录"）。"""
         return self._sender
+
+    @property
+    def ack_text(self) -> str:
+        """当前回执文案（空串 = 关掉回执）。"""
+        return self._ack_text
 
     def decide(self, message: FeishuMessage) -> tuple[InterceptDecision, dict[str, Any]]:
         """拿白名单状态（经 RPC）后做运行时拦截判定，返回（决定, 原始访问状态）。
@@ -474,12 +545,57 @@ class FeishuMessageHandler:
             return True
         return False
 
+    def send_ack(self, message: FeishuMessage) -> bool:
+        """收到消息后**先回一条固定文案**（白名单放行之后、跑轮次之前）；返回是否真发了。
+
+        三条硬约定（docs/17 §3.11，都有用例钉住）：
+
+        1. **失败不拖垮轮次**：发送器抛异常、或回 `ok=false`（网络 / 限流 / 平台报错）一律
+           只记日志，**照常往下跑轮次** —— 回执是"锦上添花"，绝不能变成链路的单点；
+        2. **受同一个出站开关管**：回执走的就是注入的那个发送器，所以
+           `runtime.feishu_reply_enabled=false` 时它**一次外网都不发**（只告警、回 `ok=false`）
+           —— 渠道层不需要、也不该另立一个开关；
+        3. **按 `message_id` 去重**：飞书重推同一事件时只回执一次，用户不会看到双份。
+
+        文案为空（`runtime.feishu_ack_text: ""`）时**直接不发**，连告警都不记（是用户的选择）。
+        **去重是"记了就发一次"**：发送失败也占掉这个 id —— 宁可漏一条回执，也不给用户双份。
+        """
+        if not self._ack_text:
+            return False
+        if not self._seen_messages.mark(message.message_id):
+            logger.info(
+                "[Feishu] 同一条消息重推（message_id=%s）：回执不重复发", message.message_id
+            )
+            return False
+        try:
+            outcome = self._sender(message.chat_id, self._ack_text)
+        except Exception as exc:  # 发送器自己炸了也不能把这一轮拖垮
+            logger.warning(
+                "[Feishu] 回执发送异常（已吞，照常跑轮次）：chat_id=%s err=%s",
+                message.chat_id,
+                exc,
+            )
+            return False
+        if isinstance(outcome, Mapping) and outcome.get("ok") is False:
+            logger.warning(
+                "[Feishu] 回执未发出（不影响本轮，照常跑）：chat_id=%s err=%s",
+                message.chat_id,
+                outcome.get("error"),
+            )
+            return False
+        logger.info("[Feishu] 已回执「%s」chat_id=%s", self._ack_text, message.chat_id)
+        return True
+
     def run_turn(self, message: FeishuMessage) -> InterceptDecision:
         """一条消息 = 一次会话请求：**先过运行时拦截**，再幂等拿会话 → 跑一轮 → 回包。
 
         拦截顺序（对齐 `docs/17 §3.4`）：
         `drop` → 记日志丢弃；未授权私聊 → **先给一次配对码登记机会**（登记成功只回执、不跑会话），
         否则 `pair` 回配对提示、`run`（含"临时放行"）才真跑。返回本次的处置决定。
+
+        放行之后、跑轮次之前**先发一条即时回执**（`docs/17 §3.11`）：一轮要跑 3–12 分钟，
+        用户不该等这么久才知道"收到了"。回执失败**不影响**这一轮（成功/失败都在
+        :meth:`send_ack` 里处理，异常一律不外抛）。
         """
         decision, access = self.decide(message)
         if decision.action == "drop":
@@ -501,6 +617,10 @@ class FeishuMessageHandler:
         if decision.action == "pair":
             self._sender(message.chat_id, decision.reply or PAIRING_PROMPT)
             return decision
+
+        # 白名单放行之后、跑轮次之前：**即时回执**（顺序不能反 —— 先让用户安心，再落库跑轮次）。
+        # 未授权者走不到这里（他们在上面就 `pair` / `drop` 返回了），所以不会收到回执。
+        self.send_ack(message)
 
         ensured = self._dispatcher(
             self._ctx,

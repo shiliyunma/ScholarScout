@@ -44,6 +44,11 @@ runtime:
   # 飞书**出站发送器**（把一轮回答推回飞书，docs/17 §3.7）：**默认关**。
   # 关着时渠道层只记录、绝不发任何外网；开启需同时配好 .env 的 FEISHU_APP_ID / FEISHU_APP_SECRET。
   feishu_reply_enabled: false
+  # 飞书**入站即时回执**文案（docs/17 §3.11）：收到消息、白名单放行后**先回这一条**，再跑轮次
+  # （一轮 3–12 分钟，用户不该等这么久才知道"收到了"）。空串 = 关掉回执。
+  # 回执与回答**共用同一个出站开关**（feishu_reply_enabled=false 时一次外网都不发），
+  # 并且按 message_id 去重（飞书重推同一事件不会让用户收到双份）。
+  feishu_ack_text: "已接受消息，正在处理中"
 
 # ===== 摘要流水线（照 AIHOT 的"截断 + 一次调用"，见 docs/04）=====
 summary:

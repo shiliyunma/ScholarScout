@@ -48,10 +48,15 @@ _ENV_KEYS = (
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """`.env` 重定向到 tmp；清掉渠道层环境变量（拦截判定直接读 os.environ）。"""
+    """`.env` 重定向到 tmp；清掉渠道层环境变量（拦截判定直接读 os.environ）。
+
+    入站即时回执在本文件里也**默认关掉**（`FEISHU_ACK_TEXT=""`，理由与
+    `tests/channels/test_feishu_stub.py::_isolate` 逐字相同：回执的断言面在专用文件里）。
+    """
     redirect_home(monkeypatch, tmp_path)
     for key in _ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("FEISHU_ACK_TEXT", "")
     yield
     for key in _ENV_KEYS:
         os.environ.pop(key, None)

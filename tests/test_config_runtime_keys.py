@@ -40,6 +40,8 @@ NON_DEFAULT_VALUES: dict[str, object] = {
     # 飞书出站发送器开关（把回答推回飞书）。默认关。
     # 入站（websocket 长连接）没有配置键：不需要公网地址/回调/隧道，启动入口见 scripts/feishu_ws_up.py。
     "feishu_reply_enabled": True,
+    # 飞书入站即时回执文案（docs/17 §3.11）：空串 = 关掉回执；默认是"已接受消息，正在处理中"。
+    "feishu_ack_text": "别急，正在处理",
 }
 
 

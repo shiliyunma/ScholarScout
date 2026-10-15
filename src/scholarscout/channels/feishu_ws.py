@@ -171,6 +171,9 @@ class FeishuWsClient:
     app_id: str = ""
     app_secret: str = ""
     domain: str = DOMAIN_DEFAULT
+    #: 入站即时回执文案（docs/17 §3.11）：转发给它自己建的那个 `FeishuMessageHandler`。
+    #: `None` = 让渠道核心按 `.env` 的 `FEISHU_ACK_TEXT` 决定（入口层注入的那份），空串 = 关掉回执。
+    ack_text: str | None = None
     extra_ua_tags: Sequence[str] = field(default_factory=lambda: WS_EXTRA_UA_TAGS)
     _client: Any = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
@@ -189,6 +192,7 @@ class FeishuWsClient:
                 credentials=self.credentials,
                 sender=self.sender,
                 dispatcher=self.dispatcher,
+                ack_text=self.ack_text,
             )
 
     # ---------------------------------------------------------------- 只读视图
@@ -317,6 +321,7 @@ def build_client(
     sender: feishu.Sender | None = None,
     dispatcher: feishu.Dispatcher = dispatch,
     sdk: WsSdk | None = None,
+    ack_text: str | None = None,
 ) -> FeishuWsClient:
-    """给入口层用的装配口：`FeishuWsClient`（sender / dispatcher / sdk 可注入）。"""
-    return FeishuWsClient(ctx, sender=sender, dispatcher=dispatcher, sdk=sdk)
+    """给入口层用的装配口：`FeishuWsClient`（sender / dispatcher / sdk / ack_text 可注入）。"""
+    return FeishuWsClient(ctx, sender=sender, dispatcher=dispatcher, sdk=sdk, ack_text=ack_text)

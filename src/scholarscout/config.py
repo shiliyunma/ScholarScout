@@ -82,6 +82,12 @@ class LlmProfile:
         return value or None
 
 
+#: 飞书入站**即时回执**的默认文案（`runtime.feishu_ack_text` 的默认值）。
+#: 定义在 config 这一层是因为渠道层要拿它做环境变量缺省（`channels/feishu.py::ack_text_from_env`），
+#: 而 config 不能反向 import channels（`channels` 已经 import `config`）—— 所以默认值只在这里写一次。
+DEFAULT_FEISHU_ACK_TEXT = "已接受消息，正在处理中"
+
+
 @dataclass(frozen=True)
 class RuntimeProfile:
     max_tool_calls_per_turn: int = 12
@@ -116,6 +122,11 @@ class RuntimeProfile:
     #: 飞书**出站发送器**开关（把一轮回答推回飞书，docs/17 §3.7）。**默认关**：
     #: 关着时渠道层只记录、绝不发任何外网（收在长连接里、发要单独开）。
     feishu_reply_enabled: bool = False
+    #: 飞书入站**即时回执**文案（docs/17 §3.11）。收到消息、白名单放行后**先回这一条**，
+    #: 再跑轮次 —— 用户不必等 3–12 分钟才知道"消息收到了"。
+    #: **同一文案可配**：`""`（空串）= 关掉回执；回执与回答共用同一个出站开关
+    #: （`feishu_reply_enabled=false` 时一次外网都不发）。
+    feishu_ack_text: str = DEFAULT_FEISHU_ACK_TEXT
 
 
 @dataclass(frozen=True)
@@ -308,6 +319,11 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             subtask_enabled=bool(runtime_section.get("subtask_enabled", False)),
             # 飞书出站发送（把回答推回飞书）。默认关 → 关着时渠道层绝不发任何外网。
             feishu_reply_enabled=bool(runtime_section.get("feishu_reply_enabled", False)),
+            # 飞书入站即时回执文案（docs/17 §3.11）。D3 同款坑：加了字段必须接这一行，
+            # 否则 YAML 里写它会被静默忽略（守卫测试 tests/test_config_runtime_keys.py 会当场拦下）。
+            feishu_ack_text=str(
+                runtime_section.get("feishu_ack_text", DEFAULT_FEISHU_ACK_TEXT)
+            ).strip(),
         ),
         features=Features(
             enable_kb=bool(feature_section.get("enable_kb", False)),

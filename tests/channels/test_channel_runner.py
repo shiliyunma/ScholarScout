@@ -38,7 +38,7 @@ PAYLOAD = {
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     redirect_home(monkeypatch, tmp_path)
-    for key in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DM_POLICY"):
+    for key in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DM_POLICY", "FEISHU_ACK_TEXT"):
         monkeypatch.delenv(key, raising=False)
     yield
     supervisor.stop("feishu", wait_s=5.0)
@@ -230,7 +230,10 @@ def test_message_event_goes_through_rpc_and_reply_is_sent_by_the_parent(
 
     sent = [params for name, params in stdio.calls if name == "channel.send"]
     assert sent, "回复必须经 channel.send 交给主进程发（子进程不自己出网）"
-    assert sent[0]["chat_id"] == "oc_test" and sent[0]["text"] == "这是主进程跑出来的回答"
+    # 两条都要经 channel.send：**先入站即时回执、后这一轮的回答**（docs/17 §3.11）——
+    # 顺序就是子进程从"配置 → 环境变量 → 渠道核心"把 ack_text 传下去的证据。
+    assert [p["text"] for p in sent] == [feishu.ack_text_from_env(), "这是主进程跑出来的回答"]
+    assert sent[0]["chat_id"] == "oc_test" and sent[1]["chat_id"] == "oc_test"
     # 顺手记下"最后一条消息"（界面状态行要用）
     state = supervisor.read_state("feishu")
     assert state["last_message_at"] and state["last_message_from"] == "ou_me"

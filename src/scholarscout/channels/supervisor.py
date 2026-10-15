@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, TextIO, cast
 
 from scholarscout import paths
+from scholarscout.channels import feishu
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +268,24 @@ def child_env() -> dict[str, str]:
     return env
 
 
+def config_env(ctx: Any) -> dict[str, str]:
+    """子进程环境 = `child_env()` **+ 把父进程读到的渠道配置翻译成环境变量带下去**。
+
+    为什么必须有这一步（docs/17 §3.11）：`runtime.feishu_ack_text` 住在 `config.yaml` 里，
+    而渠道子进程**没有配置对象**（它只当 RPC 客户端、不读 config、不开库，见模块顶注的纪律 1），
+    所以父进程必须在起它的时候把值翻译成环境变量 —— 与凭据 / `FEISHU_DM_POLICY` 走同一条路
+    （环境继承，不落第二份副本）。**空串也要注入**：它是"关掉回执"的合法取值，
+    用 `or` 兜默认会把用户显式关掉的选择吃掉。
+    读不到配置（`ctx` 没有 `config`）时**一个键都不注入**：那时渠道层走自己的缺省，不编值。
+    """
+    env = child_env()
+    config = getattr(ctx, "config", None)
+    text = getattr(getattr(config, "runtime", None), "feishu_ack_text", None)
+    if isinstance(text, str):
+        env[feishu.ACK_TEXT_ENV] = text
+    return env
+
+
 def start(
     ctx: Any,
     platform: str,
@@ -300,7 +319,7 @@ def start(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=handle,
-            env=env or child_env(),
+            env=env if env is not None else config_env(ctx),
             cwd=str(root or paths.home()),
             text=True,
             encoding="utf-8",
