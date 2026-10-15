@@ -49,10 +49,17 @@ _ENV_KEYS = (
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """`.env` 重定向到 tmp；清掉渠道层环境变量（拦截判定直接读 os.environ）。"""
+    """`.env` 重定向到 tmp；清掉渠道层环境变量（拦截判定直接读 os.environ）。
+
+    **入站即时回执在本文件里默认关掉**（`FEISHU_ACK_TEXT=""`）：回执会让每个"跑一轮"的用例多出
+    一条出站消息，把 `recorder.sent == [(chat, 回答)]` 这类断言全部改写 —— 那是**另一个功能**的
+    断言面。照本项目既有做法（新引入的额外出站同理）：产品默认值保持开（`DEFAULT_FEISHU_ACK_TEXT`），
+    在**专用文件** `tests/channels/test_feishu_ack.py` 里显式打开来测；这里关掉，让每个用例只盯它自己那件事。
+    """
     redirect_home(monkeypatch, tmp_path)
     for key in _ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("FEISHU_ACK_TEXT", "")
     yield
     for key in _ENV_KEYS:
         os.environ.pop(key, None)
@@ -155,6 +162,64 @@ def test_same_chat_reuses_session(ctx: AppContext, recorder) -> None:
     # 同一个 chat_id → 只有一条会话（session.ensure 幂等）
     assert ctx.db.scalar_int("SELECT count(*) FROM sessions WHERE session_key = ?", (CHAT_ID,)) == 1
     assert recorder.sent == [(CHAT_ID, "第一轮"), (CHAT_ID, "第二轮")]
+
+
+def test_new_session_pushes_session_updated_to_the_window(ctx: AppContext, recorder) -> None:
+    """**用户报的 bug**：飞书里发一条，会话与消息都在库里，界面上却看不见。
+
+    根因不在界面：`session.ensure` 这条入口**一个事件都不发**（在此之前只有"标题真被改写"
+    才发 `session.updated`，见 `rpc/session.py::_title_before_turn`），而左栏的会话列表靠
+    事件驱动刷新 —— 所以入站建出来的会话要等下一次手动动作才冒出来。
+
+    这里用**假桥**接住 `ctx.emit`（桌面端窗口收到的通知就是这一串：`rpc/server.py` 的
+    emitter → `webview.evaluate_js("window.scoutEvent(...)")`），并**当场查库对账**：
+    事件里的 `session_id` 必须就是库里那条会话，且 user / assistant 两条消息都在。
+    """
+    ctx.llm = StubLlm(reply(STUB_REPLY))
+    _approve(ctx)
+    bridge: list[tuple[str, dict[str, Any]]] = []
+    ctx.emit = lambda name, payload: bridge.append((name, payload))
+
+    _deliver(_handler(ctx, recorder), _message_payload("帮我找知识追踪的入门资料"))
+
+    row = ctx.db.query_one("SELECT id FROM sessions WHERE session_key = ?", (CHAT_ID,))
+    assert row is not None, "入站消息必须落库"
+    session_id = str(row["id"])
+    updates = [payload for name, payload in bridge if name == "session.updated"]
+    assert updates == [{"session_id": session_id, "created": True}], (
+        f"新建会话必须推一条 session.updated（带 created=True）把界面叫醒：{bridge}"
+    )
+    # 载荷形状：新建那条**只带** session_id + created（标题那条另有 title/source），
+    # 前端据此区分"新建"与"改标题"，两者都会触发 loadSessions()。
+    assert set(updates[0]) == {"session_id", "created"}
+    # 对账：这条会话的 user + assistant 两条消息都在库里（界面该看到的正文就是它们）
+    rows = ctx.db.query(
+        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY idx", (session_id,)
+    )
+    assert [(r["role"], r["content"]) for r in rows] == [
+        ("user", "帮我找知识追踪的入门资料"),
+        ("assistant", STUB_REPLY),
+    ]
+    print(f"[bridge] {bridge} 库里消息={[(r['role'], r['content']) for r in rows]}")
+
+
+def test_second_inbound_reuses_session_without_re_pushing_created(
+    ctx: AppContext, recorder
+) -> None:
+    """**反例**：同一会话的第二条消息**不再**推 `created: True`（幂等；否则左栏被反复"新建"）。"""
+    ctx.llm = StubLlm(reply("第一轮"), reply("第二轮"))
+    _approve(ctx)
+    bridge: list[tuple[str, dict[str, Any]]] = []
+    ctx.emit = lambda name, payload: bridge.append((name, payload))
+    handler = _handler(ctx, recorder)
+
+    _deliver(handler, _message_payload("第一句"))
+    created_events = [p for name, p in bridge if name == "session.updated"]
+    _deliver(handler, _message_payload("第二句继续"))
+
+    assert len(created_events) == 1, "第一条消息那一次才该推 session.updated"
+    assert [p for name, p in bridge if name == "session.updated"] == created_events
+    assert ctx.db.scalar_int("SELECT count(*) FROM sessions WHERE session_key = ?", (CHAT_ID,)) == 1
 
 
 def test_non_text_payload_is_ignored(ctx: AppContext, recorder) -> None:

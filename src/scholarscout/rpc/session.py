@@ -52,6 +52,16 @@ def session_ensure(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     )
     if created:
         loop.mark_system_prompt(ctx.db, session_id, toolsets=ctx.toolsets, config=ctx.config)
+        # 建会话也要**推一条事件**（用户报的 bug：飞书中转入站会话在界面上看不见）。
+        # 之前只有"标题真被改写"才发 `session.updated`（见 `_title_before_turn`），于是
+        # `session.ensure` 这条入口**一个事件都不发** —— 界面的会话列表靠事件驱动刷新，
+        # 库里明明有会话与消息（`run/state.db` 的 `ses_*` + 三条消息），界面却要等下一次手动动作。
+        # **复用既有事件名**（不新造，否则 `NOTIFICATION_METHODS` 白名单要改、前端要加分支）：
+        # `desktop/ui/api.js:365` 处理 `session.updated` 时**不看 `p.title` 也会 `loadSessions()`**
+        # （标题那段才判 title），所以只带 `session_id` 就足以把新会话拉进左栏。
+        # 载荷里 `created: True` 让前端/桩测能区分"新建"与"标题改写"（旧载荷带 `title`/`source`）。
+        if ctx.emit is not None:
+            ctx.emit("session.updated", {"session_id": session_id, "created": True})
     row = sessions.get_session(ctx.db, session_id) or {}
     return {
         "session_id": session_id,
