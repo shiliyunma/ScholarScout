@@ -35,6 +35,91 @@ function closeProfile() {
 }
 
 
+/* 浮层内的**可折叠分类**（设置与个人中心共用）。
+ *
+ * 为什么用可折叠分组而不是标签页：标签页同一时刻只显示一组，"前两个分组都看得见"就做不到；
+ * 分组头始终可见、点一下才收起内容，既治用户说的"一个大页面太臃肿"，又不藏东西。
+ * 默认只展开第一组（`open`）—— 打开浮层先看到一组，其余按需展开。
+ *
+ * 返回 `{ box, panel }`；分类名写在 `data-cat` 上（探针按它读，不靠新增 id）。
+ */
+function uiCategory(name, title, hint, open) {
+  var box = document.createElement("section");
+  box.className = "ui-cat" + (open ? " is-open" : "");
+  box.setAttribute("data-cat", name);
+  var head = document.createElement("button");
+  head.type = "button";
+  head.className = "ui-cat-head";
+  head.setAttribute("aria-expanded", open ? "true" : "false");
+  var caret = document.createElement("span");
+  caret.className = "ui-cat-caret";
+  caret.setAttribute("aria-hidden", "true");
+  var label = document.createElement("strong");
+  label.textContent = title;
+  head.appendChild(caret);
+  head.appendChild(label);
+  if (hint) {
+    var tip = document.createElement("span");
+    tip.className = "ui-cat-hint";
+    tip.textContent = hint;
+    head.appendChild(tip);
+  }
+  var panel = document.createElement("div");
+  panel.className = "ui-cat-body";
+  panel.hidden = !open;
+  head.addEventListener("click", function () {
+    var next = !box.classList.contains("is-open");
+    box.classList.toggle("is-open", next);
+    head.setAttribute("aria-expanded", next ? "true" : "false");
+    panel.hidden = !next;
+  });
+  box.appendChild(head);
+  box.appendChild(panel);
+  return { box: box, panel: panel };
+}
+
+
+/*: 个人中心的分类（用户反馈"也分类一下"）。
+ *  前两组就是 index.html 里**静态**写着的两个区块（学习者画像 / 跨会话记忆）——
+ *  这里的做法是把**节点搬进**分类面板（appendChild 搬节点，id 一个都不变，
+ *  board.js 的取值逻辑不受影响），第三组「学习统计」装原来由 renderProfile 现算的那几段。
+ *
+ *  为什么必须"只搭一次壳"：老实现是 `profile-body.innerHTML = ""` 再拼四段 —— 那会把静态的
+ *  画像 / 记忆区块整块删掉（打开一次个人中心，画像与记忆就永远消失了）。现在改成：
+ *  分类壳只建一次，每次刷新只重画「学习统计」那一格里的内容。
+ */
+function profileCategories() {
+  var body = el("profile-body");
+  var stats = body.querySelector(".ui-cat[data-cat='stats'] .ui-cat-body");
+  if (stats) return { stats: stats };
+
+  var portrait = uiCategory("portrait", "学习者画像", "跨会话长期画像：主题、路线、地图与掌握度", true);
+  var memory = uiCategory("memory", "跨会话记忆", "长期记住的偏好 / 背景 / 目标，可增可删", false);
+  var statCat = uiCategory("stats", "学习统计", "路线汇总 / 笔记 / 抽背卡 / 研究看板（跨全部会话）", false);
+
+  var portraitBlock = el("profile-overview") ? el("profile-overview").closest(".board-block") : null;
+  var memoryBlock = el("memory-input") ? el("memory-input").closest(".board-block") : null;
+  if (portraitBlock) portrait.panel.appendChild(portraitBlock);
+  if (memoryBlock) memory.panel.appendChild(memoryBlock);
+
+  body.appendChild(portrait.box);
+  body.appendChild(memory.box);
+  body.appendChild(statCat.box);
+  return { stats: statCat.panel };
+}
+
+
+async function renderProfile() {
+  var cats = profileCategories();
+  cats.stats.textContent = "";
+  cats.stats.appendChild(await profileRoutes());
+  cats.stats.appendChild(await profileNotes());
+  cats.stats.appendChild(await profileCards());
+  cats.stats.appendChild(await profileBoard());
+  el("profile-note").textContent = "汇总跨全部会话";
+}
+
+
 function profileSection(title, hint) {
   var box = document.createElement("section");
   box.className = "profile-block";
@@ -48,17 +133,6 @@ function profileSection(title, hint) {
     box.appendChild(note);
   }
   return box;
-}
-
-
-async function renderProfile() {
-  var body = el("profile-body");
-  body.innerHTML = "";
-  body.appendChild(await profileRoutes());
-  body.appendChild(await profileNotes());
-  body.appendChild(await profileCards());
-  body.appendChild(await profileBoard());
-  el("profile-note").textContent = "汇总跨全部会话";
 }
 
 
@@ -1264,12 +1338,61 @@ function renderUsage(group, payload) {
 }
 
 
+/** 「关于」块：配置文件路径 + 真实版本 / 工具数 / 库路径（读 system.health）。
+ *  读不到就如实说读不到 —— 不编一个版本号出来。 */
+async function settingsAboutBlock(configPath) {
+  var group = document.createElement("div");
+  group.className = "set-group";
+  var head = document.createElement("h4");
+  head.textContent = "关于";
+  group.appendChild(head);
+  var rows = [["配置文件", configPath || "（后端没报路径）"]];
+  try {
+    var health = await scout.call("system.health", {});
+    rows.push(["版本", String(health.version || "未知")]);
+    rows.push(["工具", ((health.tools || []).length || 0) + " 个"]);
+    rows.push(["数据库", String(health.db_path || "未知")]);
+    rows.push(["模型密钥", health.llm_configured ? "已配置" : "未配置（只能搜，不能生成）"]);
+  } catch (error) {
+    rows.push(["版本", "读取失败：" + error.message]);
+  }
+  rows.forEach(function (pair) {
+    var row = document.createElement("div");
+    row.className = "set-row";
+    var label = document.createElement("span");
+    label.textContent = pair[0];
+    var value = document.createElement("span");
+    value.textContent = pair[1];
+    row.appendChild(label);
+    row.appendChild(value);
+    group.appendChild(row);
+  });
+  return group;
+}
+
+
 async function openSettings() {
   var payload = await scout.call("settings.get", {});
   var values = payload.values || {};
   var secrets = payload.secrets_configured || {};
   var body = el("settings-body");
   body.textContent = "";
+
+  // 分类壳先搭好（默认只展开第一组：打开设置先看到一组，其余点标题展开）
+  var panels = {};
+  SETTINGS_CATEGORIES.forEach(function (spec, index) {
+    var cat = uiCategory(spec.name, spec.title, spec.hint, index === 0);
+    panels[spec.name] = cat.panel;
+    body.appendChild(cat.box);
+  });
+  // 组标题 → 分类面板。没在声明里出现的组一律进「外观与关于」，绝不静默丢内容。
+  var hostOf = {};
+  SETTINGS_CATEGORIES.forEach(function (spec) {
+    spec.sections.forEach(function (title) {
+      hostOf[title] = panels[spec.name];
+    });
+  });
+
   SETTINGS_SPEC.forEach(function (group) {
     var box = document.createElement("div");
     box.className = "set-group";
@@ -1290,16 +1413,16 @@ async function openSettings() {
     group.fields.forEach(function (field) {
       box.appendChild(renderSettingsField(field, values, secrets));
     });
-    body.appendChild(box);
+    (hostOf[group.title] || panels.appearance).appendChild(box);
   });
 
-  renderAppearance(body);
+  renderAppearance(panels.appearance);
 
-  // 飞书接入卡片（凭据有无 / 渠道开关 / 当前策略 / 配对码与倒计时 / 「获取我的 id」引导 / 自检）
-  await renderFeishuCard(body);
+  // 渠道（独立分类）：飞书接入卡片（凭据有无 / 渠道开关 / 当前策略 / 配对码与倒计时 /
+  // 「获取我的 id」引导 / 自检）+ 渠道中心卡片（channel.* 统一命名空间）
+  await renderFeishuCard(panels.channel);
 
-  // 渠道中心卡片（channel.* 统一命名空间：启停 / 凭据只写不回读 / 连接状态 / 接入清单 / 自动建应用）
-  await renderChannelCard(body);
+  await renderChannelCard(panels.channel);
 
   // MinerU：开关开着但没配 token —— 现在**不是错误**（扫描版走免 Token 的预签名直传也能用），
   // 但要说清能力边界：免 Token 的 Agent 通道限 ≤10MB / ≤20 页，更大或要更高精度才需要 Token。
@@ -1310,7 +1433,7 @@ async function openSettings() {
       "扫描版走免 Token 通道（官方 Agent 轻量接口，实测可用）：限单文件 ≤10MB / ≤20 页，" +
       "直传本地字节、不需要公网 URL。超过这个规模或要更高精度（表格/公式/多格式导出），" +
       "再填 MinerU Token 换精准接口（≤200MB / ≤200 页）。解析失败会如实记成 mineru_failed，不会假装成功。";
-    body.appendChild(warn);
+    panels.data.appendChild(warn);
   }
 
   var dataGroup = document.createElement("div");
@@ -1376,7 +1499,10 @@ async function openSettings() {
   buttons.appendChild(vacuum);
   cleanRow.appendChild(buttons);
   dataGroup.appendChild(cleanRow);
-  body.appendChild(dataGroup);
+  panels.data.appendChild(dataGroup);
+
+  // 「外观与关于」里的关于块：配置文件路径 + 真实版本/工具数（读 system.health；读不到就说读不到）
+  panels.appearance.appendChild(await settingsAboutBlock(payload.config_path));
 
   el("settings-path").textContent = "配置文件：" + (payload.config_path || "");
   el("settings-note").textContent = "";
@@ -1429,6 +1555,8 @@ async function saveSettings() {
     note.textContent = "已保存并生效" + (notes ? "（" + notes + "）" : "");
     note.className = "hint set-ok";
     await openSettings();
+    // 输入框里显示的模型/深度思考跟着刷新（改的就是这两个键，不刷新会显示旧值）
+    await refreshComposerMeta();
   } catch (error) {
     note.textContent = "保存失败：" + error.message;
     note.className = "hint set-bad";

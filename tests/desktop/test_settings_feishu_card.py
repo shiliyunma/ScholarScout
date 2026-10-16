@@ -84,9 +84,15 @@ def _card_block() -> str:
 
 
 def test_card_is_wired_into_open_settings() -> None:
+    """卡片必须被 openSettings 接进来，且落在**分类面板**里（不是甩在浮层根上）。
+
+    本轮把设置浮层分了类：卡片容器从 `body` 变成 `panels.channel`（「渠道」那一类）。
+    断言跟着改容器名，但**判得更严**：容器必须是分类面板之一的变量，不许是 `body`。
+    """
     text = PROFILE_JS.read_text(encoding="utf-8")
     assert "async function renderFeishuCard(body)" in text, "卡片函数没了或改了签名"
-    assert "await renderFeishuCard(body)" in text, "openSettings 没把卡片接进来"
+    assert "await renderFeishuCard(panels.channel)" in text, "openSettings 没把卡片接进「渠道」分类"
+    assert "await renderFeishuCard(body)" not in text, "卡片又挂回浮层根上（分类等于没做）"
 
 
 def test_card_calls_only_feishu_methods() -> None:

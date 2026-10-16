@@ -2,6 +2,40 @@
    桥与小工具在 api.js、资料库在 sources.js、学习相关在 learning.js、
    看板在 board.js、个人中心与设置在 profile.js（引入顺序见 index.html）。 */
 
+/* 输入框区域里的「当前模型 / 深度思考」：**只在真读到值时才写**，读不到就说读不到。
+ *
+ * 值来自 `settings.get` 的 `values`（后端 settings_io.read_settings 按 FIELDS 白名单读
+ * config.yaml，缺键回落到真实 config 对象），所以显示的就是**当前生效**的模型名 —— 不是
+ * 界面上另写一份。
+ *
+ * 关于「推理强度」：本项目**没有**独立的推理强度等级（没有 reasoning_effort 这类键，
+ * config 里只有 `llm.chat.thinking` 这个布尔开关，实测它对 completion 的影响是 −78%）。
+ * 所以这里显示真实存在的那个开关，**不发明一个"强度"档位** —— 显示假设置比不显示更糟。
+ */
+async function refreshComposerMeta() {
+  const model = el("composer-model");
+  const thinking = el("composer-thinking");
+  if (!model || !thinking) return;
+  let values = {};
+  try {
+    values = (await scout.call("settings.get", {})).values || {};
+  } catch (error) {
+    model.textContent = "模型：读取失败";
+    thinking.textContent = "";
+    return;
+  }
+  const name = values["llm.chat.model"];
+  model.textContent = "模型：" + (name ? String(name) : "未配置");
+  model.title = "当前对话模型（设置里的 llm.chat.model）";
+  const on = values["llm.chat.thinking"];
+  thinking.textContent =
+    on === true ? "深度思考：开" : on === false ? "深度思考：关" : "深度思考：未知";
+  thinking.title =
+    "本项目没有独立的推理强度档位；这里显示的是真实存在的开关 llm.chat.thinking" +
+    "（关掉省 ~26% token，质量会掉）";
+}
+
+
 function renderHealth(health) {
   const llm = health.llm_configured ? "已配置模型" : "未配置模型（只能搜，不能生成）";
   const tools = (health.tools || []).length;
@@ -667,6 +701,8 @@ async function boot() {
   try {
     initLayout();
     renderHealth(await scout.call("system.health", {}));
+    // 输入框里显示当前模型 / 深度思考（读的就是 settings.get 的真实值）
+    await refreshComposerMeta();
     const items = await loadSessions();
     if (items.length) await openSession(items[0].session_id);
     else await newSession();
@@ -1300,6 +1336,44 @@ var SETTINGS_SPEC = [
       },
       { key: "mineru.api_token", label: "MinerU Token（扫描版精准解析；空＝走免费通道）", kind: "secret" },
     ],
+  },
+];
+
+
+/*: 设置浮层的**分类**（用户反馈"一个大页面太臃肿"）。
+ *  `sections` 是 SETTINGS_SPEC 里的组标题（按标题归位，字段名只写一遍）；
+ *  空 `sections` 的类别由 openSettings 按顺序塞卡片（渠道 / 数据 / 外观与关于）。
+ *  没在任何 `sections` 里出现过的组会被放进「外观与关于」—— 不静默丢内容。 */
+var SETTINGS_CATEGORIES = [
+  {
+    name: "model",
+    title: "模型与生成",
+    hint: "对话与摘要模型、生成策略",
+    sections: ["模型", "生成策略"],
+  },
+  {
+    name: "channel",
+    title: "渠道",
+    hint: "把飞书等渠道接进桌面应用",
+    sections: [],
+  },
+  {
+    name: "search",
+    title: "检索与网络",
+    hint: "搜索引擎、预算与抓取",
+    sections: ["搜索引擎", "检索与预算"],
+  },
+  {
+    name: "data",
+    title: "数据与存储",
+    hint: "占用、清理、数据库整理与解析兜底",
+    sections: [],
+  },
+  {
+    name: "appearance",
+    title: "外观与关于",
+    hint: "只在本机生效的外观设置，以及版本信息",
+    sections: [],
   },
 ];
 

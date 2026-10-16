@@ -62,17 +62,24 @@
         <button type="button" class="ghost" data-ask="cards">生成抽背卡</button>
       </div>
       <form class="composer" id="composer">
-        <!-- 「发送」这一行**只有按钮**（用户要求：与发送同行的装饰性内容全部删掉）。
-             原来的两处装饰已删/搬家：
-               · span#hint "工具调用与出处都会显示在这里" → 删（纯装饰，且"出处在哪"已由
-                 消息流里的工具条与右侧资料库回答）
-               · span#session-usage 本会话累计 → 移到 .chat-head（仍是同一个 id）
-             加载圈原来也在这里（.composer 内的绝对定位浮层）——用户要求搬进会话消息流内部，
-             现在由前端 makePending() 建在「进行中」气泡里（见 .msg-progress）。 -->
-        <textarea id="input" rows="3" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
-        <div class="composer-actions">
-          <button id="btn-stop" class="ghost" type="button" hidden>停止</button>
-          <button id="btn-send" type="submit">发送</button>
+        <!-- 输入区（Hermes 风）：文本域与「模型/深度思考 + 发送/停止」在**同一个框**里。
+             「发送」那一行仍然**只有按钮**（装饰性 span 已删、#session-usage 已搬到 .chat-head）：
+               · span#hint "工具调用与出处都会显示在这里" → 删（纯装饰）
+               · span#session-usage 本会话累计 → 留在 .chat-head（仍是同一个 id）
+             加载圈早已搬进会话消息流内部（.msg-progress，见 makePending()）。
+             按钮与状态行都是 .composer-input 内部的**定位元素**（absolute），不再占用
+             输入框下方的一行 → 相邻栏位几何不变（探针按 ui_chat_probe.BASELINE_GEOM 断言）。
+             id 一个没改：#input / #btn-send / #btn-stop 都还在原位，JS 取值逻辑一字未动。 -->
+        <div class="composer-input">
+          <textarea id="input" rows="3" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
+          <p class="composer-meta">
+            <span class="composer-model" id="composer-model"></span>
+            <span class="composer-thinking" id="composer-thinking"></span>
+          </p>
+          <div class="composer-actions">
+            <button id="btn-stop" class="ghost" type="button" hidden>停止</button>
+            <button id="btn-send" type="submit">发送</button>
+          </div>
         </div>
       </form>
     </section>

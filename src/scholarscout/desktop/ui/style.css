@@ -7302,3 +7302,136 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .channel-blockers {
   color: var(--ui-text-tertiary);
 }
+
+/* ──────────────── ④ 输入区内的发送按钮 / 模型与深度思考；设置与个人中心分类（本轮用户反馈）
+ *
+ * ① 发送按钮收进输入框内部（Hermes 风）：`.composer-input` 是**定位上下文**，
+ *    `.composer-meta`（模型 / 深度思考）与 `.composer-actions`（发送 / 停止）都是它内部的
+ *    定位元素 → 不再占输入框下方的一行，也不参与 .layout 栅格，**相邻栏位几何不变**。
+ *    定位上下文刻意挂在 `.composer-input` 上，**不是** `.composer` —— 加载圈浮层退休时留下了
+ *    "`.composer` 不该再有 position:relative" 的守卫，别改回去（改了它会红，这是故意的）。
+ * ② 分类用**可折叠分组**，不是标签页：分组头始终可见（"前两组同时看得见"才成立），
+ *    点了才收起内容；默认只展开第一组 —— 治的是用户说的"一个大页面太臃肿"。
+ * ③ 只用本设计真实存在的令牌（--ui-* / --radius-* / --font-*），写别的名字会让整条声明静默失效。
+ */
+
+.composer-input {
+  position: relative;
+}
+/* 框底留出按钮与状态行的高度：它们定位在框内，不占文档流 */
+.composer-input textarea {
+  padding-bottom: 34px;
+}
+.composer-meta {
+  position: absolute;
+  left: 11px;
+  bottom: 9px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 124px);
+  pointer-events: none; /* 状态行不吃点击，点哪儿都还能落到文本域上 */
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ui-text-tertiary);
+}
+.composer-model,
+.composer-thinking {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-thinking {
+  color: var(--ui-text-quaternary);
+}
+.composer-actions {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  margin: 0;
+  gap: 6px;
+  justify-content: flex-end;
+}
+#btn-send {
+  border-radius: 999px;
+  padding: 3px 16px;
+  background: color-mix(in srgb, var(--ui-accent) 92%, transparent);
+  border-color: color-mix(in srgb, var(--ui-accent) 70%, transparent);
+  color: #fff;
+  font-weight: 600;
+}
+#btn-send:hover {
+  background: var(--ui-accent);
+  color: #fff;
+}
+#btn-stop {
+  border-radius: 999px;
+}
+
+/* 浮层内的分类（设置与个人中心共用）：分组头始终可见，内容可收起 */
+.ui-cat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
+  padding-top: 6px;
+}
+.ui-cat:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.ui-cat-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.ui-cat-head:hover {
+  background: var(--ui-control-hover-background);
+  color: var(--ui-text-primary);
+}
+.ui-cat-head strong {
+  flex: 0 0 auto;
+}
+.ui-cat-caret {
+  flex: 0 0 auto;
+  width: 10px;
+  font-size: 10px;
+  color: var(--ui-text-tertiary);
+}
+.ui-cat-caret::before {
+  content: "▸";
+}
+.ui-cat.is-open .ui-cat-caret::before {
+  content: "▾";
+}
+.ui-cat-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--ui-text-quaternary);
+}
+.ui-cat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 2px 2px 15px;
+}
+/* 类选择器上的 display 会压掉 UA 给 [hidden] 的 display:none —— 必须显式补一条 */
+.ui-cat-body[hidden] {
+  display: none;
+}
