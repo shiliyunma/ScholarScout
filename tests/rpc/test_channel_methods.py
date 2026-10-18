@@ -35,7 +35,7 @@ _ENV_KEYS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET")
 APP_ID = "cli_a1b2c3d4e5f6"
 SECRET = "sec_SUPER_SECRET_VALUE_3f9c"
 
-#: docs/21 §5.1 里本轮落地的八条 `channel.*`
+#: docs/21 §5.1 里本轮落地的九条 `channel.*`
 CHANNEL_METHODS = frozenset(
     {
         "channel.list",
@@ -46,6 +46,8 @@ CHANNEL_METHODS = frozenset(
         "channel.send",
         "channel.start",
         "channel.stop",
+        # 子进程专用（父进程是状态快照的唯一写者）：子进程只上报，落盘在父进程
+        "channel.report_state",
     }
 )
 

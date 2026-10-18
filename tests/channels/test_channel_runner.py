@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,28 @@ class FakeWs:
         return self
 
 
+def _reports(stdio: FakeStdio) -> list[dict]:
+    """桩客户端收到的所有状态上报（`channel.report_state` 的 patch）。"""
+    return [
+        dict(params.get("patch") or {})
+        for name, params in stdio.calls
+        if name == "channel.report_state"
+    ]
+
+
+def _reported(stdio: FakeStdio) -> dict[str, object]:
+    """把多帧上报按到达顺序合并成"子进程眼里的状态"（父进程落盘时也是这么合）。"""
+    merged: dict[str, object] = {}
+    for patch in _reports(stdio):
+        merged.update(patch)
+    return merged
+
+
+def _states(stdio: FakeStdio) -> list[str]:
+    """上报里出现过的 state 序列（证明状态机的**顺序**，不只看最后一帧）。"""
+    return [str(patch["state"]) for patch in _reports(stdio) if "state" in patch]
+
+
 def _ws_factory(holder: dict) -> object:
     def factory(ctx: object, **kwargs: object) -> FakeWs:
         ws = FakeWs(ctx, **kwargs)
@@ -149,13 +172,22 @@ def test_unknown_platform_is_refused(capsys: pytest.CaptureFixture[str]) -> None
     assert "只做" in capsys.readouterr().err
 
 
-def test_missing_credentials_write_error_state(capsys: pytest.CaptureFixture[str]) -> None:
-    code = runner.run("feishu", sdk_probe=lambda: (True, "ok"))
+def test_missing_credentials_report_error_state(capsys: pytest.CaptureFixture[str]) -> None:
+    """凭据没配 → 退出码 2 + **一帧 error 上报**，且子进程**一个字节都不落盘**。
+
+    注意断言对象变了但**意图没松**：状态仍然是"error + 原因"，只是交付方式从"子进程写文件"
+    改成"子进程上报、父进程落盘"（`channel.report_state`）。所以这里同时钉住两件事：
+    ① 报上去的那一帧内容对；② 磁盘上没有这个文件 —— 后者才是这次修的 bug 本身
+    （两个进程写同一个文件 → Windows 偶发 `os.replace PermissionError`）。
+    """
+    stdio = FakeStdio()
+    code = runner.run("feishu", client=stdio, sdk_probe=lambda: (True, "ok"))
     assert code == runner.EXIT_PREREQ
     assert "凭据未配置" in capsys.readouterr().err
-    state = supervisor.read_state("feishu")
-    assert state["state"] == "error"
-    assert "凭据未配置" in str(state["last_error"])
+    reported = _reported(stdio)
+    assert reported["state"] == "error"
+    assert "凭据未配置" in str(reported["last_error"])
+    assert supervisor.read_state("feishu") == {}, "子进程不许写状态文件（父进程是唯一写者）"
 
 
 def test_missing_sdk_tells_the_next_command(
@@ -164,13 +196,19 @@ def test_missing_sdk_tells_the_next_command(
     """SDK 没装：退出码 2 + **说清下一步跑哪条命令**（不许只说"不行"）。"""
     monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    stdio = FakeStdio()
     code = runner.run(
         "feishu",
+        client=stdio,
         sdk_probe=lambda: (False, "未安装 lark_oapi：先跑 `python scripts/install_deps.py`"),
     )
     assert code == runner.EXIT_PREREQ
     assert "install_deps.py" in capsys.readouterr().err
-    assert supervisor.read_state("feishu")["state"] == "error"
+    # 状态经上报交给父进程落盘（子进程不碰文件）：error + 与 stderr 同一句原因
+    reported = _reported(stdio)
+    assert reported["state"] == "error"
+    assert "install_deps.py" in str(reported["last_error"])
+    assert supervisor.read_state("feishu") == {}
 
 
 # ------------------------------------------------------------------ 起长连接（全桩）
@@ -196,8 +234,11 @@ def test_run_wires_remote_context_and_keeps_stdout_clean(
     assert isinstance(ws.ctx, remote.RemoteContext)
     assert ws.ctx.db is None, "子进程侧不开库（docs/20 单写纪律）"
     assert ws.started is True
-    # 状态：起连接时 running，收尾后 stopped
-    assert supervisor.read_state("feishu")["state"] == "stopped"
+    # 状态：起连接时 starting → running，收尾后 stopped —— 且**顺序**就是这个状态机
+    assert _states(stdio) == ["starting", "running", "stopped"]
+    assert _reported(stdio)["pid"] == os.getpid(), "上报里带上真实子进程 pid（界面用它判定显活）"
+    # 子进程只上报、不落盘：文件里没有它会话的痕迹（父进程写的是它自己那份）
+    assert supervisor.read_state("feishu") == {}
     # 两个公开钩子都接上了（F4：长连接没有公开的关闭接口，但有状态钩子）
     assert callable(ws.sdk_client.on_reconnecting)
     assert callable(ws.sdk_client.on_reconnected)
@@ -234,25 +275,46 @@ def test_message_event_goes_through_rpc_and_reply_is_sent_by_the_parent(
     # 顺序就是子进程从"配置 → 环境变量 → 渠道核心"把 ack_text 传下去的证据。
     assert [p["text"] for p in sent] == [feishu.ack_text_from_env(), "这是主进程跑出来的回答"]
     assert sent[0]["chat_id"] == "oc_test" and sent[1]["chat_id"] == "oc_test"
-    # 顺手记下"最后一条消息"（界面状态行要用）
-    state = supervisor.read_state("feishu")
-    assert state["last_message_at"] and state["last_message_from"] == "ou_me"
+    # 顺手记下"最后一条消息"（界面状态行要用）—— 同样经上报，由父进程落盘
+    reported = _reported(stdio)
+    assert reported["last_message_at"] and reported["last_message_from"] == "ou_me"
+    assert supervisor.read_state("feishu") == {}
 
 
 def test_reconnect_hooks_update_the_state_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """重连钩子 → 两帧上报；`reconnects + 1` 由**父进程**做（只加一次）。
+
+    以前这一条是"钩子自己 read_state 再 +1 写回"—— 那正是要消掉的共享（读别人的文件）。
+    现在子进程只报事实位 `reconnecting`，计数交给持有唯一快照的父进程；所以断言分两段：
+    ① 子进程的帧长什么样（且帧里**没有** `reconnects`）；② 把帧真的喂给 `supervisor.report_state`
+    之后，落盘结果里 `reconnects` 恰好是 1（不是 2、也没被 `reconnecting` 这种提示位污染）。
+    """
     monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("FEISHU_APP_SECRET", "sec_x")
+    stdio = FakeStdio()
     holder: dict = {}
     runner.run(
-        "feishu", client=FakeStdio(), sdk_probe=lambda: (True, "ok"), ws_factory=_ws_factory(holder)
+        "feishu", client=stdio, sdk_probe=lambda: (True, "ok"), ws_factory=_ws_factory(holder)
     )
     sdk_client = holder["ws"].sdk_client
+    before = len(_reports(stdio))
     sdk_client.on_reconnecting()
-    state = supervisor.read_state("feishu")
-    assert state["connected"] is False and state["reconnects"] == 1
     sdk_client.on_reconnected()
+    frames = _reports(stdio)[before:]
+    assert frames == [
+        {"connected": False, "reconnecting": True, "last_error": "长连接断开，正在重连"},
+        {"connected": True, "reconnecting": False, "last_error": None},
+    ]
+    assert not any("reconnects" in frame for frame in frames), (
+        "子进程不许自己算 reconnects —— 算它就得先读那个文件，共享又回来了"
+    )
+
+    for frame in frames:
+        supervisor.report_state("feishu", frame)
     state = supervisor.read_state("feishu")
     assert state["connected"] is True and state["reconnects"] == 1
+    assert "reconnecting" not in state, "reconnecting 是上报侧的提示位，落盘前必须翻成计数"
+    assert state["last_error"] is None
 
 
 def test_build_client_failure_is_reported_and_exits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,12 +329,12 @@ def test_build_client_failure_is_reported_and_exits(monkeypatch: pytest.MonkeyPa
     def factory(ctx: object, **kwargs: object) -> FakeWs:
         return Boom(ctx, **kwargs)
 
-    code = runner.run(
-        "feishu", client=FakeStdio(), sdk_probe=lambda: (True, "ok"), ws_factory=factory
-    )
+    stdio = FakeStdio()
+    code = runner.run("feishu", client=stdio, sdk_probe=lambda: (True, "ok"), ws_factory=factory)
     assert code == runner.EXIT_START_FAILED
-    state = supervisor.read_state("feishu")
-    assert state["state"] == "error" and "lark_oapi" in str(state["last_error"])
+    reported = _reported(stdio)
+    assert reported["state"] == "error" and "lark_oapi" in str(reported["last_error"])
+    assert supervisor.read_state("feishu") == {}
 
 
 # ------------------------------------------------------------------ 凭据来源

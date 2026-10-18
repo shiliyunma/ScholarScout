@@ -281,6 +281,40 @@ def channel_guide(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@method("channel.report_state")
+def channel_report_state(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """渠道**子进程**的状态上报口 —— 子进程不写状态文件，**父进程是唯一写者**。
+
+    为什么开这一条（真机 bug 的根治手段）：`run/channels/<platform>.state.json` 原本被两个进程
+    写（父进程的 `start`/`stop`/桥线程收尾 + 子进程自己）。Windows 上 `os.replace` 在目标被
+    另一个进程的句柄打开着时瞬时 `PermissionError: [Errno 13]`，而进程内锁跨不了进程 ——
+    症状就是"偶发、单跑不复现"。让子进程改走这条 RPC，写者只剩父进程一个。
+
+    - `patch` 必须是对象；`state` 若给了必须落在 `supervisor.STATES` 里
+      （拼错的状态值会让界面把 error 显示成"未连接"，静默失真比报错更难查）；
+    - **回包只有 `ok` / `platform` / `state`**：不含任何凭据（父子两侧都不需要）；
+    - 顺手把 `channel.state` 通知推给界面，状态点跟手更新。
+    """
+    params = _params(params)
+    platform = _platform(params)
+    patch = params.get("patch")
+    if not isinstance(patch, dict):
+        raise RpcError(Code.INVALID_PARAMS, "缺参数：patch（状态字段对象）")
+    state = patch.get("state")
+    if state is not None and str(state) not in supervisor.STATES:
+        raise RpcError(
+            Code.INVALID_PARAMS,
+            f"patch.state 只能是：{'、'.join(supervisor.STATES)}（拿到 {state!r}）",
+        )
+    supervisor.report_state(platform, patch)
+    snap = supervisor.snapshot(platform)
+    supervisor.emit_state(
+        ctx,
+        {"platform": platform, "state": snap["state"], "connected": bool(snap["connected"])},
+    )
+    return {"ok": True, "platform": platform, "state": snap["state"]}
+
+
 # ------------------------------------------------------------------ 凭据写入
 
 

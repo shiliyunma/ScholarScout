@@ -34,7 +34,7 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from scholarscout.config import DEFAULT_FEISHU_ACK_TEXT
@@ -238,10 +238,14 @@ class FeishuCredentials:
 
     长连接只需要 `app_id` + `app_secret`（用它换 token 才能连上）。历史上 webhook 还要
     verification token / encrypt key —— 那两个键随 webhook 一起删了。
+
+    `app_secret` 显式 `repr=False`：dataclass 的自动 `__repr__` 会把字段原样打出来，
+    而 `logger.info("%s", creds)` / 异常里拼 `{creds}` 这类写法到处都是 ——
+    密钥不能靠"记得别打"来守，要从 repr 上就看不到。
     """
 
     app_id: str = ""
-    app_secret: str = ""
+    app_secret: str = field(default="", repr=False)
 
     @property
     def can_send(self) -> bool:

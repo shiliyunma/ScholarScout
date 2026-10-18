@@ -169,7 +169,8 @@ class FeishuWsClient:
     handler: feishu.MessageHandler | None = None
     sdk: WsSdk | None = None
     app_id: str = ""
-    app_secret: str = ""
+    #: 同 `FeishuCredentials.app_secret`：dataclass 的 `__repr__` 不该带出密钥明文
+    app_secret: str = field(default="", repr=False)
     domain: str = DOMAIN_DEFAULT
     #: 入站即时回执文案（docs/17 §3.11）：转发给它自己建的那个 `FeishuMessageHandler`。
     #: `None` = 让渠道核心按 `.env` 的 `FEISHU_ACK_TEXT` 决定（入口层注入的那份），空串 = 关掉回执。

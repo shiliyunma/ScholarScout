@@ -4,8 +4,10 @@
 
 1. **当 RPC 客户端**：用 `channels/remote.py` 在 stdin/stdout 上跟父进程说话（父进程是服务端）；
 2. **起长连接**：装配 `channels/feishu_ws.py` 的飞书长连接，事件进来后经 RPC 交给父进程跑一轮；
-3. **写状态快照**：`run/channels/<platform>.state.json`（连接 / 重连次数 / 最后一条消息 / 最后一次错误）
-   —— 界面读它，父进程**不替它编**这些值；
+3. **上报状态**：`run/channels/<platform>.state.json`（连接 / 重连次数 / 最后一条消息 / 最后一次错误）
+   —— 界面读它，父进程**不替它编**这些值；但**文件只由父进程写**：子进程只经
+   `channel.report_state` 把变化递上去（见 `reporter` 的注释）。子进程直接写那个文件是
+   真机 `os.replace PermissionError` 的来源 —— 两个进程抢同一个文件，进程内锁管不到。
 4. **日志只走 stderr**：stdout 是协议通道，往那里打一行普通文字就等于往协议里掺垃圾。
 
 ## 三条纪律（都能在代码里指出来，不是口号）
@@ -23,7 +25,6 @@ import logging
 import os
 import sys
 from collections.abc import Callable, Sequence
-from pathlib import Path
 from typing import Any
 
 from scholarscout.channels import feishu, feishu_ws, remote, supervisor
@@ -36,11 +37,37 @@ EXIT_START_FAILED = 3
 
 #: 出站发送统一走父进程的这个 RPC（子进程不自己出网，见模块顶注）
 SEND_METHOD = "channel.send"
+#: 状态上报统一走父进程的这个 RPC（**父进程是状态文件的唯一写者**）
+REPORT_METHOD = "channel.report_state"
+
+#: 一条状态上报：`{"state": ..., "connected": ...}` 的字段集合（合并语义由父进程的 write_state 定）
+Reporter = Callable[[dict[str, Any]], None]
 
 
 def log(message: str) -> None:
     """子进程的日志一律走 stderr（**stdout 是 JSON-RPC 通道**）。"""
     print(f"[Channel] {message}", file=sys.stderr, flush=True)
+
+
+def reporter(client: remote.StdioClient, platform: str) -> Reporter:
+    """造一个"上报状态"的函数：**只发 RPC，不碰文件**。
+
+    为什么不让子进程写 `run/channels/<platform>.state.json`（真机 bug，别再改回去）：
+    那个文件的写者原本有两个进程 —— 父进程（`start` / `stop` / 桥线程收尾）和子进程自己。
+    Windows 上 `os.replace` 在目标被**另一个进程的句柄**打开着时会瞬时抛
+    `PermissionError: [Errno 13]`，而 `threading.Lock` 跨不了进程 → 偶发、单跑不复现。
+    改成状态经 RPC 上报、由父进程落盘后，写者只剩一个，问题从"概率"变成"不存在"。
+
+    **上报失败一律吞掉**：状态丢一帧只影响界面上的一个点，不能因此让渠道断掉。
+    """
+
+    def _report(payload: dict[str, Any]) -> None:
+        try:
+            client.request(REPORT_METHOD, {"platform": platform, "patch": dict(payload)})
+        except Exception as exc:
+            logger.warning("[Channel] 状态上报失败（已吞）：%s", exc)
+
+    return _report
 
 
 def remote_sender(
@@ -71,14 +98,18 @@ class StatefulHandler:
 
     为什么不去改 `channels/feishu.py`：那一层是"传输无关的入站核心"，加状态上报就把它和
     落盘/界面耦合起来；在这里包一层，核心仍然只做解析/拦截/跑一轮。
+
+    `report` 是父进程给的**唯一落盘通道**（RPC）；这一层**不 import 任何落盘代码**。
     """
 
     def __init__(
-        self, inner: feishu.FeishuMessageHandler, *, platform: str, root: Path | None
+        self,
+        inner: feishu.FeishuMessageHandler,
+        *,
+        report: Reporter,
     ) -> None:
         self._inner = inner
-        self._platform = platform
-        self._root = root
+        self._report = report
 
     def handle_event(self, payload: Any) -> Any:
         decision = self._inner.handle_event(payload)
@@ -87,43 +118,35 @@ class StatefulHandler:
         except Exception:  # pragma: no cover - 解析失败不该影响收消息
             message = None
         if message is not None:
-            supervisor.write_state(
-                self._platform,
+            self._report(
                 {
                     "last_message_at": supervisor.now_iso(),
                     "last_message_from": message.sender_open_id or message.chat_id,
                     "connected": True,
-                },
-                self._root,
+                }
             )
         return decision
 
 
-def attach_connection_hooks(sdk_client: Any, *, platform: str, root: Path | None) -> None:
-    """把 SDK 的两个**公开**状态钩子接到状态快照上（`docs/21 §2.1 F4`）。
+def attach_connection_hooks(sdk_client: Any, *, report: Reporter) -> None:
+    """把 SDK 的两个**公开**状态钩子接到状态上报上（`docs/21 §2.1 F4`）。
 
     `lark_oapi.ws.Client` 只有 `start()` 是公开方法（`_disconnect` 是私有的），但它留了
     `on_reconnecting` / `on_reconnected` 两个公开钩子 —— 正好当连接健康检查的信号源。
     钩子签名在不同 SDK 版本上可能不同，所以一律 `*args` 收，**回调里绝不外抛**。
+
+    `reconnects` 的 +1 由父进程做（它持有唯一一份快照，读改写在同一把锁里）——
+    子进程自己 `read_state` 再 +1 会是"读别人的文件"，那正是要消掉的那类共享。
     """
 
     def _on_reconnecting(*args: Any) -> None:
         del args
-        state = supervisor.read_state(platform, root)
-        supervisor.write_state(
-            platform,
-            {
-                "connected": False,
-                "reconnects": int(state.get("reconnects") or 0) + 1,
-                "last_error": "长连接断开，正在重连",
-            },
-            root,
-        )
+        report({"connected": False, "reconnecting": True, "last_error": "长连接断开，正在重连"})
         log("长连接断开，正在重连…")
 
     def _on_reconnected(*args: Any) -> None:
         del args
-        supervisor.write_state(platform, {"connected": True, "last_error": None}, root)
+        report({"connected": True, "reconnecting": False, "last_error": None})
         log("长连接已重连")
 
     for name, hook in (("on_reconnecting", _on_reconnecting), ("on_reconnected", _on_reconnected)):
@@ -136,7 +159,6 @@ def attach_connection_hooks(sdk_client: Any, *, platform: str, root: Path | None
 def run(
     platform: str,
     *,
-    root: Path | None = None,
     client: remote.StdioClient | None = None,
     sdk: feishu_ws.WsSdk | None = None,
     credentials: feishu.FeishuCredentials | None = None,
@@ -151,27 +173,23 @@ def run(
         say(f"不支持的平台：{platform}（本轮只做：{'、'.join(supervisor.PLATFORMS)}）")
         return EXIT_PREREQ
 
-    supervisor.write_state(
-        name, {"state": "starting", "pid": os.getpid(), "connected": False}, root
-    )
+    # RPC 客户端要**先**建出来：状态上报走它（子进程不写状态文件，见模块顶注第 3 条）。
+    stdio = client or remote.StdioClient()
+    report = reporter(stdio, name)
+    report({"state": "starting", "pid": os.getpid(), "connected": False})
     creds = credentials or feishu.credentials_from_env()
     if not (creds.app_id and creds.app_secret):
         say("凭据未配置：先在设置里填 App ID / App Secret（或点「自动创建应用」）")
-        supervisor.write_state(
-            name,
-            {"state": "error", "last_error": "凭据未配置（FEISHU_APP_ID / FEISHU_APP_SECRET）"},
-            root,
-        )
+        report({"state": "error", "last_error": "凭据未配置（FEISHU_APP_ID / FEISHU_APP_SECRET）"})
         return EXIT_PREREQ
 
     probe = sdk_probe or (lambda: feishu_ws.probe_sdk())
     ok, detail = probe()
     if not ok:
         say(detail)
-        supervisor.write_state(name, {"state": "error", "last_error": detail}, root)
+        report({"state": "error", "last_error": detail})
         return EXIT_PREREQ
 
-    stdio = client or remote.StdioClient()
     ctx = remote.RemoteContext(dispatcher=stdio.call)
     sender = remote_sender(stdio, name)
     # 入站即时回执文案（docs/17 §3.11）：`ack_text` 显式给了就用它，否则读父进程注入的
@@ -182,8 +200,7 @@ def run(
         feishu.FeishuMessageHandler(
             ctx, credentials=creds, sender=sender, dispatcher=stdio.call, ack_text=ack
         ),
-        platform=name,
-        root=root,
+        report=report,
     )
     factory = ws_factory or feishu_ws.FeishuWsClient
     try:
@@ -200,13 +217,11 @@ def run(
     except Exception as exc:
         message = f"装配长连接失败：{type(exc).__name__}: {exc}"
         say(message)
-        supervisor.write_state(name, {"state": "error", "last_error": message}, root)
+        report({"state": "error", "last_error": message})
         return EXIT_START_FAILED
 
-    attach_connection_hooks(sdk_client, platform=name, root=root)
-    supervisor.write_state(
-        name, {"state": "running", "connected": True, "pid": os.getpid(), "last_error": None}, root
-    )
+    attach_connection_hooks(sdk_client, report=report)
+    report({"state": "running", "connected": True, "pid": os.getpid(), "last_error": None})
     say("长连接启动（本机主动外连，不需要公网地址 / 回调 URL / 隧道）")
     try:
         ws.start(block=True, say=say)
@@ -215,9 +230,9 @@ def run(
     except Exception as exc:  # pragma: no cover - SDK 内部异常
         message = f"长连接退出：{type(exc).__name__}: {exc}"
         say(message)
-        supervisor.write_state(name, {"state": "error", "last_error": message}, root)
+        report({"state": "error", "last_error": message})
         return EXIT_START_FAILED
-    supervisor.write_state(name, {"state": "stopped", "connected": False}, root)
+    report({"state": "stopped", "connected": False})
     return EXIT_OK
 
 

@@ -10,18 +10,25 @@
 
     run/channels/<platform>.pid         子进程 pid（停止时按它精准停）
     run/channels/<platform>.log         子进程日志（stderr 重定向到这里）
-    run/channels/<platform>.state.json  子进程状态快照（**由子进程自己写**，界面读它）
+    run/channels/<platform>.state.json  状态快照（**只由主进程写**；见下面纪律 3）
 
 `.pid` / `.log` 的命名沿用 docs/21 §4 的原文；`.state.json` 是本模块加的：
 界面要显示"连接 / 重连次数 / 最后一条消息 / 最后一次错误"，而**主进程不能替子进程编这些值** ——
-所以由子进程在状态变化时写一份快照，主进程只读，读不到就说"未连接"，不猜。
+子进程在状态变化时**经 RPC 上报**（`channel.report_state`），主进程是唯一写者、只按上报落盘。
 
-## 两条纪律
+## 三条纪律
 
 1. **子进程只当 RPC 客户端，不自己开库**（docs/21 §4 末行）：`channels/remote.py` 给的
    `RemoteContext` 里根本没有 `db`；子进程要数据就调父进程的 RPC。这条由
    `tests/channels/test_channel_supervisor.py::test_child_never_opens_a_database` 钉住。
 2. **没在跑时 `stop` 不假装成功**：回 `{ok: False, reason: "not_running"}`（照 `chat.cancel` 的既有铁律）。
+3. **状态快照只有父进程这一个写者**：子进程不碰 `run/channels/*.state.json`，它只经
+   `channel.report_state` 上报变化，由父进程落盘。真机踩到的 `os.replace PermissionError: [Errno 13]`
+   就是"父进程 `stop()`/桥线程收尾"与"子进程自己写"同时落到**同一个文件**上：
+   Windows 上目标只要被另一个进程的句柄打开着，`os.replace` 当场 EACCES（`WinError 5/32`），
+   而**进程内的 `threading.Lock` 管不到另一个进程**。所以单一写者才是根治，重试只是兜底。
+   这条由 `tests/channels/test_channel_supervisor.py::test_state_file_has_exactly_one_writer_process`
+   与压力用例 `test_state_file_survives_concurrent_writers_and_readers` 钉住。
 
 ## Windows 的坑（docs/17 §3.9）
 
@@ -32,6 +39,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -65,6 +73,19 @@ _TASKKILL_CANDIDATES = ("taskkill", r"C:\Windows\System32\taskkill.exe")
 #: 本进程起过的子进程句柄（platform -> Popen）。**跨进程重启后靠 pid 文件**，不靠这张表。
 _PROCS: dict[str, subprocess.Popen[str]] = {}
 _LOCK = threading.Lock()
+
+#: 状态快照的**单一写入者锁**：`write_state` 的"读 → 合并 → 写临时文件 → os.replace"整段串行。
+#: 只用进程内锁还不够（跨进程要靠"子进程不写"这条纪律），但没有它连本进程自己都会丢更新。
+#: 用 `RLock`：`report_state` 要在同一把锁里做"读计数 → 写"，而 `write_state` 自己也会拿它。
+_STATE_LOCK = threading.RLock()
+#: `os.replace` 的短重试次数。Windows 上目标被**任何**句柄（杀毒软件扫描、界面读、另一个进程写）
+#: 打开着时会瞬时 `PermissionError: [Errno 13]` / `WinError 5/32`，句柄一关就成功
+#: —— 这正是官方推荐的"重试"场景，不是靠加长超时能解决的。
+REPLACE_ATTEMPTS = 6
+#: 重试退避基数（秒），第 n 次等 `BASE * 2**n`（0.01+0.02+0.04+0.08+0.16 ≈ 0.31s 上限）。
+REPLACE_BACKOFF_S = 0.01
+#: 从状态里打码的凭据环境变量（写快照/写日志前的最后一道闸：宁可显示 `***` 也不落明文）
+SECRET_ENV_KEYS: tuple[str, ...] = ("FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY")
 
 
 # ------------------------------------------------------------------ 平台与路径
@@ -177,32 +198,120 @@ def live_pid(platform: str, root: Path | None = None) -> int | None:
 
 
 def read_state(platform: str, root: Path | None = None) -> dict[str, Any]:
-    """读子进程写的状态快照；没有 / 坏了 → 空字典（**不抛异常、不猜值**）。"""
+    """读状态快照；没有 / 坏了 → 空字典（**不抛异常、不猜值**）。
+
+    读也带短重试：写者正在 `os.replace` 的那一瞬间，Windows 上 `read_text` 同样会瞬时
+    `PermissionError: [Errno 13]`（实测：多线程读写同一文件时读侧也会报这个）。
+    读侧若把这一瞬当成"文件不存在"，界面上的状态点会莫名其妙闪成"未连接"。
+    """
+    target = state_path(platform, root)
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            raw = target.read_text(encoding="utf-8")
+            break
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                return {}
+            time.sleep(REPLACE_BACKOFF_S * (2**attempt))
+        except OSError:
+            return {}
+    else:  # pragma: no cover - 循环内必有 break/return
+        return {}
     try:
-        raw = state_path(platform, root).read_text(encoding="utf-8")
         parsed = json.loads(raw)
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
 
-def write_state(platform: str, payload: dict[str, Any], root: Path | None = None) -> Path:
-    """原子写状态快照（先 `.tmp` 再 `os.replace`，照 `settings_io` 的既有做法）。
+def _replace_with_retry(source: Path, target: Path) -> None:
+    """`os.replace` + 短重试退避（Windows 的瞬时 EACCES）。
 
-    `.tmp` **必须带 pid+线程号**（真机踩到）：状态快照有**多个写者**——`stop()` 与子进程退出后
-    收尾的桥线程会同时写（停进程时两者必然相邻），渠道子进程自己也写一份。
-    Windows 下固定名字的 `.tmp` 被另一个写者打开着时 `open(mode="w")` 直接 `PermissionError`
-    （间歇性、全量跑门禁时不一定复现），加进程号+线程号各写各的即可。
+    **为什么必须重试**（真机踩到 `PermissionError: [Errno 13]`，单跑不复现）：
+    `SetFileInformationByHandle(FileRenameInfoEx)` 在目标文件**还有任何打开的句柄**时直接拒绝
+    （`ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION`），这不是"权限不对"，而是"对方还没松手"。
+    杀毒软件扫描、界面线程 `read_text`、另一个进程正在写 —— 都会造成几十毫秒的窗口。
+    标准处理就是等一等再来（Linux 上 rename 原子且不与读冲突，所以只有 Windows 需要这一层）。
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(REPLACE_BACKOFF_S * (2**attempt))
+
+
+def redact(value: Any) -> Any:
+    """把字符串里的凭据明文换成 `***`（递归处理 dict/list/str）。
+
+    为什么放在落盘前：`last_error` 来自**任意异常**的 `str(exc)`（含 SDK 内部异常），
+    没人能保证它里面永远不会带出 `app_secret`。状态快照会被界面读、被日志打，
+    所以在**唯一出口**统一打码，而不是指望每个调用点自觉。
+    """
+    secrets = [os.environ.get(key, "").strip() for key in SECRET_ENV_KEYS]
+    secrets = [s for s in secrets if s]
+    if not secrets:
+        return value
+    if isinstance(value, str):
+        for secret in secrets:
+            value = value.replace(secret, "***")
+        return value
+    if isinstance(value, dict):
+        return {redact(key): redact(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact(item) for item in value]
+    return value
+
+
+def write_state(platform: str, payload: dict[str, Any], root: Path | None = None) -> Path:
+    """原子写状态快照 —— **主进程是唯一写者**，本函数是全项目唯一写这个文件的地方。
+
+    三件事一起做，缺一条都会回到"偶发 PermissionError"：
+
+    1. **单一写者**：子进程不再写这个文件（它经 `channel.report_state` 上报，见 runner.py）；
+    2. **进程内锁**：`threading.Lock` 罩住"读 → 合并 → 写 tmp → replace"整段 ——
+       否则两个线程各自读到旧值再各自 replace，后写的把前一个的 `reconnects`/`last_message_at`
+       吃掉（丢更新），而且读侧撞上 replace 也会瞬时 EACCES；
+    3. **replace 短重试**：跨进程的残余句柄（杀毒/界面读）只能靠重试兜住，见
+       :func:`_replace_with_retry`。
+
+    `.tmp` 名字仍带 pid + 线程号（**同类 bug 的第一次修法**：固定名 `.tmp` 被两个写者同时打开
+    会直接 `PermissionError`）；现在有了锁其实不会并发，但保留它能让"锁被人改坏"时不至于
+    立刻变成同一个文件名冲突 —— 让错误停在"丢更新"，而不是"写不进去"。
     """
     target = state_path(platform, root)
     target.parent.mkdir(parents=True, exist_ok=True)
-    merged = {**read_state(platform, root), **payload}
-    merged["platform"] = platform
-    merged["updated_at"] = now_iso()
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, target)
+    with _STATE_LOCK:
+        merged: dict[str, Any] = {**read_state(platform, root), **redact(payload)}
+        merged["platform"] = platform
+        merged["updated_at"] = now_iso()
+        text = json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
+        tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            _replace_with_retry(tmp, target)
+        finally:
+            # 重试用尽仍失败时不能留下垃圾（`*.tmp` 会被"临时文件必须被吃掉"那条测试抓住）
+            with contextlib.suppress(OSError):  # pragma: no cover - 清理失败不该盖住原异常
+                tmp.unlink()
     return target
+
+
+def report_state(platform: str, patch: dict[str, Any], root: Path | None = None) -> Path:
+    """处理**子进程上报的一帧状态**（父进程唯一的写入口）。
+
+    `reconnecting` 是上报侧的"提示位"，不是状态字段：在同一把锁里翻译成 `reconnects + 1`
+    后丢弃 —— 计数必须由持有唯一快照的这一侧做；子进程自己 `read_state` 再 +1 就又变成
+    "读别人的文件"，那是这次要消掉的共享。
+    """
+    patch = dict(patch)
+    if patch.pop("reconnecting", False):
+        with _STATE_LOCK:
+            patch["reconnects"] = int(read_state(platform, root).get("reconnects") or 0) + 1
+            return write_state(platform, patch, root)
+    return write_state(platform, patch, root)
 
 
 def now_iso() -> str:
