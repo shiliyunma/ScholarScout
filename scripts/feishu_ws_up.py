@@ -45,6 +45,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from scholarscout.channels import feishu, feishu_ws  # noqa: E402
+from scholarscout.config import load_dotenv  # noqa: E402
 from scholarscout.fetch import feishu_send  # noqa: E402
 
 EXIT_OK = 0
@@ -146,6 +147,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--check", action="store_true", help="只做前提自检（SDK / 凭据），不起连接")
     args = parser.parse_args(argv)
+    # 长连接入口是**独立 CLI**（`--check` 时连 ctx 都不建），不走 build_context ——
+    # 所以必须自己把 .env 读进环境，否则 `credentials_from_env()` 永远读不到凭据，
+    # 表现为"✓ lark-oapi 已安装 / ✗ 凭据未配置"而 .env 里明明有（2026-10-18 实测的坑）。
+    load_dotenv()
     return run(check_only=args.check)
 
 
