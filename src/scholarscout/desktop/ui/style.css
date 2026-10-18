@@ -7488,3 +7488,79 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   display: none;
 }
 
+
+/* ───────────────────────────── 搜索意图选择卡（会话流内，`chat.needs_choice`）
+
+   后端在"没说清要哪类资料"时不猜也不搜，把 7 个选项推上来 → 这里落成**流里的一张卡**。
+   它在消息流内部（`.msg-stream` 的 flex 子项），宽度随流走、**不写死任何 px 宽度**
+   —— 所以中间栏与相邻栏位的几何一个像素都不动（探针按 BASELINE_GEOM 钉着，含左右栏与分隔条）。
+   `.msg` / `.msg .body` 复用的是既有气泡骨架（who + body），这里只补卡片自己的三条：
+   关掉 pre-wrap、选项自适应两列、以及"已选/禁用"态。 */
+.msg-choice .body {
+  /* `.msg .body` 是 pre-wrap（回答正文要用），卡片里的按钮文字会因此多出空行 */
+  white-space: normal;
+  padding: 9px 11px 10px;
+}
+.choice-title {
+  margin: 0 0 7px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ui-text-secondary);
+}
+.choice-options {
+  display: grid;
+  /* minmax(170px, 1fr)：中间栏最宽时排 4 列（7 条 = 4+3，hint 有 200px 读得出来；
+     132px 时排 6 列，hint 全被截成"arXiv / OpenAlex 的预…"），中间栏压到最小 360
+     也还放得下两列，不用媒体查询。 */
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 6px;
+}
+.choice-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px 9px;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ui-text-primary);
+  background: var(--ui-bg-input);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.choice-option:hover:not(:disabled) {
+  background: var(--ui-control-hover-background);
+  border-color: color-mix(in srgb, var(--ui-accent) 40%, var(--ui-stroke-secondary));
+}
+.choice-option-label {
+  font-weight: 600;
+}
+.choice-option-hint {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ui-text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 已选/禁用：整卡降一档，被点中的那条留住强调描边 —— 「选过了，就这一次」要看得出来 */
+.msg-choice.is-answered .choice-option {
+  opacity: 0.55;
+  cursor: default;
+}
+.msg-choice.is-answered .choice-option.is-chosen {
+  opacity: 1;
+  background: color-mix(in srgb, var(--ui-accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--ui-accent) 55%, var(--ui-stroke-secondary));
+}
+.choice-option:disabled {
+  cursor: default;
+}
+.choice-option:focus-visible {
+  outline: 0.125rem solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  outline-offset: -2px;
+}

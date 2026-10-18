@@ -620,6 +620,166 @@ function finishTurn(sessionId, params) {
 }
 
 
+/* ------------------------------------- 搜索意图选择卡（`chat.needs_choice`）
+
+   后端 `research.search` 在"用户没说清要哪类资料"时**不猜也不搜**：回 `needs_choice` 并把
+   7 个选项随 `chat.needs_choice` 推上来。载荷形状（`tools/research_search.py::_choice_event`）：
+   `{session_id, turn_id, query, options: [{type, label, hint}], intent}` —— 选项由
+   `runtime/search_intent.options()` 生成，**前端不自己造选项**，一律照载荷渲染。
+
+   卡片挂在 `streamBox(session_id)` 上，于是三件事是结构保证的：
+     - 不是当前显示的会话也收下（切回去能看、能点）；
+     - 物理上不在别人的流里 → 不可能串会话；
+     - 不改变消息流宽度（卡是流里的一个 flex 子项，宽度随流走，不写死 px）。
+
+   点一条 = 用户**下一条消息**（`send()`），内容见 `CHOICE_PHRASES`：刻意用后端
+   `search_intent._EXPLICIT_RULES` 认得的说法，下一轮直接命中规则，不再花一次分类调用。
+   同一张卡只生效一次（同步置 `data-answered` + 全部按钮 disabled）；
+   同一轮同一个 query 的重复事件不重插（键见 `choiceCardKey`）。
+
+   为什么点击要判 `sessionRunning`：needs_choice 是**轮次中途**由工具推上来的，那一刻这个
+   会话自己的一轮还在跑（界面按会话闸门不许并行）。这时点选只提示"等它结束再选"、**不禁用**
+   —— 否则会变成"已选但什么都没发"。轮次收尾后卡还在，那时点才真正发出去。 */
+
+/*: 选项类型 → 发出去的那句话。**必须能被后端的显式规则认出**（`runtime/search_intent.py`
+    的 `_EXPLICIT_RULES`）：paper/code/tutorial/news/data 用「只看X」，other 用「都可以」，
+    none 用「先不检索」。这样下一轮起手就是确定行为，不用再分类一次。 */
+var CHOICE_PHRASES = {
+  paper: "只看论文",
+  code: "只看代码",
+  tutorial: "只看教程",
+  news: "只看新闻",
+  data: "只看数据",
+  other: "都可以，全部来源都查",
+  none: "先不检索，直接回答",
+};
+
+/** 选项 → 用户消息正文（纯函数，node 直测）。未知类型退化成它的 label —— 宁可笨，不发空串。 */
+function choiceMessage(option) {
+  var opt = option || {};
+  var type = String(opt.type || "");
+  if (Object.prototype.hasOwnProperty.call(CHOICE_PHRASES, type)) return CHOICE_PHRASES[type];
+  var label = String(opt.label || "").trim();
+  return label ? "只看" + label : "";
+}
+
+/** 去重键：**同一轮 + 同一个 query**。一轮里问了两个不同问题就各得一张卡。 */
+function choiceCardKey(params) {
+  var p = params || {};
+  return String(p.turn_id || "") + "|" + String(p.query || "");
+}
+
+/** 这个会话的选择卡表（键 = choiceCardKey）。与 `state.streams` 同寿命。 */
+function choiceCards(sessionId) {
+  var key = String(sessionId || "");
+  if (!state.choices[key]) state.choices[key] = {};
+  return state.choices[key];
+}
+
+function choiceTitleText(params) {
+  var query = String((params || {}).query || "").trim();
+  return query ? "这次要搜哪类资料？针对「" + query + "」" : "这次要搜哪类资料？";
+}
+
+/** `chat.needs_choice` → 会话流里的一张卡（重复事件返回已存在的那张，不重插）。 */
+function renderChoiceCard(sessionId, params) {
+  var key = String(sessionId || "");
+  if (!key) return null; // 拿不到会话 = 不落任何人的流（宁可不动，也不落错）
+  var p = params || {};
+  var options = (Array.isArray(p.options) ? p.options : []).filter(function (opt) {
+    return opt && (opt.type || opt.label);
+  });
+  if (!options.length) return null; // 没有选项就不出卡（不猜）
+  var cardKey = choiceCardKey(p);
+  var bucket = choiceCards(key);
+  var existing = bucket[cardKey];
+  if (existing && existing.parentNode) return existing;
+
+  var wrap = document.createElement("div");
+  wrap.className = "msg msg-choice";
+  wrap.setAttribute("data-session", key);
+  wrap.setAttribute("data-turn", String(p.turn_id || ""));
+  wrap.setAttribute("data-choice-key", cardKey);
+
+  var who = document.createElement("div");
+  who.className = "who";
+  who.textContent = "ScholarScout · 需要你先定一下";
+  wrap.appendChild(who);
+
+  var body = document.createElement("div");
+  body.className = "body";
+  var title = document.createElement("p");
+  title.className = "choice-title";
+  title.textContent = choiceTitleText(p);
+  body.appendChild(title);
+
+  var list = document.createElement("div");
+  list.className = "choice-options";
+  options.forEach(function (opt) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "choice-option";
+    button.setAttribute("data-type", String(opt.type || ""));
+    var label = document.createElement("span");
+    label.className = "choice-option-label";
+    label.textContent = String(opt.label || opt.type || "");
+    button.appendChild(label);
+    var hint = String(opt.hint || "").trim();
+    if (hint) {
+      var hintNode = document.createElement("span");
+      hintNode.className = "choice-option-hint";
+      hintNode.textContent = hint;
+      button.appendChild(hintNode);
+      button.title = hint;
+    }
+    button.addEventListener("click", function () {
+      Promise.resolve(answerChoice(wrap, button, opt)).catch(function (error) {
+        el("status").textContent = "选择没能发出去：" + error.message;
+      });
+    });
+    list.appendChild(button);
+  });
+  body.appendChild(list);
+  wrap.appendChild(body);
+  streamBox(key).appendChild(wrap);
+  bucket[cardKey] = wrap;
+  // 只在这个会话显示时才滚：后台会话的卡不许动用户正在看的滚动位置
+  if (key === String(state.sessionId || "")) {
+    el("messages").scrollTop = el("messages").scrollHeight;
+  }
+  return wrap;
+}
+
+/** 点某一条选项：作为**下一条用户消息**发出去，并把这张卡置为已选/禁用（只生效一次）。 */
+async function answerChoice(card, button, option) {
+  if (!card || card.getAttribute("data-answered")) return false;
+  var sessionId = card.getAttribute("data-session") || String(state.sessionId || "");
+  var text = choiceMessage(option);
+  if (!sessionId || !text) return false;
+  if (sessionRunning(sessionId)) {
+    // 轮次还在跑：不禁用卡片，只提示（见本节开头"为什么点击要判 sessionRunning"）
+    notice("这一轮还在跑：等它结束再选（选完会作为你的下一条消息发出）。", sessionId);
+    return false;
+  }
+  /* 先同步禁用再 await：连点两下也只发一条（判据不依赖异步返回）。 */
+  var answered = String((option || {}).type || "");
+  card.setAttribute("data-answered", answered);
+  card.classList.add("is-answered");
+  Array.prototype.slice.call(card.querySelectorAll(".choice-option")).forEach(function (node) {
+    node.disabled = true;
+    if (node === button) {
+      node.classList.add("is-chosen");
+      node.setAttribute("aria-pressed", "true");
+    }
+  });
+  var title = card.querySelector(".choice-title");
+  if (title) title.textContent = "已选：" + String((option || {}).label || text) + "（已作为你的下一条消息发出）";
+  if (sessionId !== String(state.sessionId || "")) await openSession(sessionId);
+  await send(text);
+  return true;
+}
+
+
 async function send(text) {
   const sessionId = state.sessionId;
   if (!sessionId) return;
@@ -734,11 +894,17 @@ async function renderHistory(sessionId) {
   const stream = streamBox(key);
   const payload = await scout.call("session.messages", { session_id: key, limit: 200 });
   const items = payload.items || [];
-  stream.innerHTML = "";
+  /* **不清屏**：这条流里可能已经有事件先落下的节点 —— 最典型的是别的会话推来的
+     选择卡（`chat.needs_choice` 落在它自己那条流里，用户切过去时它必须还在）。
+     历史上永远比事件早，所以先把已有节点记下来，渲染完历史再挪到末尾。 */
+  const ahead = Array.prototype.slice.call(stream.childNodes);
   items.forEach(function (message) {
     renderMessage(message, key);
   });
-  if (!items.length) {
+  ahead.forEach(function (node) {
+    stream.appendChild(node);
+  });
+  if (!items.length && !ahead.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
     empty.textContent = "这个会话还没有消息。";
@@ -1117,6 +1283,10 @@ var state = {
   /*: 每会话一条消息流容器：`{ [session_id]: { node, rendered, pendingHistory } }`。
       切会话只切"哪条在显示"，绝不重建 —— 进行中气泡留在它自己那条流里。 */
   streams: {},
+  /*: 每会话一张「搜索意图选择卡」表：`{ [session_id]: { [turn_id|query]: 卡片节点 } }`。
+      卡片本身在**它自己那条流**里（切走/切回来都在），这张表只用于**去重**
+      —— 同一轮同一个 query 的重复 `chat.needs_choice` 不再插第二张。 */
+  choices: {},
   routes: [],
   cards: [],
   practice: null,

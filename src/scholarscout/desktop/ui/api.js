@@ -381,6 +381,13 @@ window.scoutEvent = function (event) {
      不是当前显示的会话也要收下 —— 它的气泡在**它自己那条流**里（切回去能看全）。
      判据是信封上的 session_id（后端 bind_emitter 注入），不是"此刻显示的是谁"。 */
   const key = eventSessionKey(event.method, p);
+  /* 搜索意图选择卡（方案 3）：**放在"必须有进行中气泡"这道闸之前** ——
+     它不挂在气泡上，而是落进会话流；收尾之后/别的会话也可能再推一条（后者要能收下）。
+     载荷 `{session_id, turn_id, query, options, intent}`，渲染与去重见 app.js 的同名注释。 */
+  if (event.method === "chat.needs_choice") {
+    renderChoiceCard(key, p);
+    return;
+  }
   const slot = key ? turnSlot(key, false) : null;
   if (!slot || !slot.trace) return; // 这一轮不是本界面发起的（没有进行中气泡）→ 不动界面
 
