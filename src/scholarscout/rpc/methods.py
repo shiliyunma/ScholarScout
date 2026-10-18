@@ -10,6 +10,7 @@ from __future__ import annotations
 from scholarscout.rpc import (  # noqa: F401
     archive,
     channel,
+    channel_file,
     feishu,
     learning,
     research,

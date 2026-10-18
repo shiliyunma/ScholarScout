@@ -447,6 +447,37 @@ class HttpClient:
             self._write_cache(cache_key, accept, result)
         return result
 
+    def post_multipart(
+        self,
+        url: str,
+        *,
+        fields: dict[str, str],
+        files: dict[str, tuple[str, bytes, str]],
+        accept: str = "application/json",
+        min_interval_s: float = 0.0,
+        headers: dict[str, str] | None = None,
+    ) -> FetchResult:
+        """POST 一个 ``multipart/form-data`` 请求体（飞书上传文件要的就是它）。
+
+        - 出网仍然**只有这一层**：robots、限速、退避、体积上限都在这里生效；
+        - **Content-Type 由 httpx 自己写**（它要带 boundary）。手写一个
+          ``multipart/form-data`` 会缺 boundary，服务端直接 400/解析失败 ——
+          所以这里刻意 `omit_content_type`，与 `upload_bytes` 同一个道理（少带一个头才不会错）；
+        - 调用方给的是**已读好的字节**（`files={"file": (文件名, 内容, mime)}`），
+          重试会重新编码同一份字节，不会漏读文件句柄。
+        """
+        if not self.robots_allowed(url):
+            raise FetchError("forbidden", f"robots.txt 不允许抓取：{url}", url=url)
+        return self._request_once(
+            url,
+            accept,
+            urlparse(url).netloc,
+            min_interval_s,
+            method="POST",
+            headers=headers,
+            multipart=(fields, files),
+        )
+
     def _request_once(
         self,
         url: str,
@@ -461,6 +492,7 @@ class HttpClient:
         omit_content_type: bool = False,
         attempts: int | None = None,
         request_timeout: httpx.Timeout | None = None,
+        multipart: tuple[dict[str, str], dict[str, tuple[str, bytes, str]]] | None = None,
     ) -> FetchResult:
         self._limiter.wait(rate_key, min_interval_s)
         started = self._clock()
@@ -478,7 +510,17 @@ class HttpClient:
                 if elapsed + self.timeout_s > self.deadline_s:
                     break
             try:
-                if method in ("POST", "PUT"):
+                if multipart is not None:
+                    # multipart：Content-Type 必须由 httpx 自己生成（要带 boundary）
+                    form_fields, form_files = multipart
+                    response = self._client.post(
+                        url,
+                        headers=request_headers,
+                        data=form_fields,
+                        files=form_files,
+                        **self._timeout_kwargs(request_timeout),
+                    )
+                elif method in ("POST", "PUT"):
                     send_headers = dict(request_headers)
                     if not omit_content_type:
                         send_headers["Content-Type"] = content_type or "application/json"
