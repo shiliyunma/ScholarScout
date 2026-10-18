@@ -721,8 +721,8 @@ function feishuButton(parent, label, handler) {
    老调用方与老测试一行都不用改。落在**现有设置浮层**里（`#settings-body`），不新增浮层。
 
    四条硬约定（与后端同一套，见 docs/21 §5.2/§6）：
-   ① 凭据**只写不回读**：界面只显示「已配置 ｜ 尾 4 位」，输入框是 `type=password`
-      且保存后**立即清空**；
+   ① 凭据**只写不回读**：界面只显示「已配置 ／ 未配置」（**连尾号都不显示** —— 值永不回传），
+      输入框是 `type=password` 且保存后**立即清空**；
    ② 没在跑时点「停止」显示「当前未运行」，**不假装成功**；
    ③ 引导清单的每一勾由后端 `channel.guide` 探测决定，探不到就如实显示未完成；
    ④ 自动建应用的链接由飞书服务端签发（`verification_uri_complete`），本项目**不伪造**；
@@ -748,8 +748,6 @@ var CHANNEL_LABELS = { feishu: "飞书" };
 /*: 单次设备码轮询窗口（秒）。**必须小于桌面传输层 180s 的默认等待上限** ——
    超了会把「人还没点确认」误判成「调用失败」。 */
 var CHANNEL_ONBOARD_WINDOW = 60;
-/*: 短密钥的脱敏尾号占位（与后端 `rpc/channel.py::_tail` 同一口径，别在界面里补齐成 4 位） */
-var CHANNEL_TAIL_HIDDEN = "****";
 
 /*: 正在进行的「自动创建应用」：{device_code, interval, deadline}；为 null = 没在跑 */
 var channelOnboard = null;
@@ -817,11 +815,10 @@ function channelAgo(iso) {
 
 
 function channelSecretText(credentials) {
-  /* 凭据的**只读文案**：只有「已配置／未配置」与脱敏尾号，任何密钥值都不许进来。 */
+  /* 凭据的**只读文案**：只有「已配置／未配置」。**不显示尾号** —— 后端只回两个布尔，
+     值（哪怕只是片段）永不进前端（docs/01 §3.7、docs/21 §6）。 */
   if (!credentials || !credentials.secret_set) return "未配置";
-  var tail = String(credentials.tail || "");
-  if (!tail || tail === CHANNEL_TAIL_HIDDEN) return "已配置";
-  return "已配置 " + CHANNEL_TAIL_HIDDEN + tail;
+  return "已配置";
 }
 
 
@@ -835,7 +832,7 @@ async function renderChannelCard(body) {
   group.appendChild(
     plainHint(
       "渠道跑在**独立子进程**里：关掉窗口也继续收消息，崩了不影响界面。" +
-        "凭据只写 `.env`（原子写），这里**只显示「已配置／尾号」**，任何密钥值都不回显；" +
+        "凭据只写 `.env`（原子写），这里**只显示「已配置／未配置」**，任何密钥值（含尾号）都不回显；" +
         "「停止」在没在跑时会明确告诉你「当前未运行」。",
     ),
   );

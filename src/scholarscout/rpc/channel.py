@@ -15,7 +15,8 @@
 ## 四条硬约定（都有测试钉住）
 
 1. **只写不回读**：`channel.set_credentials` 只调 `settings_io.write_env`（原子写 `.env`），
-   回包**只有布尔 + 尾 4 位**（`written` 是键名，不是值）；任何返回值里都搜不到密钥全文。
+   回包**只有布尔**（`written` 是键名，不是值）；任何返回值里都搜不到密钥的**任何片段**
+   （连尾 4 位都不给 —— `docs/01 §3.7` 的口径是"值永不回传"，尾号也是值的一部分）。
 2. **不认识的键直接报错**：白名单之外的凭据键一律 `INVALID_PARAMS`（静默忽略 = 用户以为改了、其实没改）。
 3. **没在跑时 `stop` 不假装成功**：回 `{ok: false, reason: "not_running"}`（照 `chat.cancel` 的既有铁律）。
 4. **平台硬限如实报**：`platform_limits` 把 `docs/21 §2.1` 的结论做成机器可读摘要
@@ -103,21 +104,26 @@ def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
-def _tail(secret: str) -> str:
-    """密钥尾 4 位（脱敏展示用）。**少于 4 位就返回全长的位数提示，绝不补齐**。"""
-    text = (secret or "").strip()
+def _id_tail(value: str) -> str:
+    """短标识（`message_id` 这类**非密钥**）的尾 4 位，便于界面对上"是哪一条"。
+
+    **只用于非密钥**：密钥值一律不回传，连尾号也不给（`docs/01 §3.7`）。
+    """
+    text = (value or "").strip()
     return text[-4:] if len(text) >= 4 else ("" if not text else "****")
 
 
 def _credentials_view(platform: str) -> dict[str, Any]:
-    """凭据的**只读视图**：两个布尔 + 尾 4 位（照 docs/21 §6 的"永不回读"口径）。"""
+    """凭据的**只读视图**：只有两个布尔（`docs/21 §6`／`docs/01 §3.7` 的"只写不回读"）。
+
+    不含密钥的**任何片段**（历史上有过尾 4 位，2026-10-18 按文档口径去掉）。
+    """
     keys = CREDENTIAL_KEYS[platform]
     app_id = _env(keys["app_id"])
     secret = _env(keys["app_secret"])
     return {
         "app_id_set": bool(app_id),
         "secret_set": bool(secret),
-        "tail": _tail(secret),
     }
 
 
@@ -174,7 +180,7 @@ def _platform_limits(ctx: AppContext, platform: str) -> dict[str, Any]:
 
 @method("channel.list")
 def channel_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
-    """每张卡片的一行数据。**不含任何密钥值**（只有布尔与尾号）。"""
+    """每张卡片的一行数据。**不含任何密钥值或片段**（只有布尔）。"""
     del params
     channels: list[dict[str, Any]] = []
     for platform in PLATFORMS:
@@ -320,7 +326,7 @@ def channel_report_state(ctx: AppContext, params: dict[str, Any]) -> dict[str, A
 
 @method("channel.set_credentials")
 def channel_set_credentials(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
-    """把凭据写进 `.env`（原子写）。**只写不回读**：回包只有布尔 + 尾 4 位。
+    """把凭据写进 `.env`（原子写）。**只写不回读**：回包只有布尔（连尾号都不给）。
 
     - 白名单之外的键 → **直接报错**（不静默忽略）；
     - 传空串 = 清除该键（从 `.env` 删行 + 清进程环境）；
@@ -456,7 +462,7 @@ def channel_test(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         "mode": mode,
         "platform": platform,
         "latency_ms": int((time.perf_counter() - started) * 1000),
-        "message_id_tail": _tail(message_id),
+        "message_id_tail": _id_tail(message_id),
         "error": outcome.get("error"),
     }
 

@@ -3,8 +3,8 @@
 为什么单独一套：`channel.*` 是把 platform 提成参数后的**唯一门面**，界面（渠道卡片）只经它说话。
 下面七条每条都对应一种"界面上看起来成功了、其实是假的"的失败：
 
-1. `set_credentials` 的回包里**没有任何密钥值**（只有键名 / 布尔 / 尾 4 位）—— 回读了就等于
-   把密钥交给了 pywebview 的 JS 层，密钥会进截图、进日志、进崩溃转储；
+1. `set_credentials` 的回包里**没有任何密钥值或片段**（只有键名 / 布尔，连尾号都不给）—— 回读了
+   就等于把密钥交给了 pywebview 的 JS 层，密钥会进截图、进日志、进崩溃转储；
 2. 白名单之外的键**报错**而不是静默忽略（静默忽略 = 用户以为改了、其实没改）；
 3. 传空串 = **清除**该键（`.env` 里连键名一起删掉，留一个 `KEY=` 会让人以为还配着什么）；
 4. `stop` 没在跑 → `{ok: false, reason: "not_running"}`（照 `chat.cancel` 的既有铁律，不假装成功）；
@@ -31,7 +31,7 @@ from scholarscout.rpc.server import NOTIFICATION_METHODS
 from ..conftest import redirect_home
 
 _ENV_KEYS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET")
-#: 故意做成"一眼能在回包里搜到"的密钥：尾 4 位是 `3f9c`
+#: 故意做成"一眼能在回包里搜到"的密钥：尾 4 位是 `3f9c`（回包**不该**出现它，含尾号）
 APP_ID = "cli_a1b2c3d4e5f6"
 SECRET = "sec_SUPER_SECRET_VALUE_3f9c"
 
@@ -87,7 +87,7 @@ def _configure(ctx: AppContext, *, app_id: str = APP_ID, secret: str = SECRET) -
 
 
 def test_list_and_status_never_carry_a_secret_value(ctx: AppContext) -> None:
-    """两张卡片的取数口都搜不到密钥；`list` 只给布尔，`status` 才给脱敏尾号（docs/21 §5.1）。"""
+    """两张卡片的取数口都搜不到密钥（**连尾号也不给**）；`list`/`status` 都只给布尔（docs/21 §5.1）。"""
     _configure(ctx)
     listing = dispatch(ctx, "channel.list", {})
     assert SECRET not in _render(listing)
@@ -95,24 +95,25 @@ def test_list_and_status_never_carry_a_secret_value(ctx: AppContext) -> None:
     assert [row["platform"] for row in rows] == ["feishu"]
     assert rows[0]["configured"] is True and rows[0]["enabled"] is False
     assert rows[0]["state"] == "stopped"
-    assert "credentials" not in rows[0], "列表口**不该**带凭据视图（只要布尔；尾号在 status 里给）"
+    assert "credentials" not in rows[0], "列表口**不该**带凭据视图（只要布尔）"
 
     status = dispatch(ctx, "channel.status", {"platform": "feishu"})
     dumped = _render(status)
     assert SECRET not in dumped, "channel.status 的回包里带上了密钥值"
-    assert "3f9c" in dumped, "status 要给脱敏尾号，否则界面只能显示「已配置」却分不清是哪一份"
+    assert "3f9c" not in dumped, "channel.status 回了密钥尾号 —— 尾号也是值的一部分（docs/01 §3.7）"
+    assert status["credentials"] == {"app_id_set": True, "secret_set": True}
 
 
-def test_credentials_view_is_exactly_booleans_plus_tail(ctx: AppContext) -> None:
+def test_credentials_view_is_exactly_two_booleans(ctx: AppContext) -> None:
     _configure(ctx)
     status = dispatch(ctx, "channel.status", {"platform": "feishu"})
     assert status["configured"] is True
-    assert status["credentials"] == {"app_id_set": True, "secret_set": True, "tail": "3f9c"}
-    assert "seq" not in _render(status["credentials"])  # 只有布尔与尾 4 位，没有别的字段
+    assert status["credentials"] == {"app_id_set": True, "secret_set": True}
+    assert "seq" not in _render(status["credentials"])  # 只有两个布尔，没有别的字段
 
 
 def test_set_credentials_reply_has_no_secret_value(ctx: AppContext) -> None:
-    """**回包无密钥**：`written` 是键名、`configured` 是布尔 + 尾 4 位，输入值一个都不回。"""
+    """**回包无密钥**：`written` 是键名、`configured` 只有布尔，输入值（含尾号）一个都不回。"""
     result = dispatch(
         ctx,
         "channel.set_credentials",
@@ -120,21 +121,43 @@ def test_set_credentials_reply_has_no_secret_value(ctx: AppContext) -> None:
     )
     dumped = _render(result)
     assert SECRET not in dumped, "回包里出现了 App Secret 的值"
-    assert APP_ID not in dumped, "回包里出现了 App ID 的值（`status` 里有尾号，输入值不必回读）"
+    assert APP_ID not in dumped, "回包里出现了 App ID 的值（`status` 里也只有布尔，输入值不必回读）"
     assert result["written"] == ["FEISHU_APP_ID", "FEISHU_APP_SECRET"]
     assert result["cleared"] == []
-    assert result["configured"] == {"app_id_set": True, "secret_set": True, "tail": "3f9c"}
+    assert result["configured"] == {"app_id_set": True, "secret_set": True}
     # 但**真的写进 `.env` 了**（不能为了"不泄漏"干脆不写）
     text = _dotenv().read_text(encoding="utf-8")
     assert f"FEISHU_APP_SECRET={SECRET}" in text
     assert "3f9c" in text
 
 
-def test_short_secret_tail_is_not_padded(ctx: AppContext) -> None:
-    """短密钥：尾号给 `****` 占位，**不回 1~3 个字符**（那等于把短密钥直接送出去）。"""
+def test_short_secret_is_not_returned_at_all(ctx: AppContext) -> None:
+    """短密钥同样一个字符都不回（历史上给过 `****` 占位，现在连占位都不要）。"""
     result = _configure(ctx, secret="abc")
-    assert result["configured"]["tail"] == "****"
+    assert result["configured"] == {"app_id_set": True, "secret_set": True}
     assert "abc" not in _render(result)
+
+
+def test_no_channel_reply_contains_any_secret_fragment(ctx: AppContext) -> None:
+    """**回包不含密钥任何片段**：把整个长密钥按 4 字符滑窗切开，逐个窗口都不许出现在回包里。
+
+    （尾号只是其中一个窗口；这条把"半个密钥"也算进去 —— 泄漏不需要是全文。）
+    """
+    _configure(ctx)
+    payloads = {
+        "list": dispatch(ctx, "channel.list", {}),
+        "status": dispatch(ctx, "channel.status", {"platform": "feishu"}),
+        "guide": dispatch(ctx, "channel.guide", {"platform": "feishu"}),
+        "set": _configure(ctx),
+    }
+    fragments = {SECRET[i : i + 4] for i in range(0, len(SECRET) - 3)}
+    for name, payload in payloads.items():
+        dumped = _render(payload)
+        # 键名（`FEISHU_APP_SECRET`）里本身含 `SECR` 这类窗口，先摘掉键名再查值
+        for key in _ENV_KEYS:
+            dumped = dumped.replace(key, "")
+        for fragment in fragments:
+            assert fragment not in dumped, f"{name} 的回包里出现了密钥片段 {fragment!r}"
 
 
 # ------------------------------------------------------------------ 2. 白名单之外报错
@@ -182,7 +205,7 @@ def test_empty_string_clears_the_key(ctx: AppContext) -> None:
     )
     assert result["cleared"] == ["FEISHU_APP_SECRET"]
     assert result["written"] == []
-    assert result["configured"] == {"app_id_set": True, "secret_set": False, "tail": ""}
+    assert result["configured"] == {"app_id_set": True, "secret_set": False}
     text = _dotenv().read_text(encoding="utf-8")
     assert "FEISHU_APP_SECRET" not in text, "清除要**删行**，留一个 KEY= 会让人以为还配着"
     assert "FEISHU_APP_ID" in text, "只清一个键时不许顺手清掉别的"
