@@ -16,6 +16,28 @@ from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import learning, traces
 
 
+def _card_index(params: dict[str, Any]) -> int:
+    """取 `card_index`（**0 起** = 卡的 `cards[]` 下标）：`note.review` / `note.reveal` / `note.history`。
+
+    缺参数**不默认成第 0 张**：默认会把记录写到别的卡上，比报错更难查。
+    """
+    return _int_param(params, "card_index", -1)
+
+
+def _card_number(params: dict[str, Any]) -> int:
+    """取 `card_index`（**1 起**，与界面上的「第几张」一致）并换成 0 起下标。
+
+    `note.grade` / `note.extend` / `note.help` 这一族收 1 起 —— 这是既有的流式契约
+    （`tests/rpc/test_practice_stream.py` 与 `test_events_carry_session_id.py` 都按「单卡笔记 + 传 1 +
+    事件里 `card_index: 1`」钉着）。所以这里**不接受 0**：0 起与 1 起差一张，静默按某一种解读
+    就是把讲解/判分/延伸题算到别的卡上，宁可 0 直接 -32602 让调用方立刻暴露。
+    """
+    value = _int_param(params, "card_index", 1)
+    if value < 1:
+        raise RpcError(Code.INVALID_PARAMS, "card_index 1 起（第一张卡传 1）")
+    return value - 1
+
+
 @method("route.list")
 def route_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     params = _params(params)
@@ -97,12 +119,15 @@ def note_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 def note_review(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """记一次抽背评价（"练"模式的记账）。
 
-    `card_index` 是卡在这条笔记里的位置（`note.get` 返回的 `cards[].index`）——
-    一行卡片笔记通常有好几张卡，按行记等于把 10 张压成一个数，练完也说不清哪张没记住。
+    `card_index` 是卡在这条笔记里的位置 —— **0 起**，就是 `note.get` / `note.due` 回的
+    `cards[]` 下标（`card.card_index`）。一行卡片笔记通常有好几张卡，按行记等于把 10 张压成一个数，
+    练完也说不清哪张没记住。
+
+    缺参数**不默认成第 0 张**：默认会把评价记到别的卡上，比报错更难查。
     """
     params = _params(params)
     note_id = _require(params, "note_id")
-    card_index = _int_param(params, "card_index", -1)
+    card_index = _card_index(params)
     rating = _require(params, "rating")
     response = params.get("response")
     correct = params.get("correct")
@@ -128,7 +153,7 @@ def note_history(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """
     params = _params(params)
     note_id = _require(params, "note_id")
-    index = _int_param(params, "card_index", 1)
+    index = _int_param(params, "card_index", 0)
     return {"items": learning.card_attempts(ctx.db, note_id, index)}
 
 
@@ -272,10 +297,7 @@ def note_help(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """
     params = _params(params)
     note_id = _require(params, "note_id")
-    try:
-        index = int(params.get("card_index") or 1) - 1
-    except (TypeError, ValueError):
-        index = -1
+    index = _card_number(params)
     row = learning.get_note(ctx.db, note_id) or {}
     cards = learning.parse_cards(str(row.get("content") or ""))
     if index < 0 or index >= len(cards):
@@ -344,10 +366,7 @@ def note_extend(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """
     params = _params(params)
     note_id = _require(params, "note_id")
-    try:
-        index = int(params.get("card_index") or 1) - 1
-    except (TypeError, ValueError):
-        index = -1
+    index = _card_number(params)
     row = learning.get_note(ctx.db, note_id) or {}
     cards = learning.parse_cards(str(row.get("content") or ""))
     if index < 0 or index >= len(cards):
@@ -393,10 +412,7 @@ def note_grade(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """
     params = _params(params)
     note_id = _require(params, "note_id")
-    try:
-        index = int(params.get("card_index") or 1) - 1
-    except (TypeError, ValueError):
-        index = -1
+    index = _card_number(params)
     response = str(params.get("response") or "")
     row = learning.get_note(ctx.db, note_id) or {}
     cards = learning.parse_cards(str(row.get("content") or ""))

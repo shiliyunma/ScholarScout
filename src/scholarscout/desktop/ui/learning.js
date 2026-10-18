@@ -285,6 +285,15 @@ function cardKey(card) {
 }
 
 
+/* `card_index` 有两族口径（docs/01 §3.4 的表格是准的）：
+   - `note.review` / `note.reveal` / `note.history` 收 **0 起**（= `cards[]` 下标，就是 `card.card_index`）；
+   - `note.grade` / `note.extend` / `note.help` 收 **1 起**（界面上的「第几张」，后端 0 也直接报错）。
+   转换只在这一处 —— 在调用点各自 +1 早晚会漏一个，而漏一个的后果是判分/讲解落到别的卡上。 */
+function practiceCardNumber(card) {
+  return Number(card.card_index) + 1;
+}
+
+
 function practiceAnswer(card) {
   const practice = state.practice;
   if (!practice || !practice.answers) return "";
@@ -332,7 +341,7 @@ async function ratePractice(rating) {
   try {
     const result = await scout.call("note.review", {
       note_id: card.note_id,
-      card_index: card.index,
+      card_index: card.card_index,
       rating: rating,
     });
     // B6：把 SM-2 算出来的下一次如实回显（不显示的话，用户根本不知道间隔重复有没有生效）
@@ -346,11 +355,22 @@ async function ratePractice(rating) {
     }
   } catch (error) {
     // 记不上要说出来：否则用户以为练过了、其实没记上
-    const warn = document.createElement("p");
-    warn.className = "hint set-bad";
-    warn.textContent = "这一张的评价没记上：" + error.message;
-    el("practice-body").appendChild(warn);
+    console.error("note.review 失败", error);
+    practiceNoteFailure("这一张的评价没记上（复习排期没更新）：" + (error && error.message ? error.message : error));
   }
+}
+
+
+/* 练习页里"没记上 / 记不上"的**可见**出口：console 一份、界面一份。
+   静默吞掉是最坏的失败方式 —— 界面照样翻到下一张，看起来练过了，库里排期一行没写。 */
+function practiceNoteFailure(text) {
+  console.error(text);
+  const body = el("practice-body");
+  if (!body) return;
+  const warn = document.createElement("p");
+  warn.className = "hint set-bad";
+  warn.textContent = text;
+  body.appendChild(warn);
 }
 
 
@@ -894,7 +914,7 @@ async function gradePractice(card, response, box) {
   try {
     const result = await scout.call("note.grade", {
       note_id: card.note_id,
-      card_index: card.card_index,
+      card_index: practiceCardNumber(card),
       response: response,
     });
     if (result.graded) {
@@ -981,7 +1001,7 @@ async function runPracticeHelp(card, box, button) {
   try {
     const result = await scout.call("note.help", {
       note_id: card.note_id,
-      card_index: card.card_index,
+      card_index: practiceCardNumber(card),
       response: practiceResponses()[key] || "",
       stage: stage,
     });
@@ -1038,7 +1058,7 @@ async function runPracticeExtension(card, box, button) {
   try {
     const result = await scout.call("note.extend", {
       note_id: card.note_id,
-      card_index: card.card_index,
+      card_index: practiceCardNumber(card),
       response: practiceResponses()[cardKey(card)] || "",
     });
     const questions = result.questions || [];
@@ -1178,6 +1198,8 @@ async function autoReview(card, rating, response, correct) {
     });
   } catch (error) {
     practiceDone()[key] = "";
+    // 这里原来什么也不做 —— 就是它把 note.review 的 -32602 吞掉了，排期永远不更新。
+    practiceNoteFailure("这一张的评价没记上（复习排期没更新）：" + (error && error.message ? error.message : error));
   }
 }
 

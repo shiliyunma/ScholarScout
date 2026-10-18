@@ -1474,7 +1474,10 @@ async function startPractice(noteId, options) {
     (note.cards || []).forEach(function (card) {
       cards.push({
         note_id: id,
-        index: card.index,
+        // 卡的编号只有一种含义：它在 `cards[]` 里的下标（0 起）。前端所有 note.* 调用都读
+        // `card_index`，所以队列里必须存这个键 —— 只存 `index` 会让 `card.card_index`
+        // 取到 undefined（JSON 里整个键消失），后端就落到默认值上（真踩过：review 恒 -32602）。
+        card_index: card.card_index,
         front: card.front,
         back: card.back,
         rating: card.rating,
@@ -1488,7 +1491,7 @@ async function startPractice(noteId, options) {
     (due.items || []).forEach(function (item) {
       cards.push({
         note_id: item.note_id,
-        index: item.card_index,
+        card_index: item.card_index,
         front: item.front,
         back: item.back,
         rating: null,

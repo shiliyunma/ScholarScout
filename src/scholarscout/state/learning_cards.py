@@ -203,7 +203,10 @@ def get_note(db: Database, note_id: str) -> dict[str, Any] | None:
         # 卡片笔记额外给一份拆好的卡 + 各自的复习评价（界面据此画抽背模式）
         reviews = card_review_map(db, note_id)
         payload["cards"] = [
-            {**card, "index": index, "rating": reviews.get(index)}
+            # `card_index` 与 `index` 同值、同义（0 起的 `cards[]` 下标）：前端读的是
+            # `card.card_index`，只给 `index` 会让那个键在 JSON 里整个消失（undefined 不上线），
+            # 于是 `note.review` 拿不到位置、落到默认值上（真踩过：恒 -32602）。
+            {**card, "index": index, "card_index": index, "rating": reviews.get(index)}
             for index, card in enumerate(parse_cards(str(payload.get("content") or "")))
         ]
     return payload
