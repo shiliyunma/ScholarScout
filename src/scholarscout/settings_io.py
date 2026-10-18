@@ -23,6 +23,7 @@ import yaml
 
 from scholarscout import paths
 from scholarscout.config import STYLE_CHOICES, Config, load_config
+from scholarscout.providers.thinking import LEVELS
 
 
 class SettingsError(ValueError):
@@ -108,6 +109,15 @@ FIELDS: dict[str, Field] = dict(
             kind="bool",
             label="深度思考（关掉省 ~26% token，但实测质量下降，不建议日常关）",
             default=True,
+        ),
+        _f(
+            "llm",
+            "chat",
+            "reasoning_effort",
+            kind="str",
+            label="思考深度（最小/低/中/高/最高/关；本服务真实档位只有 low/high/max）",
+            default="medium",
+            choices=LEVELS,
         ),
         _f(
             "llm",
@@ -269,6 +279,28 @@ def _flatten(updates: dict[str, Any], prefix: tuple[str, ...] = ()) -> dict[str,
     return flat
 
 
+def remember_models(
+    config: Config, models: list[str] | tuple[str, ...], *, config_path: Path | None = None
+) -> Config:
+    """把探测到的候选模型写进 ``config.yaml`` 的 ``llm.chat.available_models``。
+
+    为什么单独一个入口（而不塞进 FIELDS）：它是**列表**，不是用户在面板里手填的标量；
+    但落盘同样要守住"深合并 + 原子写"，否则会抹掉用户自己加的键。
+    只写名单本身：**不动当前模型**（选择是用户的事，探测只负责告诉有哪些可选）。
+    """
+    names: list[str] = []
+    for item in models:
+        name = str(item or "").strip()
+        if name and name not in names:
+            names.append(name)
+    target = config_path or config_path_of(config)
+    raw = dict(config.raw) if isinstance(config.raw, dict) else {}
+    merged = _deep_copy(raw)
+    _deep_set(merged, ("llm", "chat", "available_models"), names)
+    _atomic_write_yaml(target, merged)
+    return load_config(target)
+
+
 def read_settings(config: Config) -> dict[str, Any]:
     """给界面用的当前设置（**不含任何密钥值**，只报"是否已配置"）。"""
     raw = config.raw if isinstance(config.raw, dict) else {}
@@ -288,6 +320,7 @@ def read_settings(config: Config) -> dict[str, Any]:
                             "temperature": config.chat.temperature,
                             "max_tokens": config.chat.max_tokens,
                             "timeout_s": config.chat.timeout_s,
+                            "reasoning_effort": config.chat.reasoning_effort,
                         },
                         "summary": {
                             "model": config.summary.model,

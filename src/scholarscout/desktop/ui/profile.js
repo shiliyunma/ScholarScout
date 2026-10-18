@@ -410,6 +410,30 @@ function renderSettingsField(field, values, secrets) {
     input.type = "checkbox";
     // 只认明确的 true：值缺失时显示"未勾选"，不要假装它是开的
     input.checked = values[field.key] === true;
+  } else if (field.kind === "select") {
+    /* 档位下拉：选项来自 `models.list`（与输入框那个下拉同一份回包），label 里带真实档位。
+       读不到清单时给一个占位项而不是空下拉 —— 空下拉会让人以为"没有可选值"。
+       注意分支顺序：secret 分支必须紧邻最后的 else（守卫测试从 `secret` 切到 `} else {`
+       检查"密钥框不许预填 value"）；select 放前面，别把那个切片撑大。 */
+    input = document.createElement("select");
+    const levels = (MODEL_CHOICES && MODEL_CHOICES.level_options) || [];
+    if (!levels.length) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "（模型清单未读到，重新打开设置试试）";
+      input.appendChild(placeholder);
+    }
+    levels.forEach(function (item) {
+      const option = document.createElement("option");
+      option.value = item.value;
+      option.textContent = item.label || item.value;
+      option.disabled = item.supported === false;
+      input.appendChild(option);
+    });
+    input.value =
+      values[field.key] === undefined || values[field.key] === null
+        ? ""
+        : String(values[field.key]);
   } else if (field.kind === "secret") {
     input = document.createElement("input");
     input.type = "password";

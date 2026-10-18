@@ -69,14 +69,22 @@
              加载圈早已搬进会话消息流内部（.msg-progress，见 makePending()）。
              按钮与状态行都是 .composer-input 内部的**定位元素**（absolute），不再占用
              输入框下方的一行 → 相邻栏位几何不变（探针按 ui_chat_probe.BASELINE_GEOM 断言）。
-             id 一个没改：#input / #btn-send / #btn-stop 都还在原位，JS 取值逻辑一字未动。 -->
+             id 一个没改名：#input / #btn-send / #btn-stop 都还在原位。 -->
         <div class="composer-input">
           <textarea id="input" rows="3" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
-          <p class="composer-meta">
-            <span class="composer-model" id="composer-model"></span>
-            <span class="composer-thinking" id="composer-thinking"></span>
-          </p>
+          <!-- 保存确认（"已保存：…（下一轮生效）"）：绝对定位在框内左下，不吃点击、不占流。 -->
+          <p class="composer-note" id="composer-note" role="status" hidden></p>
+          <!-- 模型 / 思考深度 / 发送 **同一行、靠右**（Hermes 风）：三个控件都在
+               `.composer-actions` 这一条 flex 行里（nowrap），整条绝对定位在框底右侧。
+               选项不在这里写死：`models.list` 按服务端 `/models` 的声明生成，文案直接标真实
+               档位（"中（high）"），不支持的档位置灰 —— 前端另写一份必然与接口漂移。
+               id 沿用旧名（#composer-model / #composer-thinking 原来是只读 span，现在是下拉），
+               所以 #input / #btn-send / #btn-stop 的 id 与 JS 取值口一个都没改名。 -->
           <div class="composer-actions">
+            <select class="composer-model" id="composer-model" aria-label="对话模型"
+                    title="对话模型（写进 config.yaml 的 llm.chat.model，下一轮生效）"></select>
+            <select class="composer-thinking" id="composer-thinking" aria-label="思考深度"
+                    title="思考深度（写进 llm.chat.reasoning_effort，下一轮生效；括号里是真实档位）"></select>
             <button id="btn-stop" class="ghost" type="button" hidden>停止</button>
             <button id="btn-send" type="submit">发送</button>
           </div>

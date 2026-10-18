@@ -7322,38 +7322,65 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .composer-input textarea {
   padding-bottom: 34px;
 }
-.composer-meta {
+.composer-note {
   position: absolute;
   left: 11px;
   bottom: 9px;
   margin: 0;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: calc(100% - 124px);
-  pointer-events: none; /* 状态行不吃点击，点哪儿都还能落到文本域上 */
+  max-width: calc(100% - 300px);
   font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--ui-text-tertiary);
-}
-.composer-model,
-.composer-thinking {
+  /* 不吃点击：点提示语也该落到文本域上 */
+  pointer-events: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.composer-thinking {
-  color: var(--ui-text-quaternary);
 }
 .composer-actions {
   position: absolute;
   right: 8px;
   bottom: 6px;
   margin: 0;
+  display: flex;
+  /* 模型 / 思考深度 / 发送 **一行到底**：不换行（换成两行就又吃掉一条消息流高度） */
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 6px;
   justify-content: flex-end;
+  max-width: calc(100% - 16px);
+}
+/* 两个下拉与「发送」同一行、整体靠右；宽度按内容收缩（flex: 0 1 auto），
+   窄窗口时先压缩文案（省略号），绝不把发送按钮挤出框外。 */
+.composer-model,
+.composer-thinking {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 168px;
+  padding: 2px 6px;
+  border: 0.0625rem solid var(--ui-stroke-tertiary);
+  border-radius: 999px;
+  background: var(--ui-bg-input);
+  color: var(--ui-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.composer-thinking {
+  color: var(--ui-text-tertiary);
+}
+.composer-model:hover,
+.composer-thinking:hover {
+  border-color: var(--ui-stroke-secondary);
+  color: var(--ui-text-primary);
+}
+.composer-model:focus-visible,
+.composer-thinking:focus-visible {
+  outline: 0.0625rem solid var(--ui-accent);
+  outline-offset: 1px;
 }
 #btn-send {
   border-radius: 999px;

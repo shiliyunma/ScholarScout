@@ -17,6 +17,7 @@ import yaml
 from scholarscout import paths
 from scholarscout.fetch.settings import FetchSettings
 from scholarscout.providers.settings import SearchSettings
+from scholarscout.providers.thinking import normalize_level
 from scholarscout.summary.settings import SummarySettings
 
 DEFAULT_CHAT = {
@@ -69,6 +70,14 @@ class LlmProfile:
     #: 一次任务把工具预算打满（`tool_limit`）。
     #: **结论：不建议日常关**。只有"这次只想要个大概、能省就省"时才关。
     thinking: bool = True
+    #: 思考深度档位（界面五档 + 关）：``minimal|low|medium|high|max|none``。
+    #: 本服务真实只有 low/high/max 三档，五档是**并档映射**（见 providers/thinking.py）：
+    #: 最小/低→low、中/高→high、最高→max；``none`` = 只发 thinking.type=disabled。
+    #: 默认 ``medium``（→ high），与"不传参数时服务端默认 high"等价，所以升级不改变行为。
+    reasoning_effort: str = "medium"
+    #: 模型下拉的候选（`GET /models` 探测结果；探测失败时它 + 当前模型就是回落的候选）。
+    #: 由 `scripts/probe_models.py` 或界面启动时的 `models.list` 写入，**手改也生效**。
+    available_models: tuple[str, ...] = ()
     #: 是否把模型回复按请求体哈希缓存到本地。**默认关** —— 交互几乎不可能命中
     #: （每轮内容都是新的），它只对"同一请求原样重放"（评测复跑、调试）有价值。
     llm_cache: bool = False
@@ -248,6 +257,13 @@ def _profile(section: dict[str, Any], defaults: dict[str, Any]) -> LlmProfile:
         merged["model"] = env_model
     if env_base:
         merged["base_url"] = env_base
+    raw_models = merged.get("available_models")
+    available: list[str] = []
+    if isinstance(raw_models, list | tuple):
+        for item in raw_models:
+            name = str(item or "").strip()
+            if name and name not in available:
+                available.append(name)
     return LlmProfile(
         model=str(merged["model"]),
         base_url=str(merged["base_url"]),
@@ -255,6 +271,9 @@ def _profile(section: dict[str, Any], defaults: dict[str, Any]) -> LlmProfile:
         max_tokens=int(merged["max_tokens"]),
         timeout_s=float(merged["timeout_s"]),
         thinking=bool(merged.get("thinking", True)),
+        # 不认识的档位**直接报错**（静默回默认等于用户以为改了、其实没改）
+        reasoning_effort=normalize_level(merged.get("reasoning_effort")),
+        available_models=tuple(available),
         llm_cache=bool(merged.get("llm_cache", False)),
     )
 

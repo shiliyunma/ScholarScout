@@ -25,17 +25,34 @@ def make_client(**kwargs: object) -> OpenAIChatClient:
     return OpenAIChatClient(base_url="https://example.test/v1", api_key="k", model="m", **kwargs)
 
 
-def test_thinking_on_by_default_sends_no_param() -> None:
+def test_thinking_on_by_default_sends_the_servers_default_effort() -> None:
+    """默认档 `medium` → 线上 `high`，与"不传参数时服务端默认 high"**等价**。
+
+    **这条换了判据（不是放宽）**：2026-10-06 那版断言"不带参数" —— 当时还没有档位概念，
+    请求体里确实什么都没有。现在档位是**真实存在**的（`/models` 自己声明 low/high/max），
+    默认 medium 映射到 high，所以会显式发出去；行为不变，但断言更强了：
+    它同时钉住"默认档不许悄悄变成更强的档"（否则成本会无声上涨）。
+    """
     client = make_client()
     assert client.thinking is True
+    assert client.reasoning_level == "medium"
     payload = client._payload([{"role": "user", "content": "hi"}], None)
-    assert "thinking" not in payload
+    assert payload["reasoning_effort"] == "high", "默认档没映射到服务端默认的 high"
+    assert payload["thinking"] == {"type": "enabled"}
 
 
 def test_thinking_off_disables_it_in_the_request() -> None:
     client = make_client(thinking=False)
     payload = client._payload([{"role": "user", "content": "hi"}], None)
     assert payload["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in payload, "关档还发 reasoning_effort，服务端会不认"
+
+
+def test_level_none_has_the_same_wire_shape_as_thinking_off() -> None:
+    """界面「关」与老配置 `thinking: false` 必须发出**一模一样**的字段（老配置无需迁移）。"""
+    payload_none = make_client(reasoning_level="none")._payload([], None)
+    payload_bool = make_client(thinking=False)._payload([], None)
+    assert payload_none == payload_bool
 
 
 def test_tools_are_still_sent_when_thinking_is_off() -> None:

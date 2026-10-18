@@ -2,37 +2,151 @@
    桥与小工具在 api.js、资料库在 sources.js、学习相关在 learning.js、
    看板在 board.js、个人中心与设置在 profile.js（引入顺序见 index.html）。 */
 
-/* 输入框区域里的「当前模型 / 深度思考」：**只在真读到值时才写**，读不到就说读不到。
+/* 输入区右侧的「模型 / 思考深度」下拉 —— 这两个是**真能改**的键（点一下就写 config.yaml）。
  *
- * 值来自 `settings.get` 的 `values`（后端 settings_io.read_settings 按 FIELDS 白名单读
- * config.yaml，缺键回落到真实 config 对象），所以显示的就是**当前生效**的模型名 —— 不是
- * 界面上另写一份。
+ * 值不在这里写死：
+ *   · 模型清单来自 `models.list`（后端先探 `GET /models`，探测不产生生成费用；失败就回落
+ *     `config.yaml` 的候选 + 当前模型，并在 note 里如实说明"没探到"）。
+ *   · 档位文案里括号中的真实档位也来自后端（"中（high）"）：本服务只有 low/high/max 三档，
+ *     五档是并档映射，界面**不假装**五档各不相同。
+ *   · 我们**不发明**强度等级、也不写死模型名 —— 另写一份必然与接口漂移。
  *
- * 关于「推理强度」：本项目**没有**独立的推理强度等级（没有 reasoning_effort 这类键，
- * config 里只有 `llm.chat.thinking` 这个布尔开关，实测它对 completion 的影响是 −78%）。
- * 所以这里显示真实存在的那个开关，**不发明一个"强度"档位** —— 显示假设置比不显示更糟。
+ * 选择写 `llm.chat.model` / `llm.chat.reasoning_effort`，**下一轮生效**：客户端在下一轮
+ * 才按新配置建请求（正在跑的这一轮不会被中途换掉），所以提示语必须写"下一轮生效"。
+ *
+ * 设置面板里的「思考深度」也用同一份回包（MODEL_CHOICES），两处不各写一套。
  */
+var MODEL_CHOICES = null;
+
+/*: 选完后的确认文案停留时间（毫秒）：写盘是异步的，用户需要看得见"真的存了" */
+var COMPOSER_NOTE_MS = 4000;
+var _composerNoteTimer = null;
+
+
+async function loadModelChoices(force) {
+  if (MODEL_CHOICES && !force) return MODEL_CHOICES;
+  MODEL_CHOICES = await scout.call("models.list", { remember: true });
+  return MODEL_CHOICES;
+}
+
+
+function fillModelOptions(node, choices) {
+  node.innerHTML = "";
+  const models = {};
+  (choices.models || []).forEach(function (item) {
+    models[item.id] = item;
+  });
+  (choices.available_models || []).forEach(function (id) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = id;
+    const info = models[id] || {};
+    const levels = info.supported_levels || [];
+    if (levels.length) {
+      // 模型名后面不再堆档位（下拉太窄会被截断），放进 title 里照样可查
+      option.title =
+        id + "：思考档位 " + levels.join("/") + "，默认 " + (info.default_level || "high");
+    }
+    node.appendChild(option);
+  });
+  if (choices.current) node.value = choices.current;
+}
+
+
+function fillLevelOptions(node, choices) {
+  node.innerHTML = "";
+  (choices.level_options || []).forEach(function (item) {
+    const option = document.createElement("option");
+    option.value = item.value;
+    // label 由后端给（"中（high）" / "关（不发思考参数）"）—— 前端不自己拼档位名
+    option.textContent = item.label || item.value;
+    option.disabled = item.supported === false;
+    node.appendChild(option);
+  });
+  node.value = choices.current_level || "medium";
+}
+
+
+function composerNote(text) {
+  const note = el("composer-note");
+  if (!note) return;
+  note.textContent = text;
+  note.hidden = !text;
+  if (_composerNoteTimer) window.clearTimeout(_composerNoteTimer);
+  if (!text) return;
+  _composerNoteTimer = window.setTimeout(function () {
+    note.textContent = "";
+    note.hidden = true;
+  }, COMPOSER_NOTE_MS);
+}
+
+
 async function refreshComposerMeta() {
-  const model = el("composer-model");
-  const thinking = el("composer-thinking");
-  if (!model || !thinking) return;
-  let values = {};
+  const modelSelect = el("composer-model");
+  const levelSelect = el("composer-thinking");
+  if (!modelSelect || !levelSelect) return;
+  let choices = null;
   try {
-    values = (await scout.call("settings.get", {})).values || {};
+    choices = await loadModelChoices(true);
   } catch (error) {
-    model.textContent = "模型：读取失败";
-    thinking.textContent = "";
+    composerNote("模型清单读取失败：" + error.message);
     return;
   }
-  const name = values["llm.chat.model"];
-  model.textContent = "模型：" + (name ? String(name) : "未配置");
-  model.title = "当前对话模型（设置里的 llm.chat.model）";
-  const on = values["llm.chat.thinking"];
-  thinking.textContent =
-    on === true ? "深度思考：开" : on === false ? "深度思考：关" : "深度思考：未知";
-  thinking.title =
-    "本项目没有独立的推理强度档位；这里显示的是真实存在的开关 llm.chat.thinking" +
-    "（关掉省 ~26% token，质量会掉）";
+  fillModelOptions(modelSelect, choices);
+  fillLevelOptions(levelSelect, choices);
+  const plan = choices.current_plan || {};
+  // 服务端没声明这个档位时（如只支持 low/high），如实说"会降级成哪一档"，不静默
+  levelSelect.title =
+    "思考深度（llm.chat.reasoning_effort）｜服务端声明：" +
+    (choices.supported_levels || []).join("/") +
+    "，默认 " +
+    (choices.default_level || "high") +
+    (plan.exact === false ? "｜当前档位会降级为 " + (plan.effort || "最低档") : "");
+  modelSelect.title =
+    "对话模型（llm.chat.model）｜来源：" +
+    (choices.source === "probe" ? "/models 探测" : "config.yaml 回落") +
+    (choices.note ? "｜" + choices.note : "");
+}
+
+
+async function saveComposerChoice(key, value, label) {
+  const modelSelect = el("composer-model");
+  const levelSelect = el("composer-thinking");
+  const updates = { llm: { chat: {} } };
+  updates.llm.chat[key] = value;
+  modelSelect.disabled = true;
+  levelSelect.disabled = true;
+  try {
+    const result = await scout.call("settings.update", { updates: updates });
+    const notes = (result.notes || []).join("；");
+    MODEL_CHOICES = await loadModelChoices(true);
+    fillModelOptions(modelSelect, MODEL_CHOICES);
+    fillLevelOptions(levelSelect, MODEL_CHOICES);
+    await refreshComposerMeta();
+    composerNote("已保存：" + label + "（下一轮生效）" + (notes ? "｜" + notes : ""));
+  } catch (error) {
+    composerNote("保存失败：" + error.message);
+    // 失败要把界面拉回磁盘上的真实值，否则下拉停在一个没存住的选择上
+    await refreshComposerMeta();
+  } finally {
+    modelSelect.disabled = false;
+    levelSelect.disabled = false;
+  }
+}
+
+
+function wireComposerChoices() {
+  const modelSelect = el("composer-model");
+  const levelSelect = el("composer-thinking");
+  if (!modelSelect || !levelSelect) return;
+  modelSelect.addEventListener("change", function () {
+    saveComposerChoice("model", modelSelect.value, "模型 " + modelSelect.value);
+  });
+  levelSelect.addEventListener("change", function () {
+    const option = levelSelect.options[levelSelect.selectedIndex];
+    const label = option ? option.textContent : levelSelect.value;
+    saveComposerChoice("reasoning_effort", levelSelect.value, "思考深度 " + label);
+  });
 }
 
 
@@ -701,7 +815,8 @@ async function boot() {
   try {
     initLayout();
     renderHealth(await scout.call("system.health", {}));
-    // 输入框里显示当前模型 / 深度思考（读的就是 settings.get 的真实值）
+    // 输入框右侧的模型 / 思考深度下拉：先接线再拉选项（选项来自 models.list 的真实声明）
+    wireComposerChoices();
     await refreshComposerMeta();
     const items = await loadSessions();
     if (items.length) await openSession(items[0].session_id);
@@ -1275,6 +1390,11 @@ var SETTINGS_SPEC = [
       { key: "llm.chat.max_tokens", label: "max_tokens", kind: "number" },
       { key: "llm.chat.timeout_s", label: "超时（秒）", kind: "number" },
       { key: "llm.chat.thinking", label: "深度思考（关掉省 ~26% token，但质量会掉）", kind: "bool" },
+      {
+        key: "llm.chat.reasoning_effort",
+        label: "思考深度（五档并到真实三档；关＝不发思考参数）",
+        kind: "select",
+      },
       { key: "llm.chat.llm_cache", label: "回复缓存（评测复跑用）", kind: "bool" },
       { key: "llm.summary.model", label: "摘要模型", kind: "text" },
       { key: "llm.summary.base_url", label: "摘要接口地址", kind: "text" },

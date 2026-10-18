@@ -11,11 +11,17 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+
+from scholarscout.providers.thinking import (
+    mentions_reasoning_param,
+    plan_for,
+    strip_wire_fields,
+)
 
 #: 错误分类 → 由 rpc/methods.py 映射成契约错误码
 ERROR_KINDS = ("auth", "network", "timeout", "server", "bad_response", "rate_limited")
@@ -67,6 +73,12 @@ class ChatReply:
     usage: dict[str, int] = field(default_factory=dict)
     #: 这条回复是不是从本地缓存读出来的（评测/调试要看得出"这次没花 token"）
     cached: bool = False
+    #: 这次**实际**发出去的思考档位（关＝"none"）。界面/报告要能看出真发了什么，不靠猜。
+    reasoning_level: str = ""
+    #: 服务端拒了思考参数、这次是**摘掉字段重试**得到的回复 → True（必须如实标注，不许静默）
+    reasoning_degraded: bool = False
+    #: 给人看的一句说明（降级原因）；没降级时为空串
+    reasoning_note: str = ""
 
     @property
     def truncated(self) -> bool:
@@ -109,6 +121,7 @@ class OpenAIChatClient:
         max_tokens: int = 4096,
         timeout_s: float = 60.0,
         thinking: bool = True,
+        reasoning_level: str = "medium",
         cache_dir: Path | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
@@ -120,10 +133,17 @@ class OpenAIChatClient:
         self.timeout_s = timeout_s
         #: 关掉思考＝请求体带 `thinking: {"type": "disabled"}`（实测 completion −78%）
         self.thinking = thinking
+        #: 思考深度档位（界面五档 + 关）。映射见 providers/thinking.py：五档并到真实三档。
+        self.reasoning_level = reasoning_level
         #: 响应缓存目录（None＝不缓存）。交互命中率≈0，主要为**评测复跑**准备。
         self.cache_dir = cache_dir
         self._transport = transport
         self._client: httpx.Client | None = None
+
+    @property
+    def reasoning_plan(self) -> Any:
+        """当前档位要发出去的真实参数（界面/RPC 说明用同一个函数，不另写一份）。"""
+        return plan_for(self.reasoning_level, thinking=self.thinking)
 
     # ---------------------------------------------------------------- 内部
 
@@ -164,14 +184,29 @@ class OpenAIChatClient:
             "max_tokens": max_tokens or self.max_tokens,
             "stream": False,
         }
-        if not self.thinking:
-            # 关掉推理模型的思考：实测 completion 162 → 36（−78%），reasoning_content 归零。
-            # 注意这是**质量与成本的取舍**，所以默认开着，由用户在设置栏里决定（见 config.LlmProfile.thinking）。
-            payload["thinking"] = {"type": "disabled"}
+        # 思考参数：**同一个函数**决定发什么（界面下拉、RPC 说明、这里三处一致）。
+        # 关档只发 thinking.type=disabled，不发 reasoning_effort（官方口径）；
+        # 其余档位发顶层 reasoning_effort + thinking.type=enabled。
+        payload.update(self.reasoning_plan.wire_fields())
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         return payload
+
+    # ---------------------------------------------------------------- 思考参数降级
+
+    def _degraded(self, body: str) -> str | None:
+        """判断这次 400 是不是"服务端不认思考参数"，返回要标注的说明（不是就返回 None）。
+
+        为什么要判"错误信息里提到该参数"：不带条件的重试会把真正的参数错误也重发一遍，
+        只是把一次失败变成两次。所以只认 reasoning / thinking 这两个词。
+        """
+        if not mentions_reasoning_param(body):
+            return None
+        return (
+            "该模型/端点不支持思考参数（服务端 400 提到 reasoning/thinking），"
+            "已摘掉 reasoning_effort 与 thinking 自动重试一次"
+        )
 
     # ---------------------------------------------------------------- 调用
 
@@ -189,13 +224,7 @@ class OpenAIChatClient:
         hit = self._cache_read(payload)
         if hit is not None:
             return self._parse(hit, cached=True)
-        try:
-            response = self._http().post(url, json=payload)
-        except httpx.TimeoutException as exc:
-            raise LlmError("timeout", f"模型请求超时（{self.timeout_s}s）：{exc}") from exc
-        except httpx.HTTPError as exc:
-            raise LlmError("network", f"模型请求失败：{exc}") from exc
-
+        response, degrade_note = self._post(url, payload)
         if response.status_code in (401, 403):
             raise LlmError(
                 "auth", "模型鉴权失败（检查 LLM_API_KEY）", http_status=response.status_code
@@ -220,7 +249,35 @@ class OpenAIChatClient:
         except json.JSONDecodeError as exc:
             raise LlmError("bad_response", "模型返回的不是 JSON") from exc
         self._cache_write(payload, body)
-        return self._parse(body)
+        return self._annotate(self._parse(body), degrade_note)
+
+    def _post(self, url: str, payload: dict[str, Any]) -> tuple[httpx.Response, str]:
+        """发请求；服务端因**思考参数**回 400 时摘掉它们重试一次，并返回降级说明。"""
+        try:
+            response = self._http().post(url, json=payload)
+            if response.status_code == 400:
+                note = self._degraded(response.text)
+                stripped = strip_wire_fields(payload)
+                if note and stripped is not None:
+                    response = self._http().post(url, json=stripped)
+                    if response.status_code < 400:
+                        return response, note
+            return response, ""
+        except httpx.TimeoutException as exc:
+            raise LlmError("timeout", f"模型请求超时（{self.timeout_s}s）：{exc}") from exc
+        except httpx.HTTPError as exc:
+            raise LlmError("network", f"模型请求失败：{exc}") from exc
+
+    def _annotate(self, reply: ChatReply, degrade_note: str) -> ChatReply:
+        """把"这次到底发了什么思考参数"如实写进回复（降级要能看出来，不许静默）。"""
+        if degrade_note:
+            return replace(
+                reply,
+                reasoning_level="",
+                reasoning_degraded=True,
+                reasoning_note=degrade_note,
+            )
+        return replace(reply, reasoning_level=self.reasoning_plan.level)
 
     # ---------------------------------------------------------------- 流式调用
 
@@ -260,6 +317,53 @@ class OpenAIChatClient:
         # 让服务端在最后一个 chunk 回带 usage；不支持的端点会忽略这个字段，
         # 那就落到"没有 usage"（上层如实记 None，不估算）。
         payload["stream_options"] = {"include_usage": True}
+        degrade_note = ""
+        try:
+            chunks, fragments, usage, finish_reason = self._stream_once(url, payload, on_delta)
+        except LlmError as exc:
+            # 端点不认思考参数 → 摘掉后**重试一次**（与一次性路径同一口径，且必须标注）
+            stripped = strip_wire_fields(payload)
+            if (
+                exc.http_status == 400
+                and stripped is not None
+                and mentions_reasoning_param(str(exc))
+            ):
+                degraded = self._degraded(str(exc)) or ""
+                chunks, fragments, usage, finish_reason = self._stream_once(url, stripped, on_delta)
+                degrade_note = degraded
+            else:
+                raise
+
+        # 复用一次性路径的解析：把流式收下来的内容拼成同样形状的 body，
+        # 这样 tool_calls/usage/finish_reason 的解析只有一处实现，不会两套逻辑漂移。
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(chunks)}
+        if fragments:
+            message["tool_calls"] = [
+                {
+                    "id": slot["id"],
+                    "type": "function",
+                    "function": {"name": slot["name"], "arguments": slot["arguments"]},
+                }
+                for _index, slot in sorted(fragments.items())
+            ]
+        body = {
+            "choices": [
+                {
+                    "message": message,
+                    "finish_reason": finish_reason or "stop",
+                }
+            ],
+            "usage": usage,
+        }
+        return self._annotate(self._parse(body), degrade_note)
+
+    def _stream_once(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        on_delta: Callable[[str], None] | None,
+    ) -> tuple[list[str], dict[int, dict[str, str]], dict[str, Any], str | None]:
+        """发一次流式请求并把 SSE 收完（不负责降级重试，那由 :meth:`chat_stream` 决定）。"""
         chunks: list[str] = []
         #: 工具调用的分片：``index`` → {id, name, arguments}（同一 index 的多块要拼起来）
         fragments: dict[int, dict[str, str]] = {}
@@ -327,29 +431,7 @@ class OpenAIChatClient:
                 f"流式响应中断（已收到 {len(''.join(chunks))} 字符）：{exc}",
                 partial="".join(chunks),
             ) from exc
-
-        # 复用一次性路径的解析：把流式收下来的内容拼成同样形状的 body，
-        # 这样 tool_calls/usage/finish_reason 的解析只有一处实现，不会两套逻辑漂移。
-        message: dict[str, Any] = {"role": "assistant", "content": "".join(chunks)}
-        if fragments:
-            message["tool_calls"] = [
-                {
-                    "id": slot["id"],
-                    "type": "function",
-                    "function": {"name": slot["name"], "arguments": slot["arguments"]},
-                }
-                for _index, slot in sorted(fragments.items())
-            ]
-        body = {
-            "choices": [
-                {
-                    "message": message,
-                    "finish_reason": finish_reason or "stop",
-                }
-            ],
-            "usage": usage,
-        }
-        return self._parse(body)
+        return chunks, fragments, usage, finish_reason
 
     # -------------------------------------------------------------- 响应缓存
 
@@ -463,6 +545,7 @@ def create_client(profile: Any) -> OpenAIChatClient:
         max_tokens=profile.max_tokens,
         timeout_s=profile.timeout_s,
         thinking=bool(getattr(profile, "thinking", True)),
+        reasoning_level=str(getattr(profile, "reasoning_effort", "medium") or "medium"),
         cache_dir=_cache_dir_for(profile),
     )
 

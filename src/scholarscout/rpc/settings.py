@@ -8,7 +8,9 @@ from __future__ import annotations
 from typing import Any
 
 from scholarscout import settings_io
+from scholarscout.providers import models
 from scholarscout.providers.llm import LlmError, create_client
+from scholarscout.providers.thinking import LEVEL_TO_EFFORT, options, plan_for
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.rpc.registry import AppContext, _params, method
 
@@ -67,6 +69,85 @@ def settings_update(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         # 换了地址/模型但密钥没配好 → 客户端置空，health 会如实显示"未配置模型"
         ctx.llm = None
     return {"ok": True, "settings": settings_io.read_settings(new_config), "notes": notes}
+
+
+@method("models.list")
+def models_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """可选模型 + 每个模型的**真实思考档位**（界面下拉置灰/标注的唯一来源）。
+
+    为什么要有这个 RPC：界面上的两个下拉必须显示「服务端真支持什么」，而不是前端另写
+    一份清单 —— 写了就必然和 `/models` 漂移。清单来自 ``GET /models``；探测失败**不报错**，
+    而是回落到 ``config.yaml`` 里的候选 + 当前模型，并在 ``note`` 里如实说明没探到。
+
+    ``params.remember=true`` 时把探测到的候选写进 ``llm.chat.available_models``
+    （只在探测成功且与已记录的不同才写：读接口不该每次都动用户的配置文件）。
+    """
+    params = _params(params)
+    chat = ctx.config.chat
+    key = ctx.config.api_key()
+    # 没 key 就不探测：必然 401，白等一次网络；直接回落配置并如实说明（也让 api_key 收窄成 str）
+    if key:
+        found = models.discover(
+            base_url=chat.base_url,
+            api_key=key,
+            current=chat.model,
+            configured=chat.available_models,
+        )
+    else:
+        found = models.fallback(
+            current=chat.model,
+            configured=chat.available_models,
+            note="未配置 LLM_API_KEY，跳过 /models 探测（候选来自 config.yaml + 当前模型）",
+        )
+    if params.get("remember") is True and found["source"] == "probe":
+        names = tuple(found["available"])
+        if names != chat.available_models:
+            try:
+                ctx.config = settings_io.remember_models(ctx.config, names)
+            except (settings_io.SettingsError, OSError) as exc:
+                # 写不进去只是"下次启动不知道有哪些模型"，**不能**把清单本身弄丢
+                found["note"] = (found["note"] + "；" if found["note"] else "") + (
+                    f"候选清单未能写进 config.yaml（{exc}），本次仍可使用"
+                )
+    supported = list(found["efforts"])
+    plan = plan_for(chat.reasoning_effort, supported=supported, thinking=chat.thinking)
+    levels = options(supported=supported, thinking=chat.thinking)
+    return {
+        "available_models": found["available"],
+        "models": [
+            {
+                "id": item["id"],
+                "label": item["label"],
+                "supported_levels": item["efforts"],
+                "default_level": item["default_effort"],
+            }
+            for item in found["models"]
+        ],
+        "current": chat.model,
+        "current_level": chat.reasoning_effort,
+        "current_plan": {
+            "level": plan.level,
+            "effort": plan.effort,
+            "exact": plan.exact,
+            "label": plan.label(),
+        },
+        # 六个选项（五档 + 关）：label 里带真实档位（"中（high）"），supported 供界面置灰。
+        # supported 判的是**这一档原本要发的 effort** 在不在声明里 —— 不能用 plan 里降级后的
+        # effort 判：降级总会落回支持集内，那样每一档都会被判"支持"，置灰功能等于没有（真踩过）。
+        # 「关」不发 effort，永远可选。
+        "level_options": [
+            {
+                **item,
+                "supported": str(item["value"]) == "none"
+                or LEVEL_TO_EFFORT.get(str(item["value"])) in supported,
+            }
+            for item in levels
+        ],
+        "supported_levels": supported,
+        "default_level": found["default_effort"],
+        "source": found["source"],
+        "note": found["note"],
+    }
 
 
 @method("settings.usage")
