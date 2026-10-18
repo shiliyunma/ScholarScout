@@ -7425,7 +7425,11 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   --ui-settings-min-width: 720px;
   --ui-settings-min-height: 460px;
 }
-#settings .sheet {
+/* 设置面板与个人中心**共用同一条规则**：两份尺寸只能有一个来源。
+   写成选择器并列而不是抄两遍，是为了让"完全相同"由 CSS 层叠保证，
+   而不是靠人肉维持两份 px 一致（抄两遍迟早一处漂移，探针就会红）。 */
+#settings .sheet,
+#profile .sheet {
   width: min(var(--ui-settings-width), 94vw);
   height: min(var(--ui-settings-height), 90vh);
   min-width: min(var(--ui-settings-min-width), 94vw);
@@ -7433,12 +7437,6 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   max-height: 90vh;
   /* 不参与 flex 伸缩：尺寸只由上面这几行决定，内容多少都不许撑高/压扁它 */
   flex: 0 0 auto;
-}
-
-/* 个人中心只跟设置共用"加宽"，**高度仍随内容**（它没有切换分类时跳动的诉求，
-   固定高度反而会让「学习统计」长列表挤在固定框里滚）。 */
-#profile .sheet {
-  width: min(920px, 94vw);
 }
 
 /* 两栏容器：盖掉 .sheet-body 的纵向 flex（类 + 类的权重 0,2,0 > 0,1,0）。

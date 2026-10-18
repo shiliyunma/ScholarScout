@@ -196,13 +196,19 @@ def test_two_column_body_overrides_the_stacked_sheet_body() -> None:
 
 
 def test_only_the_two_sheets_are_widened() -> None:
-    """加宽只作用于设置 / 个人中心；其它浮层仍是 .sheet 的 760px（用户只允许这两个变宽）。"""
-    widened = [sel for sel, body in _rules(STYLE_CSS) if "width: min(920px" in body]
-    assert widened, "没找到任何 920px 的加宽规则（用户要求的加宽没落地）"
+    """加宽只作用于设置 / 个人中心；其它浮层仍是 .sheet 的 760px（用户只允许这两个变宽）。
+
+    宽度现在走令牌（`var(--ui-settings-width)`），不再写字面 920px；两个面板**合并成了一条
+    选择器组**，所以逐条拆分检查 —— 仍然只许这两个面板变宽。
+    """
+    widened = [sel for sel, body in _rules(STYLE_CSS) if "var(--ui-settings-width)" in body]
+    assert widened, "没找到任何用 --ui-settings-width 的加宽规则（用户要求的加宽没落地）"
     for sel in widened:
-        assert any(f"#{name} .sheet" in sel for name in TWO_COLUMN_SHEETS), (
-            f"加宽规则 {sel!r} 不在 #settings / #profile 之下 —— 会把练习、导出等浮层一起改宽"
-        )
+        for part in sel.split(","):
+            assert any(f"#{name} .sheet" in part for name in TWO_COLUMN_SHEETS), (
+                f"加宽规则 {sel!r} 的 `{part.strip()}` 不在 #settings / #profile 之下"
+                " —— 会把练习、导出等浮层一起改宽"
+            )
     base = body_of_sheet()
     assert "width: min(760px, 92vw)" in base, f"`.sheet` 的基础宽度被改动了：{base!r}"
 
