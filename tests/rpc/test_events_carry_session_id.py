@@ -9,6 +9,14 @@
 存储写的"先红后绿"由 `tests/state/test_db_concurrent_writes.py` 单独钉 —— 若这里共用一条连接，
 写锁落地前这个用例会因为**别的原因**红，就分不清是谁坏了。
 
+**两道屏障，而不是一道（修过一次偶发红）**：只在第一轮模型调用前汇合时，"两轮真并行"只能靠
+时间线前两项的**记序**来判 —— 而屏障放行后，最后到达的那个线程是被 `notify_all` 直接唤醒的，
+另一个必须再抢一次条件锁。于是只要对端被延迟哪怕 1ms（GC 停顿、OS 调度、整目录跑时堆更大），
+**同一会话**就可能连着记下"第一轮 + 收口轮"，用例偶发红（实测 timeline 变成
+`['B第一轮', 'B收口轮', 'A第一轮', 'A收口轮']`，而两轮的 6 条事件都在）。那不是产品串行：
+两轮确实同时在模型调用处。**现在收口轮的模型调用前也过屏障**，任一方进收口轮都得等另一方
+第一轮结束 → 时间线前两项必然是两条不同的"第一轮"，判据不依赖任何计时。
+
 全部用桩模型，不真调模型、不出网。
 """
 
@@ -61,24 +69,29 @@ def _echo(handler_ctx: Any, query: str) -> dict[str, Any]:
 
 
 class _InterleavingStub:
-    """桩模型：两个会话的**第一轮**在 barrier 上汇合，所以两轮的帧必然交错。
+    """桩模型：每一轮的**模型调用前**都在屏障上汇合，所以两轮的帧必然交错。
 
-    ``timeline`` 记录每轮的进出顺序，供"真的并行了"这条断言 —— 用 `threading.Barrier`
-    而不是 `sleep` 赌时序（照 `tests/rpc/test_serve_concurrency.py` 的写法）。
+    ``timeline`` 记录每轮的记序（`(label, 阶段)`），供"真的并行了"这条断言 —— 用
+    `threading.Barrier` 而不是 `sleep` 赌时序（照 `tests/rpc/test_serve_concurrency.py` 的写法）。
+    **每一轮一道屏障**：见模块 docstring —— 只挡第一轮时，收口轮会抢在对端被唤醒之前记下来。
     """
 
     def __init__(
-        self, label: str, barrier: threading.Barrier, timeline: list[str], lock: threading.Lock
+        self,
+        label: str,
+        barriers: tuple[threading.Barrier, ...],
+        timeline: list[tuple[str, str]],
+        lock: threading.Lock,
     ) -> None:
         self.label = label
-        self.barrier = barrier
+        self.barriers = barriers
         self.timeline = timeline
         self.lock = lock
         self.rounds = 0
 
     def _note(self, phase: str) -> None:
         with self.lock:
-            self.timeline.append(f"{self.label}{phase}")
+            self.timeline.append((self.label, phase))
 
     def chat(self, messages: list[dict[str, Any]], *, tools: Any = None) -> ChatReply:
         raise AssertionError("主循环一律走流式；这个桩只实现 chat_stream")
@@ -91,10 +104,12 @@ class _InterleavingStub:
         on_delta: Any = None,
     ) -> ChatReply:
         self.rounds += 1
+        if self.rounds <= len(self.barriers):
+            # 模型调用前汇合：第 1 轮证明"两轮都在跑"，第 2 轮证明"任一方进收口轮时，
+            # 另一方第一轮已经结束"。任一方缺席 → 屏障超时 → 用例带着明确原因红。
+            self.barriers[self.rounds - 1].wait(timeout=10)
         if self.rounds == 1:
-            # 两个会话的第一个模型轮在这里汇合：两边都进来了才继续 → 事件一定交错
-            self.barrier.wait(timeout=10)
-            self._note("-第一轮")
+            self._note("第一轮")
             if on_delta is not None:
                 on_delta(f"{self.label}-前言")
             return reply(
@@ -105,7 +120,7 @@ class _InterleavingStub:
                     )
                 ],
             )
-        self._note("-收口轮")
+        self._note("收口轮")
         for piece in (f"{self.label}-正文", "-1"):
             if on_delta is not None:
                 on_delta(piece)
@@ -164,16 +179,18 @@ def test_two_interleaved_sessions_never_cross_events(
     try:
         session_a = sessions.create_session(db, model=config.chat.model)
         session_b = sessions.create_session(other, model=config.chat.model)
-        barrier = threading.Barrier(2)
-        timeline: list[str] = []
+        barrier_round1 = threading.Barrier(2)
+        barrier_round2 = threading.Barrier(2)
+        barriers = (barrier_round1, barrier_round2)
+        timeline: list[tuple[str, str]] = []
         lock = threading.Lock()
         events_a: list[tuple[str, dict[str, Any]]] = []
         events_b: list[tuple[str, dict[str, Any]]] = []
         ctx_a = _ctx_with_events(
-            config, db, _InterleavingStub("A", barrier, timeline, lock), events_a
+            config, db, _InterleavingStub("A", barriers, timeline, lock), events_a
         )
         ctx_b = _ctx_with_events(
-            config, other, _InterleavingStub("B", barrier, timeline, lock), events_b
+            config, other, _InterleavingStub("B", barriers, timeline, lock), events_b
         )
 
         errors: list[str] = []
@@ -219,10 +236,19 @@ def test_two_interleaved_sessions_never_cross_events(
         assert methods_a >= TURN_EVENTS, f"这条用例已经不再覆盖真实路径：{sorted(methods_a)}"
         assert (methods_a | {kind for kind, _ in events_b}) <= set(NOTIFICATION_METHODS)
 
-        # ⑤ 真的交错：两个第一轮都在任一收口轮之前（证明不是"其实排着队跑"）
-        assert len(timeline) >= 4 and timeline[0][0] != timeline[1][0], (
-            f"两轮没有真并行：{timeline}"
+        # ⑤ 真的交错：时间线的前两项必须是**两个不同会话**的"第一轮"，且各只有一条收口轮。
+        # 为什么这条现在零计时依赖：两道屏障都堵在**模型调用前** —— 任一方要进收口轮，都得等
+        # 另一方第一轮已经结束，所以"A第一轮 / A收口轮 / B第一轮"这种顺序在结构上不可能。
+        # 产品若真把两轮串起来（或屏障位置挪到了写库路径上），屏障根本不会放行 → 上面的
+        # BrokenBarrierError / 线程未结束会先红，而不是在这里变成一句"没真并行"。
+        phases = [phase for _, phase in timeline]
+        assert len(timeline) == 4 and (phases.count("第一轮"), phases.count("收口轮")) == (2, 2), (
+            f"两轮没跑满（屏障超时？）：{timeline}"
         )
+        assert phases[:2] == ["第一轮", "第一轮"] and {label for label, _ in timeline[:2]} == {
+            "A",
+            "B",
+        }, f"两轮没有真并行：一个会话在另一个进第一轮前就跑到了收口轮 {timeline}"
     finally:
         other.close()
 
