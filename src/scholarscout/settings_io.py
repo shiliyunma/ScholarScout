@@ -46,6 +46,11 @@ class Field:
     #: 取值白名单（如风格档）。**有它就只收白名单里的值** ——
     #: 面板上写错一个值，会在下次启动 load_config 时才炸；在这里拦住才是对的时机。
     choices: tuple[str, ...] | None = None
+    #: 允许 ``null``（"不限制"）。只有它打开时：``None`` / 空串 → ``None``，
+    #: 数字 ``0`` 也折算成 ``None``，**负数与非法字符串仍然报错**（不静默当成"不限"）。
+    #: 为什么 0 也算不限：``daily_token_budget: 0`` 的直觉是"先关掉上限"，
+    #: 解释成"上限 0，一律拒绝"会让用户以为程序坏了（与 `runtime/budget.py` 同一口径）。
+    nullable: bool = False
 
     def check(self, value: Any) -> Any:
         if self.kind == "bool":
@@ -53,14 +58,37 @@ class Field:
                 raise SettingsError(f"{self.label} 需要 true/false")
             return value
         if self.kind in {"int", "float"}:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            blank = value is None or (isinstance(value, str) and not value.strip())
+            if blank:
+                if self.nullable:
+                    return None
                 raise SettingsError(f"{self.label} 需要数字")
-            number = int(value) if self.kind == "int" else float(value)
-            if self.minimum is not None and number < self.minimum:
+            if isinstance(value, bool):
+                raise SettingsError(f"{self.label} 需要数字")
+            number: float
+            if isinstance(value, (int, float)):
+                number = float(value)
+            elif isinstance(value, str) and self.nullable:
+                # 只对可空字段容忍"数字字符串"（面板粘贴 1000000 很常见）；
+                # 其它字段保持旧口径：字符串一律不算数字
+                try:
+                    number = float(value.strip().replace(",", "").replace("_", ""))
+                except ValueError:
+                    raise SettingsError(f"{self.label} 需要数字（留空或填 0 表示不限）") from None
+            else:
+                raise SettingsError(f"{self.label} 需要数字")
+            if self.nullable and number < 0:
+                raise SettingsError(f"{self.label} 不能为负（留空或填 0 表示不限）")
+            if self.kind == "int" and number != int(number):
+                raise SettingsError(f"{self.label} 需要整数")
+            result = int(number) if self.kind == "int" else number
+            if self.nullable and result == 0:
+                return None
+            if self.minimum is not None and result < self.minimum:
                 raise SettingsError(f"{self.label} 不能小于 {self.minimum}")
-            if self.maximum is not None and number > self.maximum:
+            if self.maximum is not None and result > self.maximum:
                 raise SettingsError(f"{self.label} 不能大于 {self.maximum}")
-            return number
+            return result
         text = str(value).strip()
         if not text:
             raise SettingsError(f"{self.label} 不能为空")
@@ -171,6 +199,25 @@ FIELDS: dict[str, Field] = dict(
             maximum=200000,
         ),
         _f("runtime", "allow_clarify", kind="bool", label="允许反问澄清"),
+        # 跑完提醒（docs/20 §6.3）：**默认关**。开关只控制"要不要推"，平台写死在
+        # runtime.notify_turn_done_platform（目前只有飞书私聊一条实现），所以面板上只给一个开关。
+        _f(
+            "runtime",
+            "notify_turn_done",
+            kind="bool",
+            label="跑完提醒（非当前会话跑完时私聊推一条）",
+            default=False,
+        ),
+        # 每日 token 上限（docs/20 §5.1）：**默认 null = 不限**。nullable 让"留空/0"都能表达
+        # "不限"，同时负数与乱字符串仍然报错 —— 不把用户的输入静默解释成别的意思。
+        _f(
+            "runtime",
+            "daily_token_budget",
+            kind="int",
+            label="每日 token 上限（留空或 0 = 不限）",
+            nullable=True,
+            default=None,
+        ),
         _f(
             "runtime",
             "compact_after_chars",

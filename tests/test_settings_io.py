@@ -225,3 +225,137 @@ def test_rpc_settings_usage_and_cleanup(ctx: AppContext) -> None:
     with pytest.raises(RpcError) as exc:
         dispatch(ctx, "settings.cleanup", {"target": "data/raw"})
     assert exc.value.code == -32602
+
+
+# ------------------------------------------------- 设置里的两个新可编辑项（docs/20 §5.1 / §6.3）
+#
+# 为什么单独一组：这是用户在**设置面板**里拨开关/填数字的两个键，最容易出的错是
+# "界面能改、后端不认"或"非法值被静默当成别的意思"。这里把往返、折算与拒绝全钉住。
+
+
+def test_update_notify_flag_roundtrip(ctx: AppContext, config_file: Path) -> None:
+    """跑完提醒开关：true / false 都能写盘，改完 `load_config` 读到同一个值。"""
+    for value in (True, False):
+        payload = dispatch(
+            ctx, "settings.update", {"updates": {"runtime": {"notify_turn_done": value}}}
+        )
+        assert payload["ok"] is True
+        assert payload["settings"]["values"]["runtime.notify_turn_done"] is value
+        assert ctx.config.runtime.notify_turn_done is value, "改完要立即生效（不必重启）"
+        assert load_config(config_file).runtime.notify_turn_done is value
+
+
+def test_update_daily_token_budget_roundtrip(ctx: AppContext, config_file: Path) -> None:
+    """每日 token 上限：正整数原样落盘（int，不是字符串、不是浮点）。"""
+    payload = dispatch(
+        ctx, "settings.update", {"updates": {"runtime": {"daily_token_budget": 500_000}}}
+    )
+    assert payload["settings"]["values"]["runtime.daily_token_budget"] == 500_000
+    reloaded = load_config(config_file)
+    assert reloaded.runtime.daily_token_budget == 500_000
+    assert isinstance(reloaded.runtime.daily_token_budget, int)
+    # 守卫据此才能真的封顶（0/None 都不建守卫）
+    from scholarscout.runtime import budget as daily_budget
+
+    assert daily_budget.from_runtime(reloaded.runtime) is not None
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", 0])
+def test_update_daily_token_budget_blank_or_zero_means_unlimited(
+    ctx: AppContext, config_file: Path, value: object
+) -> None:
+    """留空 / 空串 / 0 / null → **null（不限制）**，不是 0，也不是报错。"""
+    # 先写一个上限，再清掉：这样"清空真的生效"不是靠初始值碰巧为 None
+    dispatch(ctx, "settings.update", {"updates": {"runtime": {"daily_token_budget": 1234}}})
+    payload = dispatch(
+        ctx, "settings.update", {"updates": {"runtime": {"daily_token_budget": value}}}
+    )
+    assert payload["settings"]["values"]["runtime.daily_token_budget"] is None
+    reloaded = load_config(config_file)
+    assert reloaded.runtime.daily_token_budget is None, "0/空串必须折算成不限（None）"
+    from scholarscout.runtime import budget as daily_budget
+
+    assert daily_budget.from_runtime(reloaded.runtime) is None, "不限时守卫不该被创建"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (-1, "不能为负"),
+        (-1_000_000, "不能为负"),
+        ("abc", "需要数字"),
+        ("1e", "需要数字"),
+        (1.5, "需要整数"),
+        (True, "需要数字"),
+        ([], "需要数字"),
+    ],
+)
+def test_update_rejects_bad_daily_budget_without_writing(
+    ctx: AppContext, config_file: Path, value: object, expected: str
+) -> None:
+    """非法值 → `INVALID_PARAMS` 且**盘上一个字节都不变**（不能写一半再报错）。"""
+    before = config_file.read_bytes()
+    with pytest.raises(RpcError) as exc:
+        dispatch(ctx, "settings.update", {"updates": {"runtime": {"daily_token_budget": value}}})
+    assert exc.value.code == -32602, "非法值必须是参数错误，不能是内部错误"
+    assert expected in str(exc.value)
+    assert config_file.read_bytes() == before, "校验失败却已经把配置写了一半"
+
+
+def test_update_rejects_non_bool_notify_flag(ctx: AppContext, config_file: Path) -> None:
+    """开关只收真 bool：字符串 \"true\" / 数字 1 都不算（否则界面显示与磁盘会不一致）。"""
+    before = config_file.read_bytes()
+    for value in ("true", 1, None, "yes"):
+        with pytest.raises(RpcError) as exc:
+            dispatch(ctx, "settings.update", {"updates": {"runtime": {"notify_turn_done": value}}})
+        assert exc.value.code == -32602
+        assert "true/false" in str(exc.value)
+    assert config_file.read_bytes() == before
+
+
+def test_update_still_rejects_unknown_keys(ctx: AppContext, config_file: Path) -> None:
+    """白名单之外的键仍然报错（新增两个键不许把"拒绝未知键"这道门弄松）。"""
+    before = config_file.read_bytes()
+    for key in ("daily_token_limit", "notify_turn_done_platform", "nope"):
+        with pytest.raises(RpcError) as exc:
+            dispatch(ctx, "settings.update", {"updates": {"runtime": {key: 1}}})
+        assert exc.value.code == -32602
+        assert "不认识的设置项" in str(exc.value)
+    assert config_file.read_bytes() == before
+
+
+def test_settings_get_exposes_the_two_new_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """默认配置下 `settings.get` 要能读出这两个键：开关 null→默认 false，上限 null→不限。
+
+    界面靠 `values["runtime.daily_token_budget"]` 判"显示不限"，键缺失会渲染成空字符串
+    而说不清是"不限"还是"读不到"。
+    """
+    config = load_config(tmp_path / "nonexistent.yaml")
+    values = settings_io.read_settings(config)["values"]
+    assert values["runtime.notify_turn_done"] is False
+    assert values["runtime.daily_token_budget"] is None
+    assert settings_io.FIELDS["runtime.daily_token_budget"].nullable is True
+
+
+def test_turning_notify_off_restores_disabled(ctx: AppContext, config_file: Path) -> None:
+    """开关从设置里拨开 → 拨回关：`from_config` 不再造提醒器，`notify` 回 `disabled`。
+
+    为什么这条要单独测：开关现在由**用户随时可改**（`settings.update` 会换掉 `ctx.config`
+    里的 runtime），"关着不发"不能只靠类默认值成立 —— 得从改配置的那条真实路径走一遍。
+    """
+    from scholarscout.runtime import notify
+
+    dispatch(ctx, "settings.update", {"updates": {"runtime": {"notify_turn_done": True}}})
+    assert notify.from_config(ctx.config.runtime, db=ctx.db, http=None) is not None
+
+    dispatch(ctx, "settings.update", {"updates": {"runtime": {"notify_turn_done": False}}})
+    assert ctx.config.runtime.notify_turn_done is False
+    assert notify.from_config(ctx.config.runtime, db=ctx.db, http=None) is None
+    # 回归：即使真造出一个关着的提醒器，第一步也必须是 disabled（不查库、不出网）
+    outcome = notify.TurnDoneNotifier(enabled=False).notify(
+        turn_id="trn_x", session_id="ses_a", active_session_id="ses_b"
+    )
+    assert outcome.fired is False
+    assert outcome.reason == "disabled"

@@ -1627,6 +1627,34 @@ var SETTINGS_SPEC = [
       { key: "mineru.api_token", label: "MinerU Token（扫描版精准解析；空＝走免费通道）", kind: "secret" },
     ],
   },
+  {
+    title: "用量与预算",
+    hint:
+      "滚动 24 小时统计（不是自然日：自然日会在午夜突然\"回血\"）；超限会如实收口并拒绝新轮次。" +
+      "留空或填 0 表示不限，默认就是不限。",
+    fields: [
+      {
+        key: "runtime.daily_token_budget",
+        label: "每日 token 上限",
+        kind: "number",
+        nullable: true, // 留空 = 明确表达"不限"（传 null），不是"不修改"
+        note: "滚动 24 小时统计，超限会如实收口（stop_reason=budget）并拒绝新轮次。",
+        usage: true, // 这一行要显示 chat.status 的 global_budget（已用/上限/是否超限）
+      },
+    ],
+  },
+  {
+    title: "跑完提醒",
+    hint: "开启后：非当前会话跑完时，用飞书私聊给你推一条摘要（标题 + 首行 + 收口原因）。",
+    fields: [
+      {
+        key: "runtime.notify_turn_done",
+        label: "跑完提醒",
+        kind: "bool",
+        note: "平台：飞书（私聊；仅非当前会话；60 秒内最多一条）",
+      },
+    ],
+  },
 ];
 
 
@@ -1639,13 +1667,13 @@ var SETTINGS_CATEGORIES = [
     name: "model",
     title: "模型与生成",
     hint: "对话与摘要模型、生成策略",
-    sections: ["模型", "生成策略"],
+    sections: ["模型", "生成策略", "用量与预算"],
   },
   {
     name: "channel",
     title: "渠道",
     hint: "把飞书等渠道接进桌面应用",
-    sections: [],
+    sections: ["跑完提醒"],
   },
   {
     name: "search",

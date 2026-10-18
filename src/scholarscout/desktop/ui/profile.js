@@ -388,6 +388,45 @@ function fieldId(key) {
 }
 
 
+/** 每日 token 上限旁边的「当前用量」：读 `chat.status` 的 `global_budget`（滚动 24h）。
+ *
+ *  未配上限时后端回 `enabled=false` + `used=null` —— **不假报 0**（0 会被读成"已经用了 0"、
+ *  进而以为"上限 0"），这里如实写"不限量"。读不到就写读不到，不编一个数字。 */
+async function renderBudgetUsage() {
+  var box = el(fieldId("runtime.daily_token_budget") + "-usage");
+  if (!box) return;
+  var status;
+  try {
+    status = await scout.call("chat.status", {});
+  } catch (error) {
+    box.textContent = "当前用量：读不到（" + error.message + "）";
+    return;
+  }
+  var global = (status && status.global_budget) || null;
+  if (!global) {
+    box.textContent = "当前用量：后端没有报 global_budget";
+    return;
+  }
+  var tokens = global.tokens || {};
+  if (global.enabled !== true || tokens.limit === null || tokens.limit === undefined) {
+    var window = Number(global.window_hours || 24);
+    box.textContent = "当前用量：不限量（滚动 " + window + " 小时统计，没设上限就不拦）";
+    return;
+  }
+  var used = Number(tokens.used || 0);
+  var limit = Number(tokens.limit || 0);
+  box.textContent =
+    "当前用量：已用 " +
+    fmtTokens(used) +
+    " / 上限 " +
+    fmtTokens(limit) +
+    " tokens（滚动 " +
+    Number(global.window_hours || 24) +
+    " 小时）" +
+    (global.exceeded === true ? "｜已超限，新轮次会被拒绝" : "");
+}
+
+
 function setDeep(target, path, value) {
   var node = target;
   for (var index = 0; index < path.length - 1; index += 1) {
@@ -443,11 +482,28 @@ function renderSettingsField(field, values, secrets) {
     input = document.createElement("input");
     input.type = field.kind === "number" ? "number" : "text";
     if (field.step) input.step = field.step;
+    // 可空数字框：值缺失就留空，并把"留空 = 不限"写在占位符上（不再靠用户猜）
+    if (field.nullable) input.placeholder = "留空 = 不限";
     input.value = values[field.key] === undefined || values[field.key] === null ? "" : String(values[field.key]);
   }
   input.id = fieldId(field.key);
   if (field.kind === "bool") input.className = "set-check";
   row.appendChild(input);
+  /* 只读说明（如"平台：飞书…"）与当前用量：跨两列放在输入下面，不作为可点区域的一部分。 */
+  if (field.note) {
+    var note = document.createElement("span");
+    note.className = "hint set-field-note";
+    note.textContent = field.note;
+    row.appendChild(note);
+  }
+  if (field.usage) {
+    var usage = document.createElement("span");
+    usage.className = "hint set-field-usage";
+    usage.id = fieldId(field.key) + "-usage";
+    usage.setAttribute("data-usage-for", field.key);
+    usage.textContent = "当前用量：读取中…"; // 读不到就如实说读不到（renderBudgetUsage 会改写）
+    row.appendChild(usage);
+  }
   return row;
 }
 
@@ -1530,6 +1586,11 @@ async function openSettings() {
     (hostOf[group.title] || panels.appearance).appendChild(box);
   });
 
+  /* 每日 token 上限旁边的「当前用量」：等字段真的进了 DOM 再读（元素不在就啥也不做）。
+     用量来自 `chat.status.global_budget`，**不在这里自己算** —— 界面算一份、后端算一份，
+     两边迟早会给出不同的数。 */
+  await renderBudgetUsage();
+
   renderAppearance(panels.appearance);
 
   // 渠道（独立分类）：飞书接入卡片（凭据有无 / 渠道开关 / 当前策略 / 配对码与倒计时 /
@@ -1646,6 +1707,14 @@ async function saveSettings() {
         return;
       }
       if (field.kind === "secret" && !text) return; // 留空＝不修改
+      if (field.kind === "number" && field.nullable) {
+        /* 可空数字（目前只有每日 token 上限）：留空或填 0 → **显式传 null**，不是跳过。
+           跳过等于"保留原来的上限"，而用户清空输入框的意思恰恰是"把上限去掉"；
+           0 也算不限，与 `runtime/budget.py::_positive_int` 同一口径（两处给出不同解释最糟）。 */
+        var unlimited = !text || Number(text) === 0;
+        setDeep(updates, field.key.split("."), unlimited ? null : Number(text));
+        return;
+      }
       if (!text) return;
       setDeep(updates, field.key.split("."), field.kind === "number" ? Number(text) : text);
     });

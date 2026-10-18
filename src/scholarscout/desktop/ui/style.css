@@ -7597,3 +7597,13 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   outline: 0.125rem solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
   outline-offset: -2px;
 }
+
+/* 设置组里的「字段说明 + 当前用量」：跨两列放一行（.set-row 是 2 列栅格，
+   第三个子节点不跨列会挤在第 2 行第 1 列，读起来像另一项设置）。 */
+.set-row .set-field-note,
+.set-row .set-field-usage {
+  grid-column: 1 / -1;
+}
+.set-row .set-field-usage {
+  font-variant-numeric: tabular-nums;
+}

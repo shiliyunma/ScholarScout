@@ -16,10 +16,15 @@ from ._ui import INDEX_HTML_PATH, between, read_app_js
 
 
 def spec_keys() -> list[str]:
-    """从 SETTINGS_SPEC 里抽出所有 `key: "a.b.c"`（只取设置面板那一段）。"""
+    """从 SETTINGS_SPEC 里抽出所有 `key: "a.b.c"`（只取设置面板那一段）。
+
+    结束锚点用**紧跟其后**的 `var SETTINGS_CATEGORIES`：之前用 `var THEME_CHOICES`，
+    而它在 app.js 里排在 SETTINGS_SPEC **之前** → `between` 退化成"取 4000 字符"，
+    于是 spec 末尾新增的那几组字段对这条守卫**隐形**（真实后果：`runtime.notify_turn_done`
+    明明在面板里，却被判成"后端能改但面板没有入口"）。
+    """
     text = read_app_js()
-    # 顺序无关取段：SETTINGS_SPEC 在 app.js、主题档位在 profile.js，两边不再相邻
-    block = between(text, "var SETTINGS_SPEC = [", "var THEME_CHOICES")
+    block = between(text, "var SETTINGS_SPEC = [", "var SETTINGS_CATEGORIES = [")
     return re.findall(r'key:\s*"([a-z0-9_.]+)"', block)
 
 
