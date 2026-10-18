@@ -176,26 +176,6 @@ def test_new_style_block_declares_no_new_tokens() -> None:
     assert not declared, "新增样式块里定义了新令牌（本轮约定是 0 个）：" + "、".join(declared)
 
 
-def test_collapsed_category_body_is_forced_display_none() -> None:
-    """`.ui-cat-body[hidden]` 必须显式 `display:none`。
-
-    类选择器上的 `display: flex` 会压过 UA 给 `[hidden]` 的规则 → `hidden` 加了没用、
-    内容照样显示（"点了收起但没收起来"）。这条是本项目在同类问题上踩出来的。
-    """
-    rules = new_rules()
-    hidden = " ".join(body for sel, body in rules if sel == ".ui-cat-body[hidden]")
-    assert hidden, "缺 .ui-cat-body[hidden] 规则"
-    assert "display: none" in hidden, f"[hidden] 没被强制成 display:none：{hidden!r}"
-
-
-def test_category_head_is_not_left_as_a_frameless_button() -> None:
-    """分组头是按钮，但描边要透明（否则每个分组头都框一圈，比"不分组"还乱）。"""
-    body = body_of(".ui-cat-head")
-    assert body, "找不到 .ui-cat-head 规则"
-    assert "border-color: transparent" in body, f"分组头会带一圈描边：{body!r}"
-    assert "text-align: left" in body, "按钮里的文字默认居中，分组头必须左对齐"
-
-
 # ------------------------------------------------------------------ JS：接线
 
 

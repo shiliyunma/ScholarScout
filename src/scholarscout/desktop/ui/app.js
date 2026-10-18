@@ -1378,6 +1378,29 @@ var SETTINGS_CATEGORIES = [
 ];
 
 
+/*: 个人中心的三项（与设置同一套「左侧表项 + 右侧内容」组件）。
+ *  前两项分别装 index.html 里的静态区块（画像 / 记忆），第三项装现算的学习统计。
+ *  name 同时是面板的 `data-cat` 与 `ui-pane-<name>` 的 id 后缀。
+ */
+var PROFILE_CATEGORIES = [
+  {
+    name: "portrait",
+    title: "学习者画像",
+    hint: "跨会话长期画像：主题、路线、地图与掌握度",
+  },
+  {
+    name: "memory",
+    title: "跨会话记忆",
+    hint: "长期记住的偏好 / 背景 / 目标，可增可删",
+  },
+  {
+    name: "stats",
+    title: "学习统计",
+    hint: "路线汇总 / 笔记 / 抽背卡 / 研究看板（跨全部会话）",
+  },
+];
+
+
 /*: 「数据」栏的中文名 —— 后端给的是目录键名，界面别直接甩英文。 */
 var USAGE_LABELS = {
   database: "数据库",

@@ -39,15 +39,18 @@ async function loadSources(query) {
     const key = String(item.sessionId || "");
     if (seen[key] === undefined) {
       seen[key] = groups.length;
-      groups.push({ title: item.sessionTitle || "（未记录会话）", items: [] });
+      groups.push({ key: key, title: item.sessionTitle || "（未记录会话）", items: [] });
     }
     groups[seen[key]].items.push(item);
   });
   groups.forEach(function (group) {
-    list.appendChild(sourceGroupHeader(group));
+    // 默认折叠（用户要求：每次启动列表都是收起的）。用户在本会话内展开过的组，
+    // 状态记在 sourcesFoldState 里 —— 列表重画（搜索 / 换标签）之后不会被折回去。
+    const folded = sourcesIsFolded(group.key);
+    list.appendChild(sourceGroupHeader(group, folded));
     group.items.forEach(function (item) {
       const li = document.createElement("li");
-      li.className = "source-row";
+      li.className = "source-row" + (folded ? " is-folded-row" : "");
       // 标题不再按字符数截断（原来 short(title, 22) 会把长标题砍一半），
       // 改成占满剩余宽度、窄了才由 CSS 省略 —— 面板变宽它就跟着变宽。
       const title = document.createElement("span");
@@ -76,25 +79,55 @@ async function loadSources(query) {
 
 
 
-/* 会话分组头：点一下折叠/展开（默认展开 —— 最近一次调研在最上面，先看的通常就是它） */
-function sourceGroupHeader(group) {
+/* 资料库分组的折叠态（按会话组的 key 记）。
+ *
+ * 为什么要一个模块级的状态表，而不是把折叠态只写在 DOM 上：
+ * `loadSources()` 每次搜索 / 刷新都会整块重画列表 —— 折叠态只存在 DOM 里的话，
+ * 重画一次就把用户刚展开的那一组又折回去，看起来像"点了没用"。
+ *
+ * 为什么默认折叠：用户要求「每次启动列表都是收起的」。未记录过的 key 一律折算作折叠，
+ * 而这张表只活在内存里（不落 localStorage）→ 进程重启后表是空的 ⇒ 全折叠；
+ * 同一会话内用户手动展开过的组因为还在表里 ⇒ 保留。
+ */
+var sourcesFoldState = {};
+
+
+/** 该组当前是否折叠：**没记录过就是折叠**（这条就是"启动默认折叠"的唯一判据）。 */
+function sourcesIsFolded(key) {
+  return sourcesFoldState[key] !== false;
+}
+
+
+function sourcesSetFolded(key, folded) {
+  sourcesFoldState[key] = !!folded;
+  return sourcesFoldState[key];
+}
+
+
+/* 会话分组头：点一下折叠/展开（默认折叠 —— 列表一进来是收起的，点组头才看得到条目） */
+function sourceGroupHeader(group, folded) {
   const li = document.createElement("li");
-  li.className = "source-group";
+  li.className = "source-group" + (folded ? " is-folded" : "");
   const button = document.createElement("button");
   button.type = "button";
   button.className = "group-toggle";
-  button.textContent = "▾ " + group.title + "（" + group.items.length + " 条）";
+  button.textContent = (folded ? "▸ " : "▾ ") + group.title + "（" + group.items.length + " 条）";
   button.title = "点一下折叠/展开这一组";
+  button.setAttribute("aria-expanded", folded ? "false" : "true");
   button.addEventListener("click", function (event) {
     event.stopPropagation();
-    const folded = li.classList.toggle("is-folded");
+    const next = !li.classList.contains("is-folded");
+    li.classList.toggle("is-folded", next);
+    // 记进状态表：列表重画之后这一组仍保持用户选的态
+    sourcesSetFolded(group.key, next);
+    button.setAttribute("aria-expanded", next ? "false" : "true");
     button.textContent =
-      (folded ? "▸ " : "▾ ") + group.title + "（" + group.items.length + " 条）";
+      (next ? "▸ " : "▾ ") + group.title + "（" + group.items.length + " 条）";
     let node = li.nextElementSibling;
     while (node && node.classList.contains("source-row")) {
       // 用 class 而不是 hidden 属性：.source-row 自己带 display，CSS 的 display 会盖过 [hidden]，
       // 于是"点了三角没反应"—— 三角明明切换了状态，行却照样显示。
-      node.classList.toggle("is-folded-row", folded);
+      node.classList.toggle("is-folded-row", next);
       node = node.nextElementSibling;
     }
   });

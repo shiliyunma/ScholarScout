@@ -7371,67 +7371,93 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   border-radius: 999px;
 }
 
-/* 浮层内的分类（设置与个人中心共用）：分组头始终可见，内容可收起 */
-.ui-cat {
+/* 浮层两栏（设置与个人中心共用）：左侧表项 + 右侧内容。
+   为什么不用可折叠分组：用户要的是「点左边一项 → 右边整屏换成那一项」，
+   左边始终列着全部组、同一时刻只呈现一组。
+
+   宽度：这两个浮层从 760px 加宽到 920px（给左边 176px 的表项留位置）。
+   **只加宽这两个浮层**（选择器带 #settings / #profile），练习 / 路线放大 / 导出三个浮层
+   仍是 .sheet 的 760px；且浮层是 position:fixed 的覆盖层，不参与 .layout 栅格 →
+   三栏几何一个像素都不动（探针按 ui_chat_probe.BASELINE_GEOM 逐字段断言）。 */
+#settings .sheet,
+#profile .sheet {
+  width: min(920px, 94vw);
+}
+
+/* 两栏容器：盖掉 .sheet-body 的纵向 flex（类 + 类的权重 0,2,0 > 0,1,0）。
+   滚动交给左右两栏各自承担，容器本身不滚 —— 否则表项会跟着内容一起滚上去。 */
+.sheet-body.ui-split {
+  flex-direction: row;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.ui-rail {
+  flex: 0 0 176px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
-  padding-top: 6px;
+  gap: 2px;
+  padding: 10px 8px;
+  overflow: auto;
+  border-right: 0.0625rem solid var(--ui-stroke-tertiary);
+  background: var(--ui-bg-sidebar);
 }
-.ui-cat:first-child {
-  border-top: none;
-  padding-top: 0;
-}
-.ui-cat-head {
+.ui-rail-item {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 7px 10px;
   text-align: left;
-  border-color: transparent;
+  border: 0.0625rem solid transparent;
+  border-radius: 7px;
   background: transparent;
   color: var(--ui-text-secondary);
   font-size: 12.5px;
   font-weight: 600;
 }
-.ui-cat-head:hover {
-  background: var(--ui-control-hover-background);
+.ui-rail-item:hover {
+  background: var(--ui-row-hover-background);
   color: var(--ui-text-primary);
 }
-.ui-cat-head strong {
-  flex: 0 0 auto;
+/* 选中态：与 .tab.is-active / .list li.is-active 同一套行态令牌（不新造令牌） */
+.ui-rail-item.is-active {
+  background: var(--ui-row-active-background);
+  border-color: var(--ui-stroke-primary);
+  color: var(--ui-text-primary);
 }
-.ui-cat-caret {
-  flex: 0 0 auto;
-  width: 10px;
-  font-size: 10px;
-  color: var(--ui-text-tertiary);
+/* 键盘可达要有可见反馈：Tab 到表项时必须看得出来焦点在哪一项 */
+.ui-rail-item:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
 }
-.ui-cat-caret::before {
-  content: "▸";
-}
-.ui-cat.is-open .ui-cat-caret::before {
-  content: "▾";
-}
-.ui-cat-hint {
-  flex: 1 1 auto;
-  min-width: 0;
+.ui-rail-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ui-text-quaternary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
-  font-weight: 400;
-  color: var(--ui-text-quaternary);
 }
-.ui-cat-body {
+.ui-panes {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 0 2px 2px 15px;
+  gap: 14px;
+  padding: 12px 14px 14px;
+  overflow: auto;
 }
-/* 类选择器上的 display 会压掉 UA 给 [hidden] 的 display:none —— 必须显式补一条 */
-.ui-cat-body[hidden] {
+.ui-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+/* 类选择器上的 display 会压掉 UA 给 [hidden] 的 display:none —— 必须显式补一条。
+   少了它，点第二项时第一项的内容照样占着位置（本项目在 .ui-cat-body 上踩过同一条）。 */
+.ui-pane[hidden] {
   display: none;
 }
+

@@ -35,77 +35,125 @@ function closeProfile() {
 }
 
 
-/* 浮层内的**可折叠分类**（设置与个人中心共用）。
+/* 浮层两栏的「左侧表项 + 右侧内容」组件（设置与个人中心共用）。
  *
- * 为什么用可折叠分组而不是标签页：标签页同一时刻只显示一组，"前两个分组都看得见"就做不到；
- * 分组头始终可见、点一下才收起内容，既治用户说的"一个大页面太臃肿"，又不藏东西。
- * 默认只展开第一组（`open`）—— 打开浮层先看到一组，其余按需展开。
+ * 为什么是表项而不是可折叠分组：用户要的是「点左边一项 → 右边整屏换成那一项的内容」。
+ * 折叠分组做不到"同一时刻只呈现一组、左边又始终列着全部组"。
  *
- * 返回 `{ box, panel }`；分类名写在 `data-cat` 上（探针按它读，不靠新增 id）。
+ * 结构：`nav.ui-rail`（role=tablist，每项一个 `button[role=tab]`）
+ *      + `div.ui-panes`（每项一个 `section[role=tabpanel]`）。
+ * **切换只切可见性**（`hidden` + `is-active`），不重建、不重渲 ——
+ * 重画会把用户正在填的输入框、展开的日历状态一起清掉。
+ *
+ * 键盘：表项本身是真按钮（Tab 可达、Enter/空格原生触发）；另加 ↑/↓/←/→ 与 Home/End
+ * 在表项间移动并按 WAI-ARIA tabs 的惯例**同时激活**（不用再按一次 Enter）。
+ *
+ * 返回 `{ nav, panes, panels, buttons, select }`。分类名写在 `data-cat` 上（探针按它读），
+ * 面板 id 是生成的 `ui-pane-<name>` —— 一个既有 id 都不动。
  */
-function uiCategory(name, title, hint, open) {
-  var box = document.createElement("section");
-  box.className = "ui-cat" + (open ? " is-open" : "");
-  box.setAttribute("data-cat", name);
-  var head = document.createElement("button");
-  head.type = "button";
-  head.className = "ui-cat-head";
-  head.setAttribute("aria-expanded", open ? "true" : "false");
-  var caret = document.createElement("span");
-  caret.className = "ui-cat-caret";
-  caret.setAttribute("aria-hidden", "true");
-  var label = document.createElement("strong");
-  label.textContent = title;
-  head.appendChild(caret);
-  head.appendChild(label);
-  if (hint) {
-    var tip = document.createElement("span");
-    tip.className = "ui-cat-hint";
-    tip.textContent = hint;
-    head.appendChild(tip);
+function uiRail(specs) {
+  var nav = document.createElement("nav");
+  nav.className = "ui-rail";
+  nav.setAttribute("role", "tablist");
+  nav.setAttribute("aria-orientation", "vertical");
+  var panes = document.createElement("div");
+  panes.className = "ui-panes";
+  var buttons = [];
+  var panels = {};
+
+  /* 选中一项：只切可见性 + 选中态，面板里的 DOM 一律不动。 */
+  function select(name) {
+    buttons.forEach(function (button) {
+      var on = button.getAttribute("data-cat") === name;
+      button.classList.toggle("is-active", on);
+      button.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    Object.keys(panels).forEach(function (key) {
+      var on = key === name;
+      panels[key].hidden = !on;
+      panels[key].classList.toggle("is-active", on);
+    });
+    return name;
   }
-  var panel = document.createElement("div");
-  panel.className = "ui-cat-body";
-  panel.hidden = !open;
-  head.addEventListener("click", function () {
-    var next = !box.classList.contains("is-open");
-    box.classList.toggle("is-open", next);
-    head.setAttribute("aria-expanded", next ? "true" : "false");
-    panel.hidden = !next;
+
+  specs.forEach(function (spec, index) {
+    var pane = document.createElement("section");
+    pane.className = "ui-pane";
+    pane.id = "ui-pane-" + spec.name;
+    pane.setAttribute("role", "tabpanel");
+    pane.setAttribute("data-cat", spec.name);
+    pane.hidden = true;
+    panes.appendChild(pane);
+    panels[spec.name] = pane;
+
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "ui-rail-item";
+    button.setAttribute("role", "tab");
+    button.setAttribute("data-cat", spec.name);
+    button.setAttribute("aria-controls", pane.id);
+    button.setAttribute("aria-selected", "false");
+    var title = document.createElement("strong");
+    title.textContent = spec.title;
+    button.appendChild(title);
+    if (spec.hint) {
+      var tip = document.createElement("span");
+      tip.className = "ui-rail-hint";
+      tip.textContent = spec.hint;
+      button.appendChild(tip);
+    }
+    button.addEventListener("click", function () {
+      select(spec.name);
+    });
+    button.addEventListener("keydown", function (event) {
+      var key = event.key;
+      var step = key === "ArrowDown" || key === "ArrowRight" ? 1 : 0;
+      if (key === "ArrowUp" || key === "ArrowLeft") step = -1;
+      var next = -1;
+      if (step) next = (index + step + buttons.length) % buttons.length;
+      else if (key === "Home") next = 0;
+      else if (key === "End") next = buttons.length - 1;
+      if (next < 0) return;
+      event.preventDefault();
+      var target = buttons[next];
+      if (target.focus) target.focus();
+      select(target.getAttribute("data-cat"));
+    });
+    nav.appendChild(button);
+    buttons.push(button);
   });
-  box.appendChild(head);
-  box.appendChild(panel);
-  return { box: box, panel: panel };
+
+  /* 默认选中第一项（用户要求：打开就落在第一组，不用先点一下）。 */
+  select(specs[0].name);
+  return { nav: nav, panes: panes, panels: panels, buttons: buttons, select: select };
 }
 
 
 /*: 个人中心的分类（用户反馈"也分类一下"）。
- *  前两组就是 index.html 里**静态**写着的两个区块（学习者画像 / 跨会话记忆）——
- *  这里的做法是把**节点搬进**分类面板（appendChild 搬节点，id 一个都不变，
- *  board.js 的取值逻辑不受影响），第三组「学习统计」装原来由 renderProfile 现算的那几段。
+ *  三组：学习者画像 / 跨会话记忆 / 学习统计。前两组就是 index.html 里**静态**写着的两个区块 ——
+ *  这里的做法是把**节点搬进**对应面板（appendChild 搬节点，id 一个都不变，
+ *  board.js 的取值逻辑不受影响），第三组装原来由 renderProfile 现算的那几段。
  *
  *  为什么必须"只搭一次壳"：老实现是 `profile-body.innerHTML = ""` 再拼四段 —— 那会把静态的
  *  画像 / 记忆区块整块删掉（打开一次个人中心，画像与记忆就永远消失了）。现在改成：
- *  分类壳只建一次，每次刷新只重画「学习统计」那一格里的内容。
+ *  左侧表项 + 右侧面板的壳只建一次，每次刷新只重画「学习统计」那一格里的内容。
  */
 function profileCategories() {
   var body = el("profile-body");
-  var stats = body.querySelector(".ui-cat[data-cat='stats'] .ui-cat-body");
+  var stats = body.querySelector(".ui-pane[data-cat='stats']");
   if (stats) return { stats: stats };
 
-  var portrait = uiCategory("portrait", "学习者画像", "跨会话长期画像：主题、路线、地图与掌握度", true);
-  var memory = uiCategory("memory", "跨会话记忆", "长期记住的偏好 / 背景 / 目标，可增可删", false);
-  var statCat = uiCategory("stats", "学习统计", "路线汇总 / 笔记 / 抽背卡 / 研究看板（跨全部会话）", false);
+  var shell = uiRail(PROFILE_CATEGORIES);
+  body.classList.add("ui-split");
+  // 两栏壳放到最前面（万一有静态区块没被搬走，也不会掉在表项下面）
+  body.insertBefore(shell.panes, body.firstChild);
+  body.insertBefore(shell.nav, shell.panes);
 
   var portraitBlock = el("profile-overview") ? el("profile-overview").closest(".board-block") : null;
   var memoryBlock = el("memory-input") ? el("memory-input").closest(".board-block") : null;
-  if (portraitBlock) portrait.panel.appendChild(portraitBlock);
-  if (memoryBlock) memory.panel.appendChild(memoryBlock);
-
-  body.appendChild(portrait.box);
-  body.appendChild(memory.box);
-  body.appendChild(statCat.box);
-  return { stats: statCat.panel };
+  if (portraitBlock) shell.panels.portrait.appendChild(portraitBlock);
+  if (memoryBlock) shell.panels.memory.appendChild(memoryBlock);
+  return { stats: shell.panels.stats };
 }
 
 
@@ -116,6 +164,11 @@ async function renderProfile() {
   cats.stats.appendChild(await profileNotes());
   cats.stats.appendChild(await profileCards());
   cats.stats.appendChild(await profileBoard());
+  /* 画像与记忆这两格的内容原本只在 `loadBoard()` → `loadProfile()/loadMemory()` 里刷新，
+     而 `loadBoard()` 只由 `refreshSide()`（**首轮发送之后**）调用 —— 启动后直接打开个人中心，
+     「学习者画像」这一栏是空的（分成表项之后这一栏被单独看见，空面板特别明显）。
+     这里补一次刷新：只往静态节点里填内容，不重建节点（`renderProfile` 也不碰 pane 结构）。 */
+  await Promise.all([loadProfile(), loadMemory()]);
   el("profile-note").textContent = "汇总跨全部会话";
 }
 
@@ -1378,14 +1431,14 @@ async function openSettings() {
   var body = el("settings-body");
   body.textContent = "";
 
-  // 分类壳先搭好（默认只展开第一组：打开设置先看到一组，其余点标题展开）
-  var panels = {};
-  SETTINGS_CATEGORIES.forEach(function (spec, index) {
-    var cat = uiCategory(spec.name, spec.title, spec.hint, index === 0);
-    panels[spec.name] = cat.panel;
-    body.appendChild(cat.box);
-  });
-  // 组标题 → 分类面板。没在声明里出现的组一律进「外观与关于」，绝不静默丢内容。
+  // 两栏壳先搭好：左侧表项（5 项）+ 右侧面板，默认选中第一项。
+  // 之后所有内容一次性 append 进各自面板 —— **切表项只切可见性**，不重建、不重渲。
+  var shell = uiRail(SETTINGS_CATEGORIES);
+  var panels = shell.panels;
+  body.classList.add("ui-split");
+  body.appendChild(shell.nav);
+  body.appendChild(shell.panes);
+  // 组标题 → 面板。没在声明里出现的组一律进「外观与关于」，绝不静默丢内容。
   var hostOf = {};
   SETTINGS_CATEGORIES.forEach(function (spec) {
     spec.sections.forEach(function (title) {
@@ -1508,6 +1561,8 @@ async function openSettings() {
   el("settings-note").textContent = "";
   renderUsage(dataGroup, await scout.call("settings.usage", {}));
   body.scrollTop = 0; // 每次打开都从「模型」那一栏开始看，不留在上次滚到的位置
+  shell.panes.scrollTop = 0;
+  shell.select(SETTINGS_CATEGORIES[0].name); // 左侧表项回到第一项（打开始终落在「模型与生成」）
   el("settings").hidden = false;
 }
 
