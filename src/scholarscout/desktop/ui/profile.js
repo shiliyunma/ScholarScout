@@ -534,6 +534,43 @@ function renderAppearance(container) {
     group.appendChild(row);
   });
 
+  /* 「恢复默认窗口大小」：入口放在**外观**里（用户原话：在设置里能恢复默认）。
+     调的是桥上的真实方法 `win_reset_geometry`（bridge.Bridge.win_reset_geometry），
+     不是 RPC —— 所以走 `bridgeCall`，与窗控按钮同一条路径（后端忙时也点得动）。
+     只清 `ui.window`，**不动当前窗口**：把正在看的窗口突然拉成 1440x900 会顶掉内容，
+     而「下次启动生效」也更好解释。 */
+  var sizeRow = document.createElement("div");
+  sizeRow.className = "set-row";
+  var sizeLabel = document.createElement("span");
+  sizeLabel.textContent = "窗口大小";
+  sizeRow.appendChild(sizeLabel);
+  var sizeWrap = document.createElement("div");
+  sizeWrap.style.display = "flex";
+  sizeWrap.style.gap = "8px";
+  sizeWrap.style.alignItems = "center";
+  var sizeButton = document.createElement("button");
+  sizeButton.type = "button";
+  sizeButton.id = "set-window-reset";
+  sizeButton.className = "ghost";
+  sizeButton.textContent = "恢复默认窗口大小";
+  var sizeHint = document.createElement("span");
+  sizeHint.className = "hint";
+  sizeHint.id = "set-window-reset-hint";
+  sizeHint.textContent = "记住当前大小与位置，下次启动照此打开";
+  sizeButton.addEventListener("click", async function () {
+    sizeHint.textContent = "正在恢复…";
+    try {
+      await bridgeCall("win_reset_geometry");
+      sizeHint.textContent = "已恢复默认，下次启动生效";
+    } catch (error) {
+      sizeHint.textContent = "恢复失败：" + error.message;
+    }
+  });
+  sizeWrap.appendChild(sizeButton);
+  sizeWrap.appendChild(sizeHint);
+  sizeRow.appendChild(sizeWrap);
+  group.appendChild(sizeRow);
+
   container.appendChild(group);
 }
 

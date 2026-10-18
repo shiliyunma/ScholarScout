@@ -256,11 +256,21 @@ class UiSettings:
     """
 
     frameless_window: bool = False
+    #: 上次关窗时记下的窗口几何：``{width, height, x, y, maximized}``（逻辑像素）。
+    #: ``None``（默认）= 没有记录，按默认尺寸开窗。
+    #: 读写都在 ``desktop/window_state.py``（关窗写、启动读），这里只负责把它从 YAML 里取出来 ——
+    #: 几何与设置共用一个文件，才不会出现"设置里恢复了默认、另一个文件又把窗口拉回上次大小"。
+    window: dict[str, Any] | None = None
 
     @classmethod
     def from_raw(cls, section: object) -> UiSettings:
         data = section if isinstance(section, dict) else {}
-        return cls(frameless_window=bool(data.get("frameless_window", False)))
+        window = data.get("window")
+        return cls(
+            frameless_window=bool(data.get("frameless_window", False)),
+            # 只认映射；写了字符串/列表一律当"没有记录"（宁可回默认尺寸，也不拿脏值去建窗）
+            window=dict(window) if isinstance(window, dict) else None,
+        )
 
 
 @dataclass(frozen=True)

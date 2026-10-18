@@ -7406,14 +7406,49 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
    **只加宽这两个浮层**（选择器带 #settings / #profile），练习 / 路线放大 / 导出三个浮层
    仍是 .sheet 的 760px；且浮层是 position:fixed 的覆盖层，不参与 .layout 栅格 →
    三栏几何一个像素都不动（探针按 ui_chat_probe.BASELINE_GEOM 逐字段断言）。 */
-#settings .sheet,
+
+/* 设置面板的**固定尺寸**（用户要求：切换分类时面板不许随内容伸缩）。
+
+   为什么必须固定：面板原来是 `.sheet { max-height } + 高度 auto`，五组内容的自然高度差很多
+   （「模型与生成」最长、「渠道」最短），点一下左边表项整个浮层就跳动一次 —— 视觉上门在抖，
+   而且鼠标位置会漂。固定之后：**面板尺寸由这里决定，与内容无关**；内容超高走 `.ui-panes`
+   的内部滚动（`overflow:auto`），面板本身不长高。
+
+   三个数字怎么来的：
+   - 宽 920：左边 176 的表项 + 右边约 700 的表单（比 760 时更宽松，是本轮定的）；
+   - 高 620：最长那组（模型与生成）一屏看不完（该滚就滚，不迁就内容）；
+   - `min(…, 90vh)` 与 `max-height: 90vh`：小屏（或窗口被拖小）时面板收窄、绝不超出视口。
+   尺寸走 `--ui-*` 变量：换尺寸只改这里一处，别在下面再写一遍 px。 */
+:root {
+  --ui-settings-width: 920px;
+  --ui-settings-height: 620px;
+  --ui-settings-min-width: 720px;
+  --ui-settings-min-height: 460px;
+}
+#settings .sheet {
+  width: min(var(--ui-settings-width), 94vw);
+  height: min(var(--ui-settings-height), 90vh);
+  min-width: min(var(--ui-settings-min-width), 94vw);
+  min-height: min(var(--ui-settings-min-height), 90vh);
+  max-height: 90vh;
+  /* 不参与 flex 伸缩：尺寸只由上面这几行决定，内容多少都不许撑高/压扁它 */
+  flex: 0 0 auto;
+}
+
+/* 个人中心只跟设置共用"加宽"，**高度仍随内容**（它没有切换分类时跳动的诉求，
+   固定高度反而会让「学习统计」长列表挤在固定框里滚）。 */
 #profile .sheet {
   width: min(920px, 94vw);
 }
 
 /* 两栏容器：盖掉 .sheet-body 的纵向 flex（类 + 类的权重 0,2,0 > 0,1,0）。
-   滚动交给左右两栏各自承担，容器本身不滚 —— 否则表项会跟着内容一起滚上去。 */
+   滚动交给左右两栏各自承担，容器本身不滚 —— 否则表项会跟着内容一起滚上去。
+   `flex: 1 1 auto` + `min-height: 0`：容器吃掉表头/表尾之外的空间，并且**允许被压缩** ——
+   少了 min-height:0，长内容会把它顶出固定高度的面板（底部按钮被切掉），这正是"固定尺寸"
+   最容易被写坏的地方。 */
 .sheet-body.ui-split {
+  flex: 1 1 auto;
+  min-height: 0;
   flex-direction: row;
   align-items: stretch;
   gap: 0;

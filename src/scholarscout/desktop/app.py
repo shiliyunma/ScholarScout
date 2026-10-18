@@ -17,10 +17,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from scholarscout import paths
 from scholarscout.config import UiSettings
 from scholarscout.desktop import window_state
-from scholarscout.desktop.bridge import MIN_WINDOW_SIZE, Bridge
+from scholarscout.desktop.bridge import Bridge
 from scholarscout.desktop.icon import apply_window_icon, set_app_user_model_id
 from scholarscout.desktop.rpc_client import RpcClient, default_command
 
@@ -28,7 +27,6 @@ UI_DIR = Path(__file__).resolve().parent / "ui"
 #: 窗口/任务栏图标（跟 exe 图标同一份，见 scripts/make_icon.py）；缺了也不影响启动
 ICON_PATH = Path(__file__).resolve().parents[3] / "assets" / "icon.ico"
 WINDOW_TITLE = "ScholarScout —— 开放世界学术调研与学习辅助"
-MIN_SIZE = MIN_WINDOW_SIZE  # 只有一处定义，见 bridge.py
 
 
 def window_icon() -> str | None:
@@ -88,14 +86,18 @@ def _dpi_scale() -> float:
         return 1.0
 
 
-def _remember_geometry(window: Any) -> None:
-    """记住窗口大小/位置（下次打开同尺寸）。纯辅助，失败也不该影响退出。
+def _remember_geometry(window: Any, *, before: dict[str, Any] | None = None) -> None:
+    """记住窗口大小/位置（写到 `config.yaml` 的 `ui.window`，下次打开同尺寸）。
 
     **为什么一律存几何、不判断"是否最大化"**：pywebview 的 `window.width/height` 报的是
     物理像素，而 `screens` / `create_window(width=…)` 用的是逻辑像素 —— 单位对不上时
     "很大的窗口"会被误判成最大化，于是尺寸就不写了，用户要的"记住大小"直接失效（实测踩过：
     拉到 2400x1400 被误判，存出来的只有 `{"maximized": true}`）。
     误判另一头的代价只是"最大化的窗口下次以同尺寸非最大化打开"，比前者小得多，所以不猜。
+
+    **只在几何真的变了才写**：写 `config.yaml` 会重排整份文件（注释丢失，与 `settings_io`
+    写回同一条代价），所以"打开又原样关掉"这一最常见路径一个字节都不该动。
+    写失败**只记日志**：关窗路径不能因为存不了几何而卡住或报错退出。
     """
     try:
         width = int(getattr(window, "width", 0) or 0)
@@ -108,15 +110,24 @@ def _remember_geometry(window: Any) -> None:
         logical_h = max(1, round(height / scale))
         x = getattr(window, "x", None)
         y = getattr(window, "y", None)
+        payload = {
+            "width": logical_w,
+            "height": logical_h,
+            "x": round(int(x) / scale) if isinstance(x, int | float) else None,
+            "y": round(int(y) / scale) if isinstance(y, int | float) else None,
+            "maximized": False,
+        }
+        if before is not None and window_state.same(before, payload):
+            return
         window_state.save(
-            paths.run_dir(),
             width=logical_w,
             height=logical_h,
-            x=round(int(x) / scale) if isinstance(x, int | float) else None,
-            y=round(int(y) / scale) if isinstance(y, int | float) else None,
+            x=payload["x"] if isinstance(payload["x"], int) else None,
+            y=payload["y"] if isinstance(payload["y"], int) else None,
             maximized=False,
         )
-    except Exception:
+    except Exception as exc:  # 纯辅助：失败只记一行，不影响退出
+        print(f"[desktop] 窗口几何没记住（不影响使用）：{exc}", file=sys.stderr)
         return
 
 
@@ -156,28 +167,35 @@ def launch(
     except Exception:
         pass
 
-    geometry = window_state.load(paths.run_dir(), screens=_screen_rects())
+    # 屏幕信息用来"按屏收窄"：大屏用 1440x900，小屏不许超出视口（默认与最小尺寸都收）。
+    screens = _screen_rects()
+    geometry = window_state.normalize(ui_cfg.window, screens=screens)
     window = webview.create_window(
         WINDOW_TITLE,
         str(UI_DIR / "index.html"),
         js_api=bridge,
-        width=int(geometry.get("width") or 1180),
-        height=int(geometry.get("height") or 800),
+        width=int(geometry["width"]),
+        height=int(geometry["height"]),
         x=geometry.get("x"),
         y=geometry.get("y"),
-        min_size=MIN_SIZE,
+        # 最小尺寸同样按屏幕收窄（1280x800 在 1366x768 上放不下）
+        min_size=window_state.min_size(screens),
         maximized=bool(geometry.get("maximized", False)),
         # ⑤ 无边框：原生标题行整条去掉，改用界面里自绘的窗控条
         frameless=bool(ui_cfg.frameless_window),
     )
     bridge.attach(window, frameless=bool(ui_cfg.frameless_window))
+
     # 关闭前把几何记下来；`closing` 在销毁之前触发，属性还能读到。
     # 另挂 `closed` 与 start() 之后的兜底：不同后端的事件可用性不完全一致。
+    def _save_geometry(_window: Any = None) -> None:
+        _remember_geometry(window, before=geometry)
+
     for event_name in ("closing", "closed"):
         event = getattr(window.events, event_name, None)
         if event is not None:
             with contextlib.suppress(Exception):
-                event += _remember_geometry
+                event += _save_geometry
     try:
         # 任务栏身份：不设的话任务栏按钮会按 python.exe 归组，图标跟着变 Python
         set_app_user_model_id()
@@ -207,7 +225,7 @@ def launch(
                 start_kwargs["icon"] = icon  # GTK/QT 才认这个参数
         webview.start(**start_kwargs)
     finally:
-        _remember_geometry(window)  # 兜底：万一上面的事件没触发
+        _remember_geometry(window, before=geometry)  # 兜底：万一上面的事件没触发
         client.close()
     return 0
 

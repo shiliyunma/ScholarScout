@@ -15,10 +15,12 @@ import webbrowser
 from typing import Any
 
 from scholarscout import __version__
+from scholarscout.desktop import window_state
 from scholarscout.desktop.rpc_client import RpcCallError, RpcClient
 
-#: 窗口最小尺寸（逻辑像素）。**只有一处定义**：壳用它建窗口，桥用它夹住自绘把手的尺寸。
-MIN_WINDOW_SIZE = (960, 640)
+#: 窗口最小尺寸（逻辑像素）。**只有一处定义**：定义在 `window_state.MIN_SIZE`
+#: （它要按屏幕收窄，且窗口几何的读写都靠它校验）；这里只做别名，别在别处再写一份数字。
+MIN_WINDOW_SIZE = window_state.MIN_SIZE
 
 #: 前端接收事件用的全局函数名
 JS_EVENT_FUNCTION = "window.scoutEvent"
@@ -221,6 +223,18 @@ class Bridge:
         except Exception as exc:
             return error_payload(-32603, f"调整窗口大小失败：{exc}")
         return ok_payload({"width": target_w, "height": target_h})
+
+    def win_reset_geometry(self) -> str:
+        """忘掉记住的窗口大小/位置（`ui.window` 置空）。
+
+        设置里「恢复默认窗口大小」调它。**只改下一次启动的落点，不动当前窗口** ——
+        把当前窗口突然拉成 1440x900 会把用户正在看的内容顶掉，而"下次启动生效"也更好解释。
+        """
+        try:
+            window_state.clear()
+        except Exception as exc:
+            return error_payload(-32603, f"清除窗口记录失败：{exc}")
+        return ok_payload({"cleared": True, "pending": "下次启动生效"})
 
     def shutdown(self) -> str:
         """关闭后端进程（关窗口时由壳自己调，JS 也可主动调）。"""

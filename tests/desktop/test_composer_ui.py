@@ -214,13 +214,31 @@ def test_new_style_block_uses_only_defined_tokens() -> None:
     assert len(used) >= 6, f"只扫到 {len(used)} 个令牌，切片写歪了（会变成空判）：{sorted(used)}"
 
 
+ALLOWED_NEW_TOKENS = frozenset(
+    {
+        # 设置面板的**固定几何**（宽/高/最小宽/最小高）是真正的新维度，
+        # 现有 --ui-* 家族里没有等价物；而本轮另一条约定是"新样式块不写死 px"，
+        # 两者只能用"具名白名单"调和：除这四个以外的新令牌一律不许。
+        "--ui-settings-width",
+        "--ui-settings-height",
+        "--ui-settings-min-width",
+        "--ui-settings-min-height",
+    }
+)
+
+
 def test_new_style_block_declares_no_new_tokens() -> None:
-    """本轮**没有新增任何设计令牌**（0 个）：颜色/间距一律复用现有 --ui-* 家族。"""
+    """新增样式块只允许设置面板那四个几何令牌，其余新令牌仍然 0 个。"""
     declared = []
     for sel, body in new_rules():
         for name in re.findall(r"(--[a-z0-9-]+)\s*:", body):
             declared.append(f"{sel} → {name}")
-    assert not declared, "新增样式块里定义了新令牌（本轮约定是 0 个）：" + "、".join(declared)
+    unexpected = [item for item in declared if item.rsplit(" → ", 1)[-1] not in ALLOWED_NEW_TOKENS]
+    assert not unexpected, "新增样式块里定义了白名单外的新令牌：" + "、".join(unexpected)
+    # 反例：白名单机制必须真的会拦（否则这段守卫形同虚设）
+    assert [
+        n for n in ["--ui-settings-width", "--brand-new-token"] if n not in ALLOWED_NEW_TOKENS
+    ] == ["--brand-new-token"]
 
 
 # ------------------------------------------------------------------ JS：接线

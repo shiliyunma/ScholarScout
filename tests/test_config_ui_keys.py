@@ -14,8 +14,22 @@ from scholarscout.config import UiSettings, load_config
 
 
 def test_every_ui_field_is_read_from_yaml(tmp_path) -> None:
+    """每个 `ui.*` 字段都必须有读取行 —— 按**字段类型**喂一个非默认值，再断言读得回来。
+
+    这里不能一律喂 `false`：`window` 是 `dict | None`（主窗口几何），
+    喂布尔既不是它的合法值、也证明不了"被读出来"（`None is False` 恒假）。
+    """
     for field in fields(UiSettings):
         path = tmp_path / f"config-{field.name}.yaml"
+        if "dict" in str(field.type):
+            path.write_text(
+                f"ui:\n  {field.name}:\n    width: 1500\n    height: 950\n", encoding="utf-8"
+            )
+            loaded = load_config(path, load_env=False)
+            assert getattr(loaded.ui, field.name) == {"width": 1500, "height": 950}, (
+                f"{field.name} 没被读出来"
+            )
+            continue
         path.write_text(f"ui:\n  {field.name}: false\n", encoding="utf-8")
         loaded = load_config(path, load_env=False)
         assert getattr(loaded.ui, field.name) is False, f"{field.name} 没被读出来"
