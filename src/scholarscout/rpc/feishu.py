@@ -220,6 +220,33 @@ _VERIFY_MESSAGES = {
 }
 
 
+@method("feishu.pairing.remember")
+def feishu_pairing_remember(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """入站刷新白名单里的**真实 open_id**（修 `99992361 open_id cross app`）。
+
+    渠道层在**放行之后**（`feishu.access` 已判 `approved`）调它一次：把事件里的
+    `sender.sender_id.open_id` 落库/刷新，`source` 记 `"inbound"`。
+    飞书 open_id 按应用隔离 —— 只有入站事件里的 id 一定属于本应用，这一条就堵死了
+    「手工抄来的 id 发不出去」。
+
+    **非白名单一律不写**：`state/pairing.remember_inbound` 会再查一次
+    `is_approved`，不在名单里直接回 `updated:false`（**不是错误**，所以不抛 `RpcError`
+    —— 渠道层的「顺手对齐」失败不该变成一条 RPC 异常）。
+    """
+    params = _params(params)
+    open_id = str(params.get("open_id") or "").strip()
+    if not open_id:
+        raise RpcError(Code.INVALID_PARAMS, "缺参数：open_id")
+    updated = pairing.remember_inbound(
+        ctx.db, open_id, user_name=str(params.get("user_name") or "")
+    )
+    return {
+        "ok": True,
+        "updated": updated,
+        "reason": "refreshed" if updated else "not_allowlisted",
+    }
+
+
 @method("feishu.pairing.list")
 def feishu_pairing_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """待批与已批准列表（**待批只给 entry_id 与绑定身份，绝不回传码本身**）。"""

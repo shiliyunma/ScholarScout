@@ -348,6 +348,51 @@ def is_approved(db: Database, user_id: str) -> bool:
     )
 
 
+def remember_inbound(
+    db: Database,
+    user_id: str,
+    *,
+    user_name: str = "",
+    now: float | datetime | None = None,
+) -> bool:
+    """**入站时刷新白名单里的真实 open_id**（修 `99992361 open_id cross app`）。
+
+    为什么必须从入站事件取 id：飞书 **open_id 按应用隔离** —— 手工抄来 / 别的应用给的
+    `ou_...` 在本应用里根本不存在，`POST /im/v1/messages` 只会回
+    `{"code":99992361,"msg":"open_id cross app"}`。而入站事件里的
+    `sender.sender_id.open_id` **一定是本应用发出来的**，让它覆盖/落库，
+    这条 id 就不可能再「跨应用」。
+
+    两条硬边界（都有桩测钉住）：
+
+    1. **非白名单一律不写**：`user_id` 不在 `feishu_paired_users` 里就直接回 `False`，
+       一行都不动 —— 否则「随便谁发一条消息」就能把自己写进白名单，等于没有拦截；
+    2. **写库失败不冒泡**：这里只做 `execute`，异常交给调用方（渠道层）兜住记日志
+       —— 身份刷新是「顺手对齐」，绝不能把一轮会话拖垮。
+
+    返回值 = 是否真写/刷新了一行（`False` = 不在白名单，不是错误）。
+    `source` 固定记 `"inbound"`：这行的 id 来源是「入站事件」（本应用），不是手抄。
+    """
+    user_id = str(user_id or "").strip()
+    if not user_id or not is_approved(db, user_id):
+        return False
+    db.execute(
+        """
+        INSERT INTO feishu_paired_users (user_id, user_name, approved_at, source)
+        VALUES (?, ?, ?, 'inbound')
+        ON CONFLICT(user_id) DO UPDATE SET
+            user_name = CASE
+                WHEN excluded.user_name <> '' THEN excluded.user_name
+                ELSE feishu_paired_users.user_name
+            END,
+            approved_at = excluded.approved_at,
+            source = 'inbound'
+        """,
+        (user_id, str(user_name or ""), _stamp(_epoch(now))),
+    )
+    return True
+
+
 def approved_users(db: Database) -> list[dict[str, Any]]:
     return [
         {

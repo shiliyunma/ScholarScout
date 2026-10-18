@@ -51,6 +51,10 @@ RECEIVE_EVENT = "im.message.receive_v1"
 #: 「发文件」走后端这条 RPC（docs/17 §3.12）：渠道层只解析意图，查库/导出/上传/发送在主进程
 FILE_DELIVERY_METHOD = "channel.send_file"
 
+#: 入站身份刷新（修 `99992361 open_id cross app`）：放行之后把事件里的**真实 open_id**
+#: 落/刷新到 `feishu_paired_users`；**只对白名单内的发送者**，非白名单由主进程再复核一次。
+IDENTITY_REMEMBER_METHOD = "feishu.pairing.remember"
+
 Sender = Callable[[str, str], dict[str, Any]]
 
 #: 渠道层认上下文为**不透明对象**：`FeishuMessageHandler` 一个 ctx 字段都不读，只把它原样递给
@@ -664,6 +668,44 @@ class FeishuMessageHandler:
         )
         return decision, dict(access)
 
+    def remember_sender(self, message: FeishuMessage) -> bool:
+        """白名单放行之后：把这条**真实 open_id** 落/刷新到 `feishu_paired_users`。
+
+        为什么需要（这是真打接口查出来的 bug）：飞书 **open_id 按应用隔离** —— 白名单里
+        那条手工抄来的 `ou_...` 属于别的应用时，私聊发送永远回
+        `{"code":99992361,"msg":"open_id cross app"}`，配置全对也发不出去。
+        入站事件里的 `sender.sender_id.open_id` **一定属于本应用**，所以每收到一条已放行的
+        消息就顺手对齐一次：表里的 id 从此只可能来自入站事件。
+
+        三条边界（都有桩测钉住）：
+
+        1. **只对白名单内的发送者**：调用点先看 `feishu.access` 的 `approved`；
+           主进程 / `state` 层再查一次 `is_approved`，非白名单**一行都不写**；
+        2. **失败不冒泡**：RPC 异常只记日志，**不影响本轮回复**（对齐是锦上添花）；
+        3. **渠道层仍然不读库、不出网**：这件事只经 RPC（`channels/` 不许 import `state`）。
+        """
+        if not message.sender_open_id:
+            return False  # 拿不到 id（非用户消息等）：没有可对齐的东西，直接跳过
+        try:
+            result = self._dispatcher(
+                self._ctx, IDENTITY_REMEMBER_METHOD, {"open_id": message.sender_open_id}
+            )
+        except Exception as exc:  # 写库失败/主进程不在：只记日志，绝不拖垮这一轮
+            logger.warning(
+                "[Feishu] 入站身份刷新失败（不影响本轮）：open_id=%s err=%s",
+                message.sender_open_id,
+                exc,
+            )
+            return False
+        updated = bool(result.get("updated")) if isinstance(result, Mapping) else False
+        if updated:
+            logger.debug("[Feishu] 入站身份已对齐：open_id=%s", message.sender_open_id)
+        else:
+            logger.debug(
+                "[Feishu] 入站身份未刷新（不在白名单）：open_id=%s", message.sender_open_id
+            )
+        return updated
+
     def try_claim(self, message: FeishuMessage) -> bool:
         """未授权私聊：**先把整条消息当配对码登记**。
 
@@ -786,6 +828,10 @@ class FeishuMessageHandler:
                 message.sender_open_id,
             )
             return decision
+        # 白名单放行之后**顺手对齐真实 open_id**（飞书 open_id 按应用隔离，只有入站事件里的
+        # id 一定属于本应用）。放在拦截之后：被丢弃的消息不该有任何写动作。
+        if bool(access.get("approved")):
+            self.remember_sender(message)
         # 未授权私聊：先尝试把它当配对码登记（临时放行期间同样先试一次，否则码会被当普通消息跑掉）
         if (
             message.chat_type != "group"

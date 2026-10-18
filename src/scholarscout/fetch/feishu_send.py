@@ -316,6 +316,18 @@ def send_text(
             headers={"Authorization": f"Bearer {token.token}"},
         )
     except FetchError as exc:
+        # **HTTP 4xx/5xx 不是"没有原因"**：飞书把 `code`/`msg` 全放在回包正文里
+        # （实测 `HTTP 400 {"code":99992361,"msg":"open_id cross app"}`），
+        # 而 `fetch/http.py` 抛错时正文本来会被丢掉 —— 于是日志里只剩"请求失败（400）"。
+        # 这里把回包里的 code/msg 带进 `SendOutcome.code` 与 error（`explain_code` 附人话），
+        # 让「99992361 open_id 跨应用」这种错一眼可见。**成功路径一个字节都没动。**
+        code, msg = exc.platform_code()
+        if code:
+            return SendOutcome(
+                ok=False,
+                code=code,
+                error=explain_code(code, msg) + f"（HTTP {exc.status or exc.kind}）",
+            )
         return SendOutcome(ok=False, error=f"发送请求失败（{exc.kind}）：{exc}")
 
     try:
@@ -383,7 +395,12 @@ def build_private_sender(
                 "[Feishu] 私聊提醒已发送 open_id=%s message_id=%s", target, outcome.message_id
             )
         else:
-            logger.warning("[Feishu] 私聊提醒发送失败 open_id=%s：%s", target, outcome.error)
+            logger.warning(
+                "[Feishu] 私聊提醒发送失败 open_id=%s code=%s：%s",
+                target,
+                outcome.code,
+                outcome.error,
+            )
         return outcome.as_dict()
 
     return _send
@@ -411,6 +428,8 @@ def build_private_sender(
 #: 平台错误码 → 人话（**权限没勾时要回可读的话，不是抛栈**）。
 #: 错误码出处：「上传文件」「发送消息」两页的错误码表。
 ERROR_HINTS: dict[int, str] = {
+    99992361: "open_id 跨应用（飞书 open_id 按应用隔离）：这个 id 不是本应用发出来的，"
+    "让对方把配对码私聊给机器人重新配对（或 feishu.pairing.revoke 删掉这条再重配）",
     99991672: "应用缺少权限：去飞书后台给应用勾上 im:resource（上传文件）"
     "与 im:message:send_as_bot（发消息），发布后重试",
     230027: "应用缺少发消息权限（im:message / im:message:send_as_bot）",
@@ -755,7 +774,9 @@ def build_sender(
         if outcome.ok:
             logger.info("[Feishu] 已发送回复 chat_id=%s message_id=%s", chat_id, outcome.message_id)
         else:
-            logger.warning("[Feishu] 发送失败 chat_id=%s：%s", chat_id, outcome.error)
+            logger.warning(
+                "[Feishu] 发送失败 chat_id=%s code=%s：%s", chat_id, outcome.code, outcome.error
+            )
         return outcome.as_dict()
 
     return _send

@@ -52,6 +52,40 @@ DEFAULT_ROBOTS_TIMEOUT_S = 5.0
 #: （arXiv 的 robots 禁止 /api/query，照字面执行会让检索整体不可用）
 DEFAULT_ROBOTS_EXEMPT_HOSTS: tuple[str, ...] = ("export.arxiv.org",)
 _RETRYABLE_STATUS = (429, 500, 502, 503, 504)
+#: 错误回包正文最多留多少字符（只要够解析 `code`/`msg`，不要把整页 HTML 塞进日志）
+_ERROR_BODY_CHARS = 500
+
+
+def _code_msg_from_text(text: str) -> tuple[int, str]:
+    """从平台回包正文里取 `(code, msg)`；不是 JSON / 没有 `code` 一律回 `(0, "")`。
+
+    只认**顶层** `code`（飞书的形状：`{"code":99992361,"msg":"open_id cross app",...}`），
+    不猜嵌套、不猜别的键名 —— 猜错就会在日志里编出一个不存在的错误码。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return 0, ""
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return 0, ""
+    if not isinstance(payload, dict):
+        return 0, ""
+    try:
+        code = int(payload.get("code") or 0)
+    except (TypeError, ValueError):
+        return 0, ""
+    msg = payload.get("msg")
+    return (code, str(msg)) if code else (0, "")
+
+
+def _body_snippet(response: httpx.Response) -> str:
+    """取回包正文的截断片段（读不到就回空串 —— 取证失败不能把原错误盖掉）。"""
+    try:
+        raw = response.content
+    except Exception:  # 已读流 / 解码失败都只当作「没有正文」
+        return ""
+    return raw.decode("utf-8", errors="replace")[:_ERROR_BODY_CHARS]
 
 
 class FetchError(Exception):
@@ -69,7 +103,13 @@ class FetchError(Exception):
     )
 
     def __init__(
-        self, kind: str, message: str, *, url: str = "", status: int | None = None
+        self,
+        kind: str,
+        message: str,
+        *,
+        url: str = "",
+        status: int | None = None,
+        body: str = "",
     ) -> None:
         if kind not in self.KINDS:
             raise ValueError(f"未知抓取错误类型：{kind!r}")
@@ -77,6 +117,18 @@ class FetchError(Exception):
         self.kind = kind
         self.url = url
         self.status = status
+        #: 平台回包正文的**截断片段**（默认空）。4xx/5xx 的语义常只写在回包里
+        #: （飞书把 `code`/`msg` 全放 body，如 `99992361 open_id cross app`），
+        #: 只留状态码会让上层「看得见失败、看不见原因」。这里只留证、不改消息文本。
+        self.body = body
+
+    def platform_code(self) -> tuple[int, str]:
+        """从回包正文里取 `(code, msg)`（平台错误码口径；取不到回 `(0, "")`）。
+
+        为什么放在错误对象上：`fetch/` 是唯一出网层，回包到这一层就被丢掉了；
+        出站发送器（`fetch/feishu_send.py`）要报「飞书返回 99992361」就只能从这里拿。
+        """
+        return _code_msg_from_text(self.body)
 
 
 @dataclass(frozen=True)
@@ -588,12 +640,20 @@ class HttpClient:
     @staticmethod
     def _status_error(response: httpx.Response, url: str) -> FetchError:
         status = response.status_code
+        # 回包正文留一份（截断）：平台把 code/msg 全放这里，丢了它上层只能报「400」
+        body = _body_snippet(response)
         if status in (403, 451):
-            return FetchError("forbidden", f"被拒绝（{status}）：{url}", url=url, status=status)
+            return FetchError(
+                "forbidden", f"被拒绝（{status}）：{url}", url=url, status=status, body=body
+            )
         if status == 429:
-            return FetchError("rate_limited", f"限流（429）：{url}", url=url, status=429)
+            return FetchError("rate_limited", f"限流（429）：{url}", url=url, status=429, body=body)
         if status == 404:
-            return FetchError("not_found", f"不存在（404）：{url}", url=url, status=404)
+            return FetchError("not_found", f"不存在（404）：{url}", url=url, status=404, body=body)
         if status in _RETRYABLE_STATUS:
-            return FetchError("server", f"服务端错误（{status}）：{url}", url=url, status=status)
-        return FetchError("bad_request", f"请求失败（{status}）：{url}", url=url, status=status)
+            return FetchError(
+                "server", f"服务端错误（{status}）：{url}", url=url, status=status, body=body
+            )
+        return FetchError(
+            "bad_request", f"请求失败（{status}）：{url}", url=url, status=status, body=body
+        )
