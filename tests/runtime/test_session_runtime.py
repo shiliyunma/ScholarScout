@@ -343,22 +343,45 @@ def test_the_three_sessions_really_overlap_on_the_wall_clock(ctx: AppContext) ->
 
 
 def test_cancel_touches_only_its_own_session(ctx: AppContext) -> None:
-    """取消 A：A 以 `cancelled` 收尾，**B 照常 `completed`**，且没有全局留痕。"""
+    """取消 A：A 以 `cancelled` 收尾，**B 照常 `completed`**，且没有全局留痕。
+
+    **同步手法：零计时** —— 判据里没有任何"谁先谁后 / 等了多久"，只有事件与屏障；
+    每个 `timeout` 都只是**死锁哨兵**（等不到就带着明确原因红，而不是"机器慢一点就红"）。
+
+    - `a_entered` / `b_entered`：两边的第一次模型调用**已经进来**。它们进来后都停在
+      `Barrier(2)` 上，主线程不抵达就**走不了** —— 于是"A 被取消时仍在模型调用里"、
+      "A 收尾时 B 仍在模型调用里"都是**因果事实**，不是抢时间抢出来的。
+    - A 收口靠它自己的 `done_event`（`runtime.wait`），不看时钟。
+    - B "还没收尾"用**结果信箱里查不到它**来证：`_results` 只在 `_finish()` 里写
+      （`runtime/session_runtime.py:551`），所以这条与调度快慢无关。
+    - 断言强度不放宽：A 必须 `cancelled`、B 必须 `completed` 且正文完整、零 `chat.error`、
+      A 的正文一个字都不许出现在 B 的事件里。
+
+    旧写法为什么偶发红：它用两个**独立 Event** 约定"先后都入场过"，桩里还嵌了
+    `assert release_x.wait(timeout=10)` —— 判据里混进了"机器快慢"这一维。
+    """
     _register_echo()
     a_entered = threading.Event()
-    release_a = threading.Event()
     b_entered = threading.Event()
-    release_b = threading.Event()
+    # A 的模型调用 ↔ 主线程（**取消之后**主线程才到第二方，A 才被放行）
+    a_hold = threading.Barrier(2)
+    # B 的模型调用 ↔ 主线程（**A 收口之后**主线程才到第二方）
+    b_hold = threading.Barrier(2)
+    calls = {"a": 0, "b": 0}
 
     def a_first() -> ChatReply:
-        a_entered.set()
-        assert release_a.wait(timeout=10)
+        calls["a"] += 1
+        if calls["a"] == 1:
+            a_entered.set()
+            a_hold.wait(timeout=30)  # 死锁哨兵：主线程发完取消才会到
         # 回一个工具调用：这样主循环会进第二轮的**步间检查**，取消才有机可乘
         return reply("A-前言", tool_calls=[tool_call(ECHO_TOOL, '{"query":"a"}', call_id="c_a")])
 
     def b_first() -> ChatReply:
-        b_entered.set()
-        assert release_b.wait(timeout=10)
+        calls["b"] += 1
+        if calls["b"] == 1:
+            b_entered.set()
+            b_hold.wait(timeout=30)
         return reply("B-正文-1")
 
     ctx.llm = _ScriptedLlm({"A 的问题": a_first, "B 的问题": b_first})
@@ -369,25 +392,32 @@ def test_cancel_touches_only_its_own_session(ctx: AppContext) -> None:
     try:
         turn_a = str(_submit(runtime, sid_a, "A 的问题", events_a)["turn_id"])
         turn_b = str(_submit(runtime, sid_b, "B 的问题", events_b)["turn_id"])
-        assert a_entered.wait(timeout=5) and b_entered.wait(timeout=5)
+        # 两边都进了模型调用，且都停在屏障上（走不了）
+        assert a_entered.wait(timeout=30) and b_entered.wait(timeout=30)
+        assert {item["session_id"] for item in runtime.status()["running"]} == {sid_a, sid_b}
 
+        # 取消 A：此刻 A 一定还在模型调用里（它卡在 a_hold 上等主线程）
         cancelled = runtime.cancel(session_id=sid_a)
         assert cancelled["ok"] is True
         assert cancelled["turn_id"] == turn_a
         assert ctx.cancelled == set(), "取消走的是每轮自己的 Event，不该再往全局集合里写"
-        assert {item["session_id"] for item in runtime.status()["running"]} == {sid_a, sid_b}
+        # 取消只碰 A：B 那一轮还没收尾（结果信箱只在收尾时写）
+        assert runtime.result(turn_b) is None, "取消 A 期间 B 不该已经收尾"
 
-        release_a.set()  # A 的模型调用返回 → 工具执行 → 第二轮开头看到取消 → cancelled
-        a_result = runtime.wait(turn_a, timeout=10)
+        a_hold.wait(timeout=30)  # 放行 A：模型返回 → 工具 → 第二轮开头看到取消 → cancelled
+        a_result = runtime.wait(turn_a, timeout=30)
         assert a_result is not None
         assert a_result.stop_reason == "cancelled"
 
-        # B 还在跑：取消 A **没有碰到 B**（状态、结果、事件三处都不受影响）
+        # B 还在跑：卡在 b_hold 上、结果信箱里没有它、状态里仍挂着它
         status_b = runtime.status(sid_b)
         assert status_b["session"]["running"] is True
         assert [item["turn_id"] for item in status_b["running"]] == [turn_b]
-        release_b.set()
-        b_result = runtime.wait(turn_b, timeout=10)
+        assert runtime.result(turn_b) is None, "A 收尾不该顺手把 B 也收掉"
+        assert runtime.status()["capacity"]["used"] == 1, "A 走了，坑位只剩 B 一个"
+
+        b_hold.wait(timeout=30)  # 放行 B
+        b_result = runtime.wait(turn_b, timeout=30)
         assert b_result is not None
         assert b_result.stop_reason == "completed"
         assert b_result.text == "B-正文-1"
@@ -406,8 +436,10 @@ def test_cancel_touches_only_its_own_session(ctx: AppContext) -> None:
         assert after["ok"] is False
         assert after["reason"] == "no_running_turn"
     finally:
-        release_a.set()
-        release_b.set()
+        # 断掉两个屏障：失败路径上停在屏障里的工作线程必须被放开（BrokenBarrierError 会让
+        # 那一轮以 error 收口 —— 在收尾阶段无所谓，不该让它一直挂着）
+        a_hold.abort()
+        b_hold.abort()
         runtime.shutdown()
 
 
