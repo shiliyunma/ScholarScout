@@ -44,6 +44,13 @@ NON_DEFAULT_VALUES: dict[str, object] = {
     "feishu_reply_enabled": True,
     # 飞书入站即时回执文案（docs/17 §3.11）：空串 = 关掉回执；默认是"已接受消息，正在处理中"。
     "feishu_ack_text": "别急，正在处理",
+    # 第 7 步：跑完提醒（docs/20 §6.3 第 (2) 条）。**默认关**；开着一轮结束且非当前会话才私聊推一条。
+    "notify_turn_done": True,
+    # 提醒平台：只实现了 feishu；写别的名字不会假装支持（`notify()` 回 unsupported_platform）。
+    "notify_turn_done_platform": "qq",
+    # 第 8 步：每日用量封顶（docs/20 §5.1/§5.2）。**默认 None = 不限制**；`<= 0`/bool 也归一成 None。
+    "daily_token_budget": 4321,
+    "daily_cost_budget": 1.25,
 }
 
 

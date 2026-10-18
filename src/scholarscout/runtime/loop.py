@@ -22,7 +22,16 @@ from typing import Any
 from scholarscout.config import Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import ChatReply, LlmClient, LlmError, ToolCall
-from scholarscout.runtime import compaction, context_budget, registry, research_state, search_intent
+from scholarscout.runtime import (
+    budget as daily_budget,
+)
+from scholarscout.runtime import (
+    compaction,
+    context_budget,
+    registry,
+    research_state,
+    search_intent,
+)
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
 from scholarscout.runtime.toolctx import ToolContext, TurnBudget
 from scholarscout.state import sessions, traces
@@ -396,6 +405,11 @@ def run_turn(
     )
     deltas_sent = 0
     streamed_text = ""
+    # ---- 每日用量封顶（docs/20 §5.2 第二处检查点）：**每一次模型调用之前**都要判。
+    # 没配上限时 `guard is None` → 整段零成本、行为与引入前逐字一致（可断言的回归点）。
+    # 超限**不新造事件名**：收口只体现在 `chat.done` 的 `stop_reason="budget"`。
+    guard = daily_budget.from_runtime(ctx.config.runtime)
+    budget_stop_used = False
     try:
         # 先把"这个会话正在跑哪一轮"记下来：界面点「停止」时按会话找到它（整轮结束前拿不到 turn_id）
         ctx.running[session_id] = turn_id
@@ -404,6 +418,14 @@ def run_turn(
                 stop_reason = "cancelled"
                 break
             tools_for_round = None if (stop_hinted or budget.remaining <= 0) else tool_decls
+            # 预算检查点：已超则**当场收口** —— 只再给一次"不给工具"的总结机会，
+            # 之后不再调模型（否则"封顶"每轮都还要再花一次钱，等于没封）。
+            if guard is not None and guard.exceeded(ctx.db) is not None:
+                stop_reason = daily_budget.STOP_REASON
+                if budget_stop_used:
+                    break
+                budget_stop_used = True
+                tools_for_round = None
             if stream_enabled:
                 # 这一轮可以是正文（最终答案/前言），也可以是工具调用 —— 两条都走流式：
                 # 只流正文增量，工具调用照原样从 `reply.tool_calls` 拿。
@@ -445,6 +467,11 @@ def run_turn(
             final_text = reply.content or final_text
 
             if not reply.tool_calls:
+                break
+
+            if budget_stop_used:
+                # 已封顶却仍要工具：**不执行**（不给新工具），就在这里收口。
+                # 不在落库前 append 那条 assistant tool_calls，免得留下"有调用没结果"的悬空消息。
                 break
 
             assistant_row = sessions.append_message(
@@ -575,6 +602,13 @@ def run_turn(
     finally:
         # 无论怎么结束都要摘掉：留着会让"下一次取消"打到一轮已经结束的轮次上
         ctx.running.pop(session_id, None)
+
+    # ---- 封顶后模型一个字都没说出来时，**如实**给一条可读的说明（不假装成功、不留空白）。
+    if stop_reason == daily_budget.STOP_REASON and not final_text.strip():
+        final_text = (
+            "（今日用量已达上限，本轮不再继续调用模型。已产生的记录都在上面的会话里；"
+            "可以调高 config.yaml 的 runtime.daily_token_budget，或等滚动 24 小时窗口过去后再继续。）"
+        )
 
     # ---- A1/A2：把模型回填的覆盖状态并进台账；记账标记从**可见正文**里剥掉。
     # 标记解析不出来就什么都不改（保持 open）—— 猜覆盖等于自欺。

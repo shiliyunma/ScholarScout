@@ -275,11 +275,15 @@ def send_text(
     chat_id: str,
     text: str,
     domain: str = DEFAULT_DOMAIN,
+    receive_id_type: str = RECEIVE_ID_TYPE_CHAT,
 ) -> SendOutcome:
     """发一条文本消息到 `chat_id`。**失败回 `SendOutcome(ok=False)`，不抛异常。**
 
-    流程：`fetch_tenant_token`（复用，已实测）→ `POST /open-apis/im/v1/messages?receive_id_type=chat_id`。
+    流程：`fetch_tenant_token`（复用，已实测）→ `POST /open-apis/im/v1/messages?receive_id_type=…`。
     任何一步失败（取 token 失败 / 传输错误 / 回包非 JSON / `code != 0`）都返回带 `error` 的结果。
+
+    `receive_id_type="open_id"` 时 `chat_id` 参数装的是**用户 open_id**（`ou_...`），
+    这是私聊专用通道（`build_private_sender`）；默认仍是 `chat_id`，老调用点语义不变。
     """
     if not (app_id and app_secret):
         return SendOutcome(ok=False, error="缺凭据：FEISHU_APP_ID / FEISHU_APP_SECRET 未配置")
@@ -305,7 +309,7 @@ def send_text(
     }
     try:
         result = http.post_json(
-            send_message_url(domain),
+            send_message_url(domain, receive_id_type=receive_id_type),
             body,
             accept="application/json",
             cache=False,
@@ -329,6 +333,60 @@ def send_text(
     if isinstance(data, Mapping):
         message_id = str(data.get("message_id") or "")
     return SendOutcome(ok=True, code=0, message_id=message_id)
+
+
+def build_private_sender(
+    http: HttpClient | None,
+    *,
+    open_id: str,
+    app_id: str = "",
+    app_secret: str = "",
+    domain: str = DEFAULT_DOMAIN,
+) -> Callable[[str], dict[str, Any]] | None:
+    """造一个**只发私聊**的发送器：``sender(text) -> dict``，目标钉死为这个 ``open_id``。
+
+    为什么签名里没有收件人：跑完提醒（docs/20 §6.3）的硬约束是**只私聊、不发群**。
+    如果把目标留成参数，调用方随时可能传一个群 ``chat_id`` 进来；把目标闭包在这里，
+    "发群"在类型上就不可能发生 —— 而且用的是 ``receive_id_type=open_id``（用户级），
+    不是 ``chat_id``。
+
+    返回 ``None`` 表示**没有可发的通道**（缺凭据 / 没出网客户端 / 没有 open_id）：
+    调用方据此一条都不发，而不是发了才失败。
+    """
+    resolved_id = (app_id or "").strip() or os.environ.get(APP_ID_ENV, "").strip()
+    resolved_secret = (app_secret or "").strip() or os.environ.get(APP_SECRET_ENV, "").strip()
+    target = (open_id or "").strip()
+    if not (resolved_id and resolved_secret and http is not None and target):
+        return None
+
+    def _send(text: str) -> dict[str, Any]:
+        try:
+            outcome = send_text(
+                http,
+                app_id=resolved_id,
+                app_secret=resolved_secret,
+                chat_id=target,
+                text=text,
+                domain=domain,
+                receive_id_type=RECEIVE_ID_TYPE_OPEN_ID,
+            )
+        except Exception as exc:  # 兜底：提醒发送失败绝不把轮次搞崩
+            logger.warning("[Feishu] 私聊提醒发送异常（已吞）：open_id=%s err=%s", target, exc)
+            return {
+                "ok": False,
+                "message_id": "",
+                "code": 0,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        if outcome.ok:
+            logger.info(
+                "[Feishu] 私聊提醒已发送 open_id=%s message_id=%s", target, outcome.message_id
+            )
+        else:
+            logger.warning("[Feishu] 私聊提醒发送失败 open_id=%s：%s", target, outcome.error)
+        return outcome.as_dict()
+
+    return _send
 
 
 # ------------------------------------------------ 发文件（上传拿 file_key → 私聊发送）

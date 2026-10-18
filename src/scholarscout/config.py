@@ -96,6 +96,49 @@ class LlmProfile:
 #: 而 config 不能反向 import channels（`channels` 已经 import `config`）—— 所以默认值只在这里写一次。
 DEFAULT_FEISHU_ACK_TEXT = "已接受消息，正在处理中"
 
+#: 跑完提醒的默认平台（`runtime.notify_turn_done_platform`）。目前**只有飞书私聊**这一条实现，
+#: 写在 config 层是为了让配置读取与「不假装支持」的判断用同一个字符串（改一处即全局一致）。
+DEFAULT_NOTIFY_PLATFORM = "feishu"
+
+
+def _optional_positive_int(value: object) -> int | None:
+    """配置里的「可选正整数」：缺省 / 非数字 / ``<= 0`` 一律回 ``None``（= 不限制）。
+
+    为什么 ``0`` 也算不限制：YAML 里写 ``daily_token_budget: 0`` 的直觉是"先关掉"，
+    把它解释成"上限 0、一律拒绝"会让用户以为程序坏了。
+    ``bool`` 显式排除：YAML 的 ``true`` 会被 ``int()`` 读成 1，那不是一个有意义的上限。
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    number: int
+    if isinstance(value, (int, float)):
+        number = int(value)
+    elif isinstance(value, str):
+        try:
+            number = int(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return number if number > 0 else None
+
+
+def _optional_positive_float(value: object) -> float | None:
+    """同上，用于金额上限（配了单价才有意义，见 `runtime/budget.py`）。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    number: float
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return number if number > 0 else None
+
 
 @dataclass(frozen=True)
 class RuntimeProfile:
@@ -142,6 +185,21 @@ class RuntimeProfile:
     #: **同一文案可配**：`""`（空串）= 关掉回执；回执与回答共用同一个出站开关
     #: （`feishu_reply_enabled=false` 时一次外网都不发）。
     feishu_ack_text: str = DEFAULT_FEISHU_ACK_TEXT
+    #: 跑完提醒（docs/20 §6.3 第 (2) 条）：**默认关** —— 关着时 `runtime/notify.py` 第一步就回
+    #: `disabled`，不查库、不出网、连收件人都不解析（"关着时一次外网都不发"因此可断言）。
+    #: 开着的语义：一轮 `chat.done` 且**该会话不是当前显示会话** → 私聊推一条摘要。
+    notify_turn_done: bool = False
+    #: 提醒走哪个平台。目前只实现**飞书私聊**（`fetch/feishu_send.py::build_private_sender`，
+    #: `receive_id_type=open_id`，目标 = 唯一已配对用户）；别的名字**一律不发**（不假装支持），
+    #: 也**不发群** —— 群主动消息需要群主授权，项目口径就是不发。
+    notify_turn_done_platform: str = DEFAULT_NOTIFY_PLATFORM
+    #: 每日 token 封顶（docs/20 §5.1/§5.2）：**滚动 24 小时**，按 `usage_records` 汇总。
+    #: **默认 None = 不限制**（`<= 0` / `bool` 也按"不限制"归一）。超限后：正在跑的这一轮收口
+    #: （不再给新工具、如实总结）且 `stop_reason="budget"`，新的轮次直接拒绝。
+    daily_token_budget: int | None = None
+    #: 每日金额封顶：**只在配了单价（`est_cost` 非空）时才生效**；单价未配时不算金额、
+    #: 这条上限也不生效（绝不按估算单价折出一个好看的数字）。默认 None = 不限制。
+    daily_cost_budget: float | None = None
 
 
 @dataclass(frozen=True)
@@ -352,6 +410,19 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             feishu_ack_text=str(
                 runtime_section.get("feishu_ack_text", DEFAULT_FEISHU_ACK_TEXT)
             ).strip(),
+            # 跑完提醒（docs/20 §6.3）：默认关；平台名只认小写，空串回默认飞书。
+            # D3 同款坑：加了字段必须接这一行，否则 YAML 写它会被静默忽略。
+            notify_turn_done=bool(runtime_section.get("notify_turn_done", False)),
+            notify_turn_done_platform=(
+                str(runtime_section.get("notify_turn_done_platform") or DEFAULT_NOTIFY_PLATFORM)
+                .strip()
+                .lower()
+                or DEFAULT_NOTIFY_PLATFORM
+            ),
+            # 每日封顶（docs/20 §5.1）：**默认无上限**；`<= 0` / bool / 非数字一律归一成 None。
+            # `0` 读成"不限制"而不是"上限 0"（见 `_optional_positive_int` 的理由）。
+            daily_token_budget=_optional_positive_int(runtime_section.get("daily_token_budget")),
+            daily_cost_budget=_optional_positive_float(runtime_section.get("daily_cost_budget")),
         ),
         features=Features(
             enable_kb=bool(feature_section.get("enable_kb", False)),

@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -35,10 +36,13 @@ from typing import Any, Protocol
 from scholarscout.config import Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient
-from scholarscout.runtime import loop
+from scholarscout.runtime import budget as daily_budget
+from scholarscout.runtime import loop, notify
 from scholarscout.runtime.loop import Emitter, TurnResult
 from scholarscout.state import sessions
 from scholarscout.state.db import Database
+
+logger = logging.getLogger(__name__)
 
 #: 默认并发上限（用户拍板，docs/20 §5.1）。第 8 步的 `runtime.max_parallel_sessions` 会覆盖它。
 DEFAULT_MAX_CONCURRENT = 3
@@ -83,6 +87,9 @@ class TurnHandle:
     done_event: threading.Event = field(default_factory=threading.Event)
     started_at: float = field(default_factory=time.monotonic)
     phase: str = "queued"
+    #: 提交这一轮时**界面上正在显示**哪个会话（由 `chat.send` 的 `active_session_id` 传进来）。
+    #: 跑完提醒据此判"要不要提醒" —— 运行时自己猜"当前会话"在并发下必然猜错（docs/20 §6.3）。
+    active_session_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -203,12 +210,20 @@ class SessionRuntime:
         idle_reap_s: float = DEFAULT_IDLE_REAP_S,
         keep_results: int = DEFAULT_KEEP_RESULTS,
         thread_prefix: str = THREAD_PREFIX,
+        notifier: notify.TurnDoneNotifier | None = None,
     ) -> None:
         self._host = host
         self._max_concurrent = max(1, int(max_concurrent))
         self._idle_reap_s = float(idle_reap_s)
         self._keep_results = max(1, int(keep_results))
         self._thread_prefix = thread_prefix
+        #: 跑完提醒（docs/20 §6.3）。**显式传 None 时按配置造**：`notify_turn_done=false`
+        #: （默认）→ 造出来的是 `None`，`_notify` 整段零成本、一次外网都不发。
+        self._notifier = (
+            notifier
+            if notifier is not None
+            else notify.from_config(host.config.runtime, db=host.db, http=host.http)
+        )
         self._lock = threading.RLock()
         self._units: dict[str, SessionUnit] = {}
         self._handles: dict[str, TurnHandle] = {}
@@ -230,17 +245,33 @@ class SessionRuntime:
         toolsets: Sequence[str],
         emit: Emitter | None,
         before_start: Callable[[], None] | None = None,
+        active_session_id: str | None = None,
     ) -> dict[str, Any]:
         """提交一轮，**立即返回**（不等结果）。
 
         - 成功：``{"ok": True, "turn_id": ...}`` —— `turn_id` 是**预分配**的，所以 RPC 层能在
           整轮结束前一秒就把它交给界面（docs/20 §3.2 的 `mode="async"`）。
-        - 拒绝：``{"ok": False, "reason": "turn_in_progress"|"at_capacity"|"shutdown", "running": [...]}``。
+        - 拒绝：``{"ok": False, "reason": "turn_in_progress"|"at_capacity"|"shutdown"|"daily_budget_exceeded", "running": [...]}``。
           **拒绝而不是排队**（用户明确不要排队，docs/20 §5.3）。
 
         ``before_start`` 在**工作线程里、跑轮次之前**执行：给"会调模型的前置步骤"（如标题总结）用 ——
         放在这里才不会让 `mode="async"` 的 RPC 调用被它拖住（阶段 4 的验收是 <10ms 返回 turn_id）。
+
+        ``active_session_id`` 是**提交这一刻界面上正在显示的会话**（跑完提醒要用它判"要不要提醒"）。
+        运行时不猜：缺省即"界面没在看任何会话"，于是提醒一条都不发（``no_active_session``）。
         """
+        # ---- 每日封顶的第一处检查点（docs/20 §5.2）：已超则**拒绝新轮次**。
+        # 没配上限时 `guard is None` → 不查库，行为与引入前逐字一致。
+        guard = daily_budget.from_runtime(self._host.config.runtime)
+        if guard is not None:
+            exceeded = guard.exceeded(self._host.db)
+            if exceeded is not None:
+                return {
+                    "ok": False,
+                    "reason": daily_budget.REJECT_REASON,
+                    "budget": exceeded,
+                    "running": self._running_snapshot(),
+                }
         with self._lock:
             if self._closed:
                 return {"ok": False, "reason": "shutdown", "note": "会话运行时已关闭"}
@@ -258,7 +289,11 @@ class SessionRuntime:
             if self._in_flight >= self._max_concurrent:
                 return {"ok": False, "reason": "at_capacity", "running": self._running_locked()}
 
-            handle = TurnHandle(session_id=session_id, turn_id=sessions.new_id("trn"))
+            handle = TurnHandle(
+                session_id=session_id,
+                turn_id=sessions.new_id("trn"),
+                active_session_id=(str(active_session_id or "").strip() or None),
+            )
             unit.handle = handle
             unit.last_active = time.monotonic()
             self._handles[handle.turn_id] = handle
@@ -319,7 +354,13 @@ class SessionRuntime:
     # --------------------------------------------------------------- 观测
 
     def status(self, session_id: str | None = None) -> dict[str, Any]:
-        """哪些会话在跑 / 跑在什么阶段 / 容量还剩多少（docs/20 §3.2 的 `chat.status`）。"""
+        """哪些会话在跑 / 跑在什么阶段 / 容量还剩多少 / 今日用量（docs/20 §3.2 的 `chat.status`）。
+
+        ``global_budget``：滚动 24 小时的已用/上限/是否超限（`runtime/budget.py` 的稳定形状）。
+        **没配上限时** ``enabled=False``、各项为 ``None`` —— 不假报 0（0 会被读成"没花钱"）。
+        """
+        # 预算快照要在锁外取（要查库，不该占着运行时锁）
+        global_budget = daily_budget.snapshot(self._host.config.runtime, self._host.db)
         with self._lock:
             running = [
                 unit.handle.as_dict() for unit in self._units.values() if unit.handle is not None
@@ -329,6 +370,9 @@ class SessionRuntime:
             payload: dict[str, Any] = {
                 "running": running,
                 "capacity": {"max": self._max_concurrent, "used": self._in_flight},
+                # 滚动 24 小时的用量/上限/是否超限（`budget.snapshot` 的稳定形状）。
+                # 没配上限时 `enabled=False` 且各项为 None —— 不假报 0。
+                "global_budget": global_budget,
             }
             if session_id:
                 unit = self._units.get(session_id)
@@ -404,6 +448,11 @@ class SessionRuntime:
 
     def _running_locked(self) -> list[dict[str, Any]]:
         return [unit.handle.as_dict() for unit in self._units.values() if unit.handle is not None]
+
+    def _running_snapshot(self) -> list[dict[str, Any]]:
+        """加锁版的"谁在跑"（预算拒绝是在锁外判的，但载荷仍要如实带上运行清单）。"""
+        with self._lock:
+            return self._running_locked()
 
     def _turn_context(self, unit: SessionUnit, handle: TurnHandle) -> loop.TurnContext:
         """这一轮的上下文：取消信号与进行中登记**都取自本单元**（不跨会话共用）。"""
@@ -507,3 +556,30 @@ class SessionRuntime:
             self._in_flight = max(0, self._in_flight - 1)
             handle.phase = "done"
         handle.done_event.set()
+        # 外部提醒（docs/20 §6.3 第 (2) 条）放在 `done_event` **之后**：等结果的调用方（`mode="sync"`）
+        # 先拿到结论 —— 一次私聊推送（可能要先取 tenant token）不该拖慢"这一轮已经结束了"这件事。
+        # 开关关着时 `self._notifier is None`，这里零成本返回、一次外网都不发。
+        self._notify_done(unit, handle, result)
+
+    def _notify_done(
+        self, unit: SessionUnit, handle: TurnHandle, result: TurnResult | None
+    ) -> None:
+        """轮次收尾 → 非活跃会话 → 私聊一条摘要。**任何失败只记日志，绝不影响轮次结论。**"""
+        notifier = self._notifier
+        if notifier is None or result is None:
+            return
+        try:
+            row = sessions.get_session(self._host.db, unit.session_id)
+            title = str((row or {}).get("title") or "")
+            notifier.notify(
+                turn_id=handle.turn_id,
+                session_id=unit.session_id,
+                title=title,
+                text=result.text,
+                stop_reason=result.stop_reason,
+                duration_s=time.monotonic() - handle.started_at,
+                # 活跃会话**只认提交那一刻界面报上来的那个**：运行时自己猜在并发下必然猜错
+                active_session_id=handle.active_session_id,
+            )
+        except Exception as exc:  # 提醒失败不该把一轮已经成功的对话变成失败
+            logger.warning("[Notify] 跑完提醒收尾异常（已吞）：turn=%s err=%s", handle.turn_id, exc)

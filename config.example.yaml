@@ -50,6 +50,31 @@ runtime:
   # 并且按 message_id 去重（飞书重推同一事件不会让用户收到双份）。
   feishu_ack_text: "已接受消息，正在处理中"
 
+  # ---- 第 7 步：跑完提醒（docs/20 §6.3 第 (2) 条）**默认关** ----
+  # 语义：一轮 `chat.done` 且**该会话不是界面当前显示的会话** → 飞书**私聊**推一条摘要
+  # （标题 + 首行 200 字 + stop_reason / 耗时）。
+  # 关着时 `runtime/notify.py` 第一步就回 disabled：不查库、不出网、连收件人都不解析
+  #（"关着时一次外网都不发"是可断言的事实）。
+  # 硬约束：**只私聊、不发群**（`receive_id_type=open_id`，目标是唯一已配对用户；
+  # 群主动消息需群主授权，项目口径就是不发）；同一 turn_id 只提醒一次 + 60s 限频；
+  # 发送失败只记日志，绝不影响轮次结论。
+  # 收件人取 `feishu_paired_users` 里**唯一**的那个用户；0 个或多个 → 一条都不发（不猜）。
+  notify_turn_done: false
+  # 提醒平台：目前只实现 `feishu`（本项目没有 QQ 通道）。写别的名字**一律不发**并记 warning
+  # —— 不假装支持。
+  notify_turn_done_platform: "feishu"
+
+  # ---- 第 8 步：每日用量封顶（docs/20 §5.1/§5.2）**默认无上限** ----
+  # 口径：**滚动 24 小时**（不是自然日，避免午夜"回血"的悬崖），按 `usage_records` 汇总。
+  # 超限行为：① 正在跑的这一轮在**下一次模型调用前**收口（只再给一次无工具总结，
+  # `stop_reason="budget"`，已生成正文不丢）；② 新的轮次直接拒绝（`daily_budget_exceeded`）。
+  # 当前用量在 `chat.status` 的 `global_budget` 键里（未配置时 enabled=false、各项为 null）。
+  # null / 不写 = 不限制；`0` 与负数**也按"不限制"**归一（写 0 的直觉是"先关掉"）。
+  daily_token_budget: null
+  # 金额上限：**只在配了单价（`est_cost` 非空）时才生效**；单价未配时不算金额、这条上限不生效
+  #（绝不按估算单价折出一个好看的数字）。null = 不限制。
+  daily_cost_budget: null
+
 # ===== 摘要流水线（照 AIHOT 的"截断 + 一次调用"，见 docs/04）=====
 summary:
   prompts_dir: "prompts"

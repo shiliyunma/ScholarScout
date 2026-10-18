@@ -233,6 +233,16 @@ def _submit_rejection(rejected: dict[str, Any]) -> RpcError:
             "先停一个或等一个结束（按设计**不排队**）。",
             data,
         )
+    if reason == "daily_budget_exceeded":
+        budget = dict(rejected.get("budget") or {})
+        tokens = dict(budget.get("tokens") or {})
+        return RpcError(
+            Code.SERVICE_UNAVAILABLE,
+            "今日用量已达上限（daily_budget_exceeded）："
+            f"已用 {tokens.get('used')} / 上限 {tokens.get('limit')} tokens（滚动 24 小时）。"
+            "调高 config.yaml 的 runtime.daily_token_budget 或等窗口过去后再继续。",
+            data,
+        )
     return RpcError(Code.SERVICE_UNAVAILABLE, f"本轮未被接受（{reason}）", data)
 
 
@@ -244,6 +254,9 @@ def chat_send(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     现有界面不改一行也照常工作；`mode="async"`：立即返回 `{turn_id, session_id, accepted}`，
     整轮结论走 `chat.done` 事件（`text` + `message_id` 已带上）或 `chat.result(turn_id)` 补取。
     两种模式都走同一份 `SessionRuntime`（上限 3、同会话不许两轮并行）—— docs/20 §3.2。
+
+    可选参数 `active_session_id`（异步模式由界面传）：**提交这一刻界面上正在显示的会话**。
+    跑完提醒据此判「要不要私聊推一条」（非活跃会话才推）；不传 = 一律不推（不猜）。
     """
     params = _params(params)
     session_id = _require(params, "session_id")
@@ -263,6 +276,8 @@ def chat_send(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     ctx.require_llm()
 
     runtime = ctx.session_runtime()
+    # `active_session_id`：**提交这一刻界面上正在显示的会话**（docs/20 §6.3 的跑完提醒要用它判
+    # "这一轮该不该推私聊"）。运行时**不猜**：前端没传 → 提醒一条都不发（`no_active_session`）。
     accepted = runtime.submit_turn(
         session_id=session_id,
         text=text,
@@ -271,6 +286,7 @@ def chat_send(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         # 标题在**工作线程里、跑轮次之前**定下来（顺序与改造前一致），
         # 但它会调一次模型 —— 放在这里才不拖住 `mode="async"` 的立即返回。
         before_start=lambda: _title_before_turn(ctx, session_id, text),
+        active_session_id=str(params.get("active_session_id") or "").strip() or None,
     )
     if not accepted.get("ok"):
         raise _submit_rejection(accepted)
