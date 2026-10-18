@@ -258,8 +258,11 @@ def test_two_ledgers_share_the_same_600_budget(db: Database) -> None:
     for index in range(8):
         memory.add_fact(db, f"工作笔记 {index}：" + "啰嗦" * 40, kind="fact", target="memory")
     note = memory.render_facts_note(db)
-    body = "\n".join(line for line in note.splitlines() if line.startswith("- "))
-    assert len(body) <= memory.NOTE_BUDGET_CHARS
+    # 口径必须与 `_pick_rows` 一致：逐行 `len(_note_line())` 累加（**不含换行符**）。
+    # 旧写法 `len("\n".join(...))` 把 n-1 个 `\n` 也算进预算 —— 行数一多就凭空多出 5 字
+    # （实测 6 行 × 100 字：模块口径 600 ≤ 600 合规，旧断言却读到 605，红的是断言不是模块）。
+    fact_chars = sum(len(line) for line in note.splitlines() if line.startswith("- "))
+    assert fact_chars <= memory.NOTE_BUDGET_CHARS
 
 
 def test_render_note_appends_merge_hint_when_over_budget(db: Database) -> None:
