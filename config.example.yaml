@@ -21,6 +21,10 @@ llm:
 # ===== 对话循环 =====
 runtime:
   max_tool_calls_per_turn: 12     # 防死循环；超限 stop_reason="tool_limit"
+  # 多会话并行上限（docs/20 §5.1，默认 3）：每个会话占一个线程，
+  # 这个数 = **同时真在干活的会话数**。第 N+1 个 chat.send 直接回 at_capacity
+  # （不排队）；`chat.status.capacity.max` 如实回这个数。
+  max_parallel_sessions: 3
   max_context_chars: 60000        # 超过则压缩历史
   stream: true
   allow_clarify: true             # 允许模型每轮最多反问一次（决议 3）

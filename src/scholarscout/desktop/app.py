@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import logging
 import os
 import sys
 import threading
@@ -22,6 +23,8 @@ from scholarscout.desktop import window_state
 from scholarscout.desktop.bridge import Bridge
 from scholarscout.desktop.icon import apply_window_icon, set_app_user_model_id
 from scholarscout.desktop.rpc_client import RpcClient, default_command
+
+logger = logging.getLogger(__name__)
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 #: 窗口/任务栏图标（跟 exe 图标同一份，见 scripts/make_icon.py）；缺了也不影响启动
@@ -164,8 +167,15 @@ def launch(
         from scholarscout.config import load_config as _load_config
 
         ui_cfg = _load_config().ui
-    except Exception:
-        pass
+    except Exception as exc:
+        # 仍然吞掉（配置坏了也得让窗口能打开 → 退回默认外观，控制流不变），但记一行：
+        # 不加这句，用户改坏的窗口几何/无边框开关会"看起来没生效"，却查不到任何原因。
+        logger.warning(
+            "界面配置读取失败，退回默认窗口外观（db=%s toolsets=%s）：err=%s",
+            db_path,
+            toolsets,
+            exc,
+        )
 
     # 屏幕信息用来"按屏收窄"：大屏用 1440x900，小屏不许超出视口（默认与最小尺寸都收）。
     screens = _screen_rects()

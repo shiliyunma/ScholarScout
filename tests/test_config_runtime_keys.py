@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from scholarscout.config import LibraryProfile, RuntimeProfile, load_config
+from scholarscout.config import (
+    DEFAULT_MAX_PARALLEL_SESSIONS,
+    LibraryProfile,
+    RuntimeProfile,
+    load_config,
+)
 from scholarscout.fetch.settings import (
     DEFAULT_CONNECT_TIMEOUT_S,
     DEFAULT_EXTRACT_TIMEOUT_S,
@@ -22,10 +27,14 @@ from scholarscout.fetch.settings import (
     DEFAULT_ROBOTS_TIMEOUT_S,
     FetchSettings,
 )
+from scholarscout.rpc.registry import AppContext
+from scholarscout.state.db import Database
 
 #: 每个字段给一个**与默认值不同**的值，能区分"读到了"与"用了默认"
 NON_DEFAULT_VALUES: dict[str, object] = {
     "max_tool_calls_per_turn": 7,
+    # 第 8 步：多会话并行上限（docs/20 §5.1）。**写 2 就必须真是 2**，见下面的池子断言。
+    "max_parallel_sessions": 2,
     "max_context_chars": 12345,
     "stream": False,
     "allow_clarify": False,
@@ -90,6 +99,50 @@ def test_defaults_hold_when_section_is_absent(tmp_path: Path) -> None:
     config = load_config(config_path, load_env=False)
     assert config.runtime == RuntimeProfile()
     assert config.runtime.plan_by_model is False
+
+
+# ------------------------------------------- `runtime.max_parallel_sessions` 是真上限
+def test_max_parallel_sessions_caps_the_thread_pool(tmp_path: Path, db: Database) -> None:
+    """写 `runtime.max_parallel_sessions: 2` → 会话池的并发上限**真的是 2**。
+
+    **为什么要有这条**：`RuntimeProfile` 有这个字段、`load_config` 也读了它，
+    但池子如果没拿这个值建（旧实现是 `getattr` 兜默认 3），就是"YAML 写了、静默无效"。
+    断言直接读 `SessionRuntime.max_concurrent` —— 它是 `ThreadPoolExecutor(max_workers=)`
+    与 `chat.status.capacity.max` 的同一个数，所以"配了 2 却在跑 3 份 token"会被当场抓住。
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("runtime:\n  max_parallel_sessions: 2\n", encoding="utf-8")
+
+    app = AppContext(config=load_config(config_path, load_env=False), db=db)
+    runtime = app.session_runtime()
+    try:
+        assert runtime.max_concurrent == 2
+        # 池子的真参数也跟着变（`max_concurrent` 就是构造时传给 max_workers 的那个数）
+    finally:
+        # 只关池子，不关共享的 db（fixture 还要用）
+        runtime.shutdown()
+
+
+def test_max_parallel_sessions_rejects_non_number(tmp_path: Path) -> None:
+    """非数字**直接报错**（同 `max_tool_calls_per_turn` 的 `int()`）：
+
+    静默回默认 = 用户以为改了、其实没改，这正是这个键最早坏掉的方式。
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("runtime:\n  max_parallel_sessions: 三个\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="max_parallel_sessions"):
+        load_config(config_path, load_env=False)
+
+
+@pytest.mark.parametrize("bad", [0, -2])
+def test_max_parallel_sessions_falls_back_on_non_positive(tmp_path: Path, bad: int) -> None:
+    """`<= 0` 回默认 3（不是"0 个坑位"、也不是负数）—— 与其它 `runtime.*` 整数键同一口径。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"runtime:\n  max_parallel_sessions: {bad}\n", encoding="utf-8")
+    assert (
+        load_config(config_path, load_env=False).runtime.max_parallel_sessions
+        == DEFAULT_MAX_PARALLEL_SESSIONS
+    )
 
 
 # ------------------------------------------------------------------ `library:` 段

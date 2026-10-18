@@ -100,6 +100,28 @@ DEFAULT_FEISHU_ACK_TEXT = "已接受消息，正在处理中"
 #: 写在 config 层是为了让配置读取与「不假装支持」的判断用同一个字符串（改一处即全局一致）。
 DEFAULT_NOTIFY_PLATFORM = "feishu"
 
+#: 多会话并行的默认上限（用户拍板 3，`docs/20 §5.1`）。
+#: 定义在 config 层：它既是 `RuntimeProfile.max_parallel_sessions` 的默认值，
+#: 也是 `runtime/session_runtime.py::DEFAULT_MAX_CONCURRENT` 的来源（只写一次，避免两处漂移）。
+DEFAULT_MAX_PARALLEL_SESSIONS = 3
+
+
+def _parallel_sessions(value: object) -> int:
+    """`runtime.max_parallel_sessions` 的归一化（与其它 `runtime.*` 整数键同一口径）。
+
+    - 缺省 / ``bool`` / ``<= 0`` → 回默认 3（旧实现是 `int(x or 3)`，写 0 本来就不该变成"0 个坑位"）；
+    - 非数字 → **直接报错**（同 `max_tool_calls_per_turn` 的 `int()`：静默回默认等于用户以为改了、其实没改）。
+    """
+    if value is None or isinstance(value, bool):
+        return DEFAULT_MAX_PARALLEL_SESSIONS
+    if not isinstance(value, (int, float, str)):
+        raise ValueError(f"runtime.max_parallel_sessions 必须是正整数（收到 {value!r}）")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"runtime.max_parallel_sessions 必须是正整数（收到 {value!r}）") from None
+    return number if number > 0 else DEFAULT_MAX_PARALLEL_SESSIONS
+
 
 def _optional_positive_int(value: object) -> int | None:
     """配置里的「可选正整数」：缺省 / 非数字 / ``<= 0`` 一律回 ``None``（= 不限制）。
@@ -143,6 +165,11 @@ def _optional_positive_float(value: object) -> float | None:
 @dataclass(frozen=True)
 class RuntimeProfile:
     max_tool_calls_per_turn: int = 12
+    #: 多会话并行的**真上限**（docs/20 §5.1，用户拍板默认 3）：同时最多这么多会话在跑，
+    #: 第 N+1 个 `submit_turn` 直接回 `at_capacity`（不排队）。`rpc/registry.py` 建池时读它。
+    #: **D3 同款坑**：加了字段必须接 `load_config` 那一行，否则 YAML 写了静默无效
+    #: （`tests/test_config_runtime_keys.py` 会当场拦下）。
+    max_parallel_sessions: int = DEFAULT_MAX_PARALLEL_SESSIONS
     max_context_chars: int = 60000
     #: 流式输出总开关：最后一轮（tools=None 的那轮）与抽背「求助」改走 `chat_stream`，
     #: 增量经 `chat.delta` / `practice.delta` 实时推到界面。**默认开** —— 不改变计费
@@ -400,6 +427,8 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         summary=_profile(llm_section.get("summary", {}) or {}, DEFAULT_SUMMARY),
         runtime=RuntimeProfile(
             max_tool_calls_per_turn=int(runtime_section.get("max_tool_calls_per_turn", 12)),
+            # 多会话并行上限（docs/20 §5.1）：非数字报错、<=0/缺省回 3（见 `_parallel_sessions`）。
+            max_parallel_sessions=_parallel_sessions(runtime_section.get("max_parallel_sessions")),
             max_context_chars=int(runtime_section.get("max_context_chars", 60000)),
             stream=bool(runtime_section.get("stream", True)),
             allow_clarify=bool(runtime_section.get("allow_clarify", True)),

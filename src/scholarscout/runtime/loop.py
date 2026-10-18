@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -36,6 +37,8 @@ from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
 from scholarscout.runtime.toolctx import ToolContext, TurnBudget
 from scholarscout.state import sessions, traces
 from scholarscout.state.db import Database
+
+logger = logging.getLogger(__name__)
 
 #: 事件回调：``emit(kind, payload)``（RPC 层把 chat.* 事件转成通知）
 Emitter = Callable[[str, dict[str, Any]], None]
@@ -299,8 +302,16 @@ def run_turn(
                         completion_tokens=usage.get("completion_tokens"),
                         cached_tokens=usage.get("cached_tokens"),
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            # 仍然是"只吞不抛"（压缩失败不该让这一轮开不起来），但必须留痕：
+            # 否则压缩/记账一直失败，用户只会看到上下文越来越长、账单对不上，
+            # 却没有任何一处日志说明为什么。控制流与原来完全一致。
+            logger.warning(
+                "压缩与压缩记账失败（本轮照常继续，历史不压缩）：session=%s turn=%s err=%s",
+                session_id,
+                turn_id,
+                exc,
+            )
     messages = build_messages(ctx.db, session_id, config=ctx.config, toolsets=toolsets)
     tool_decls = registry.openai_tools(specs) or None
 
@@ -616,8 +627,15 @@ def run_turn(
         if research_state.apply_coverage(state, final_text, fresh_sources):
             final_text = research_state.strip_marker(final_text)
         research_state.save_state(ctx.db, session_id, state)
-    except Exception:
-        pass
+    except Exception as exc:
+        # 控制流不变（台账写回失败不拖垮这一轮），但要能看见：
+        # 静默失败 = 下一轮带着同一份旧台账跑，用户只会觉得"它怎么又忘了"。
+        logger.warning(
+            "跨轮台账写回失败（保持 open，本轮照常收尾）：session=%s turn=%s err=%s",
+            session_id,
+            turn_id,
+            exc,
+        )
 
     # ---- D2：跨会话记忆。每个会话最多抽一次，且要在"有值得记的迹象"时才抽。
     # 失败不影响本轮结果（回答已经生成好了）；开销按 purpose="memory" 如实记账，
@@ -649,8 +667,15 @@ def run_turn(
                         completion_tokens=usage.get("completion_tokens"),
                         cached_tokens=usage.get("cached_tokens"),
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            # 仍然是"只吞不抛"（回答已经生成好了），但记忆抽取失败必须留痕：
+            # 它同时会吃掉 purpose="memory" 的那条用量记账，静默就等于暗开销。
+            logger.warning(
+                "跨会话记忆抽取失败（不影响本轮结果）：session=%s turn=%s err=%s",
+                session_id,
+                turn_id,
+                exc,
+            )
 
     message_id = sessions.append_message(
         ctx.db,

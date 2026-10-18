@@ -17,7 +17,7 @@ from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient, LlmError
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.runtime import loop
-from scholarscout.runtime.session_runtime import DEFAULT_MAX_CONCURRENT, SessionRuntime
+from scholarscout.runtime.session_runtime import SessionRuntime
 from scholarscout.state.db import Database
 
 Handler = Callable[["AppContext", dict[str, Any]], Any]
@@ -48,13 +48,11 @@ class AppContext:
     def session_runtime(self) -> SessionRuntime:
         """拿（必要时创建）多会话工作单元池。
 
-        并发上限读 `runtime.max_parallel_sessions`（**默认 3，用户拍板**）；该配置键属第 8 步，
-        这里用 `getattr` 兜默认值 —— 先加能力、不抢后一步的配置契约。
+        并发上限读 `runtime.max_parallel_sessions`（`RuntimeProfile` 的**真字段**，默认 3，
+        用户拍板）；归一化在 `config.load_config` 里做（非数字报错、`<=0`/缺省回 3），
+        这里只取值 —— 不再用 `getattr` 兜默认（那曾让写进 config.yaml 的键**静默无效**）。
         """
-        limit = int(
-            getattr(self.config.runtime, "max_parallel_sessions", DEFAULT_MAX_CONCURRENT)
-            or DEFAULT_MAX_CONCURRENT
-        )
+        limit = int(self.config.runtime.max_parallel_sessions)
         with self._runtime_lock:
             if self._session_runtime is None:
                 self._session_runtime = SessionRuntime(self, max_concurrent=limit)

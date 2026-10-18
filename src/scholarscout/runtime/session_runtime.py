@@ -33,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from scholarscout.config import Config
+from scholarscout.config import DEFAULT_MAX_PARALLEL_SESSIONS, Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient
 from scholarscout.runtime import budget as daily_budget
@@ -44,8 +44,9 @@ from scholarscout.state.db import Database
 
 logger = logging.getLogger(__name__)
 
-#: 默认并发上限（用户拍板，docs/20 §5.1）。第 8 步的 `runtime.max_parallel_sessions` 会覆盖它。
-DEFAULT_MAX_CONCURRENT = 3
+#: 默认并发上限（用户拍板，docs/20 §5.1）。**唯一来源是 config 层的常量** ——
+#: `runtime.max_parallel_sessions` 的默认值与这里的兜底必须是同一个数，否则"没配时 3、配了才变"会漂。
+DEFAULT_MAX_CONCURRENT = DEFAULT_MAX_PARALLEL_SESSIONS
 #: 空闲单元回收阈值（拍脑袋值，需按真机内存占用调 —— docs/20 §10 #6 已如实标注）
 DEFAULT_IDLE_REAP_S = 900.0
 #: 结果信箱保留条数（供 `chat.result` 补取；太旧的一轮不再接受补取，如实回 `unknown_turn`）
@@ -176,8 +177,12 @@ def detach_threads_from_exit_join(thread_prefix: str) -> int:
             try:
                 candidate.acquire()
                 acquired.append(candidate)
-            except Exception:  # pragma: no cover - 拿不到锁就退回"会 join"
-                pass
+            except Exception as exc:  # pragma: no cover - 拿不到锁就退回"会 join"
+                # 仍然吞掉（拿不到锁 = 最坏退回"退出时会 join"，功能不受影响），
+                # 但记一行：私有锁拿不到说明 CPython 内部结构变了，静默等于下次才发现退出变慢。
+                logger.warning(
+                    "摘除守护线程：拿不到 %r 的锁，退回退出时 join：err=%s", candidate, exc
+                )
     try:
         for thread in targets:
             tstate = getattr(thread, "_tstate_lock", None)
