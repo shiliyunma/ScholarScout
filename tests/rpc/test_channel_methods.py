@@ -35,7 +35,7 @@ _ENV_KEYS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET")
 APP_ID = "cli_a1b2c3d4e5f6"
 SECRET = "sec_SUPER_SECRET_VALUE_3f9c"
 
-#: docs/21 §5.1 里本轮落地的九条 `channel.*`
+#: docs/21 §5.1 里本轮落地的十条 `channel.*`（含 docs/17 §3.12 的发文件）
 CHANNEL_METHODS = frozenset(
     {
         "channel.list",
@@ -44,6 +44,8 @@ CHANNEL_METHODS = frozenset(
         "channel.set_credentials",
         "channel.test",
         "channel.send",
+        # 发文件（生成物 / 已入库资料 / 项目内路径）：渠道层规则识别后交给它
+        "channel.send_file",
         "channel.start",
         "channel.stop",
         # 子进程专用（父进程是状态快照的唯一写者）：子进程只上报，落盘在父进程

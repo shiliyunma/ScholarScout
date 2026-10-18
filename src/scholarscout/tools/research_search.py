@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from scholarscout.providers.arxiv import ArxivProvider
@@ -29,6 +30,7 @@ from scholarscout.providers.settings import (
     optional_token,
 )
 from scholarscout.providers.tavily import TavilyProvider
+from scholarscout.runtime import search_intent
 from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.subtasks import fetch_many
 from scholarscout.runtime.toolctx import ToolContext
@@ -158,6 +160,72 @@ def _card_payload(card: Any, source_id: str) -> dict[str, Any]:
     }
 
 
+def _choice_event(ctx: ToolContext, *, query: str, intent: search_intent.Intent | None) -> None:
+    """把"需要用户选一次"推给界面。
+
+    用的是既有的事件通道（``ctx.emit`` → ``rpc/server.py`` 的 JSON-RPC 通知），只是**新增了一个
+    事件名** ``chat.needs_choice``（已登记进 ``NOTIFICATION_METHODS``，否则会被加 ``chat.``
+    前缀而永远到不了界面）。为什么不复用 ``chat.tool_result``：界面要拿 ``options`` 直接渲染
+    选择卡，混在工具结果通知里要前端自己从 digest 里反解，反而更脆。
+    """
+    emit = ctx.emit
+    if emit is None:
+        return
+    # 界面事件失败不能连累检索（与 research.delegate 的口径一致）
+    with contextlib.suppress(Exception):
+        emit(
+            "chat.needs_choice",
+            {
+                "turn_id": ctx.turn_id,
+                "session_id": ctx.session_id,
+                "query": query,
+                "options": search_intent.options(),
+                "intent": intent.as_dict() if intent is not None else None,
+            },
+        )
+
+
+def _skipped_result(query: str) -> dict[str, Any]:
+    """用户选择不检索：**不搜**，但要让模型明确知道"该直接回答"。
+
+    ``ok=False`` 是刻意的：这一轮确实没拿到任何证据。主循环也只对"真的搜过且没新来源"计
+    ``empty_rounds`` / 记判重台账 —— 不搜不能被算成"搜了没结果"，否则会误触发"停搜"提示，
+    还会把这个查询钉进判重表（下一轮真想搜时被当成重复）。
+    """
+    note = (
+        "用户已选择本轮不检索。请不要调用检索类工具，直接用已有上下文/通用知识回答，"
+        "并在回答里说明哪些部分没有资料支撑。"
+    )
+    return {
+        "ok": False,
+        "skipped": True,
+        "data": {"items": [], "skipped": True, "query": query, "note": note},
+        "refs": {"source_ids": []},
+    }
+
+
+def _choice_result(query: str, intent: search_intent.Intent) -> dict[str, Any]:
+    """分类置信度低且用户没表态：**不猜**，把选项交出去（模型转述给用户）。"""
+    options = search_intent.options()
+    note = (
+        "这次没说清要哪类资料，先别搜。请把下面这些选项转成一个简短的问题问用户，"
+        "等他/她选完再检索（不要自己替用户选，也不要换个说法重搜）。"
+    )
+    return {
+        "ok": False,
+        "needs_choice": True,
+        "options": options,
+        "data": {
+            "needs_choice": True,
+            "items": [],  # 与其它返回路径同形（预算投影/模型都按 data.items 读结果）
+            "query": query,
+            "note": note,
+            "intent": intent.as_dict(),
+        },
+        "refs": {"source_ids": []},
+    }
+
+
 def research_search(
     ctx: ToolContext,
     query: str,
@@ -166,6 +234,27 @@ def research_search(
     year_from: int | None = None,
     sort: str = "relevance",
 ) -> dict[str, Any]:
+    # ---- 方案 3：先核**每轮检索偏好位**再决定搜不搜/搜哪一层。
+    # 偏好位存在研究台账里（不是系统提示）：工具签名与提示词一字未改，改的只是"这一轮查哪几个来源"。
+    preference, intent = search_intent.preference_for(ctx)
+    gate_enabled = bool(getattr(ctx.config.runtime, "classify_search_intent", True))
+
+    if preference == "none":
+        # 用户明确说"别搜了/直接回答"——不消耗任何出网与 token
+        return _skipped_result(query)
+
+    if (
+        gate_enabled
+        and preference is None
+        and intent is not None
+        and not intent.failed
+        and intent.confidence < search_intent.CONFIDENCE_THRESHOLD
+    ):
+        # 没偏好 + 本轮分类置信度低 → 不搜，给结构化选项并通知界面（选择卡是下一步）
+        _choice_event(ctx, query=query, intent=intent)
+        return _choice_result(query, intent)
+    # 分类器报错（intent.failed）走这里 = **失败开放**：照常检索，绝不因为分类失败而卡住
+
     # ---- A3：判重闸门。同一会话里"换词重搜同一件事"要被拦下，并告诉它该往哪走。
     # 真机证据：3 个多轮会话里 2 个出现重复查询（其中一轮一个新来源都没发现）。
     # 拦下来比让它搜完更省 —— 一次检索的钱是花了的，重复的结果对结论毫无贡献。
@@ -198,6 +287,33 @@ def research_search(
     providers = available_providers(ctx)
     missing = unavailable_providers(ctx)
     per_provider = max(1, min(int(limit or settings.per_provider_limit), 50))
+
+    # ---- 方案 3：有偏好就只查这一族（模型点名了别的族也照偏好收窄 —— 用户的约束优先）。
+    family_note: str | None = None
+    if search_intent.providers_for(preference) is not None:
+        picked = search_intent.filter_providers(wanted, providers, preference)
+        if not picked:
+            label = search_intent.label_of(preference)
+            return {
+                "ok": False,
+                "data": {
+                    "items": [],
+                    "provider_status": [],
+                    "query": query,
+                    "note": (
+                        f"用户只要{label}，但这一层现在没有可用的来源（缺 key 或没配实例）。"
+                        "请如实告诉用户这一层没接通，不要改用别的类型检索。"
+                    ),
+                },
+                "refs": {"source_ids": []},
+            }
+        if picked != wanted:
+            dropped = [name for name in wanted if name not in picked]
+            family_note = (
+                f"已按「{search_intent.label_of(preference)}」偏好只查 {', '.join(picked)}"
+                f"（跳过 {', '.join(dropped)}）"
+            )
+        wanted = picked
 
     # 子 Agent P0（docs/16 §3.3）：并行 provider 扇出 —— 只并行出网，不并发调模型。
     # 逐条返回结果，单来源失败不阻塞其它；status 的键集与旧的顺序循环逐字一致。
@@ -232,13 +348,18 @@ def research_search(
         return {
             "ok": False,
             "error": failure,
-            "data": {"items": [], "provider_status": status, "query": query},
+            "data": {"items": [], "provider_status": status, "query": query, "note": family_note},
             "refs": {"source_ids": []},
         }
 
     return {
         "ok": True,
-        "data": {"items": items, "provider_status": status, "query": query},
+        "data": {
+            "items": items,
+            "provider_status": status,
+            "query": query,
+            "note": family_note,
+        },
         "refs": {"source_ids": source_ids},
     }
 

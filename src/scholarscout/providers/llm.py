@@ -145,16 +145,23 @@ class OpenAIChatClient:
             self._client.close()
             self._client = None
 
+    #: 是否支持**逐次**压小输出上限（`chat(..., max_tokens=N)`）。
+    #: 轻量分类器靠它把一次小调用的输出压在几十个 token 内；桩客户端没有这个属性，
+    #: 分类器会退回普通 `chat()`（能力探测，不是异常兜底）。
+    supports_max_tokens = True
+
     def _payload(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
+        *,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens or self.max_tokens,
             "stream": False,
         }
         if not self.thinking:
@@ -173,9 +180,10 @@ class OpenAIChatClient:
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
     ) -> ChatReply:
         url = self.base_url + "/chat/completions"
-        payload = self._payload(messages, tools)
+        payload = self._payload(messages, tools, max_tokens=max_tokens)
         # 可选缓存：**只对"同一请求原样重放"有效**（评测复跑、调试重跑）。
         # 交互场景几乎不可能命中（每轮内容都是新的），所以默认关着 —— 别把它当万能省钱药。
         hit = self._cache_read(payload)

@@ -172,7 +172,14 @@ def config(tmp_path: Path) -> Config:
     return Config(
         chat=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
         summary=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
-        runtime=RuntimeProfile(max_tool_calls_per_turn=3, stream=False, allow_clarify=True),
+        runtime=RuntimeProfile(
+            max_tool_calls_per_turn=3,
+            stream=False,
+            allow_clarify=True,
+            # 意图分类默认**关掉**：它会多一次小调用，把脚本化假模型的回复吃掉一次。
+            # 需要它的用例自己 `replace(config.runtime, classify_search_intent=True)` 打开。
+            classify_search_intent=False,
+        ),
         features=Features(enable_kb=False),
         # 标题默认**关掉**：否则每个走 chat.send 的测试都要多备一条桩回复（那是噪声）。
         # 标题行为由 tests/runtime/test_title_suggest.py 显式打开开关来测。

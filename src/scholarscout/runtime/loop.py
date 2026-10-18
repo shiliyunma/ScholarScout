@@ -22,7 +22,7 @@ from typing import Any
 from scholarscout.config import Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import ChatReply, LlmClient, LlmError, ToolCall
-from scholarscout.runtime import compaction, context_budget, registry, research_state
+from scholarscout.runtime import compaction, context_budget, registry, research_state, search_intent
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
 from scholarscout.runtime.toolctx import ToolContext, TurnBudget
 from scholarscout.state import sessions, traces
@@ -319,6 +319,34 @@ def run_turn(
                 # 留痕：拆不出来时缺口粒度会退化，台账里要看得见（真机栽过一次）
                 state["plan_error"] = reason
         research_state.save_state(ctx.db, session_id, state)
+    # ---- 方案 3：本轮检索偏好位（`runtime/search_intent.py`）。**不进系统提示** —— 它写进
+    # 研究台账的 payload_json，系统提示仍是静态文本，`system_prompt_hash` 与用户点选无关。
+    # 规则优先（"只看论文/别搜了"不调模型），模糊查询才花一次极小调用；失败开放，绝不阻断本轮。
+    try:
+        intent = search_intent.resolve_turn(
+            ctx.llm,
+            text,
+            state=state,
+            turn_id=turn_id,
+            prompts_dir=ctx.config.summary_cfg.prompts_dir if ctx.config.summary_cfg else None,
+            enabled=bool(getattr(ctx.config.runtime, "classify_search_intent", True)),
+        )
+        if intent is not None and intent.usage:
+            # 这次小调用的钱也要记账（purpose="intent"）—— 否则"关掉它能省多少"没人答得出来
+            traces.record_usage(
+                ctx.db,
+                model=ctx.config.chat.model,
+                purpose="intent",
+                session_id=session_id,
+                turn_id=turn_id,
+                prompt_tokens=intent.usage.get("prompt_tokens"),
+                completion_tokens=intent.usage.get("completion_tokens"),
+            )
+        research_state.save_state(ctx.db, session_id, state)
+    except Exception:
+        # 分类是省钱的辅助，不是主流程的前置条件：它挂了，本轮照常检索与回答
+        pass
+
     gaps = research_state.compute_gaps(ctx.db, session_id, state)
     # 学习者画像（跨会话）：只放"能改变行为"的信息（水平、薄弱块、已做过的主题）。
     # 纯本地汇总、零模型调用；没有卡片也没有产物时这一段是空串，不会白占 token。
@@ -481,7 +509,9 @@ def run_turn(
                 if canonical == "research.search":
                     if fresh:
                         state["empty_rounds"] = 0
-                    else:
+                    elif tool_ok:
+                        # 只有**真的搜过且没新来源**才算"空轮"。没搜（用户选择不检索 / 等用户选类型 /
+                        # 来源报错）不算 —— 否则会把"没搜"误判成"搜不到"，提前触发停搜提示。
                         state["empty_rounds"] = int(state.get("empty_rounds") or 0) + 1
                     # 记账（A3 判重的唯一数据源）：**搜成功才记**，失败不记 ——
                     # 否则一次网络抖动就把这个方向永久锁死。写者只有循环这一个。

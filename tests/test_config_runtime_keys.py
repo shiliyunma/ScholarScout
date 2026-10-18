@@ -31,6 +31,8 @@ NON_DEFAULT_VALUES: dict[str, object] = {
     "allow_clarify": False,
     "max_history_chars": 4321,
     "plan_by_model": True,
+    # 方案 3：轻量搜索意图分类（模糊查询才触发一次极小调用）。加字段必须接进 load_config。
+    "classify_search_intent": False,
     # D3：加字段就必须同步这里，否则 YAML 里写这个键会被静默忽略（守卫测试会当场失败）
     "compact_after_chars": 5555,
     # 子 Agent P0：并行抓取的并发上限（fetch_many 读它）

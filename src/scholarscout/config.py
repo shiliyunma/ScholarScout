@@ -106,6 +106,12 @@ class RuntimeProfile:
     #: 打开就改变了原有的回复序列（测试里的脚本化假模型会被它吃掉一次），所以由 config.yaml 显式打开。
     #: 代价是每**会话**一次小调用（不是每轮）；关掉就退化成"只有目标 + 只有缺口"，粒度为粗。
     plan_by_model: bool = False
+    #: 方案 3：**轻量搜索意图分类**（`runtime/search_intent.py`）。**默认开** —— 只在
+    #: "模糊查询"（太短 / 没有领域词 / 泛指"找点资料"）时触发一次极小的分类调用（无工具、
+    #: 输出上限压到几十 token，且按归一化查询做 256 条 LRU 缓存），高置信才按类型筛 provider。
+    #: 分类器报错/超时一律**失败开放**（当 other 照常检索），所以它不会让检索不可用。
+    #: 关掉即完全回到引入前的行为（不分类、不问选择、全量来源）。
+    classify_search_intent: bool = True
     #: 子 Agent P0（docs/16 §3.3）：`research.search` 里并行抓取来源的并发上限。
     #: 只并行**出网**（provider.search），绝不并发调模型；实际限速仍由 `fetch/http.py`
     #: 按 host 串行化，所以这里调大不会绕过任何来源的 `min_interval_s`。
@@ -313,6 +319,9 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             max_history_chars=int(runtime_section.get("max_history_chars", 12000)),
             compact_after_chars=int(runtime_section.get("compact_after_chars", 4000)),
             plan_by_model=bool(runtime_section.get("plan_by_model", False)),
+            # 方案 3：轻量搜索意图分类（默认开；模糊查询才触发一次极小调用）。
+            # D3 同款坑：加了字段必须接这一行，否则 YAML 里写它会被静默忽略。
+            classify_search_intent=bool(runtime_section.get("classify_search_intent", True)),
             # 子 Agent P0：并行抓取的并发上限（D3 同款坑：加了字段必须接这一行，否则静默失效）
             max_parallel_fetches=int(runtime_section.get("max_parallel_fetches", 3)),
             # 子 Agent P1：顺序子任务总开关（默认关）。D3 同款坑：加了字段必须接这一行。
