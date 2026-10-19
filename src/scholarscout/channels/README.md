@@ -26,25 +26,31 @@
 1. **`feishu.py`** —— **传输无关的入站核**。**先读 `FeishuMessageHandler`**：`handle_event(payload)` 做
    事件解析 / 运行时拦截（群 `@提及`、私聊 `pairing|all|allowlist`）/ `session.ensure` + `chat.send` 跑一轮 / 回包
    （回复交给**注入的发送器**）。它**不碰任何 socket**，所以桩事件（甚至一个 dict）就能把整条链路测到底。
-2. **`feishu_files.py`** —— **「要文件」意图识别**（纯规则、零 IO；docs/17 §3.12）：一条消息 →
+2. **`feishu_inbound.py`** —— **入站纯函数层**（零 IO、零 RPC）：报文 → `FeishuMessage`（`parse_message_event`）、
+   `@提及` 判定（`bot_mentioned`）、放行决策（`authorize_message` → `InterceptDecision`）、
+   有界去重（`RecentMessageIds`）。白名单状态**由调用方传进来**，所以这里全是可单独断言的函数。
+3. **`feishu_config.py`** —— **渠道配置面**：`.env` 读取（连接模式只认 websocket / 群与私聊策略 /
+   机器人身份 / 设备码注册的 `from`·`tp`）与接入向导的入口 URL、launcher 模板。
+4. **`feishu_files.py`** —— **「要文件」意图识别**（纯规则、零 IO；docs/17 §3.12）：一条消息 →
    `FileRequest`（`path` / `artifact` / `library`）或 `None`。查库、导出、上传、发送都在主进程
    （`channel.send_file`）；`feishu.py` 仍重导出 `FileRequest` / `parse_file_request`。
-3. **`feishu_ws.py`** —— **入站传输层（唯一一条）**：官方 SDK `lark-oapi` 的 **websocket 长连接**
+5. **`feishu_ws.py`** —— **入站传输层（唯一一条）**：官方 SDK `lark-oapi` 的 **websocket 长连接**
    （本机主动外连，**不需要公网地址 / 回调 URL / 隧道**，也不绑任何端口）。它只做两件事：收事件 → 归一成报文
    （`event_to_payload`）→ 转交给上面那个核。
-4. **`feishu_setup.py`** —— 飞书接入向导（`--setup-feishu` 落点）：编号问答 → 打印/打开创建入口 →
+6. **`feishu_setup.py`** —— 飞书接入向导（`--setup-feishu` 落点）：编号问答 → 打印/打开创建入口 →
    填 App ID/Secret（只写 `.env`、不回显）→ 生成配对码 → 校验 → 写白名单（**连接方式不做二选一：只有 websocket**）。
-5. `__init__.py` 只是包标记，无逻辑。
+7. `__init__.py` 只是包标记，无逻辑。
 
 ## 3. 哪些是 API（外部可依赖的契约）
 
 - **入站核 `feishu.py`**：
   - `FeishuMessageHandler`（`handle_event(payload)` / `handle_message(message)` / `decide(message)` /
     `run_turn(message)`；构造时注入 `credentials` / `sender` / `dispatcher`）；
-  - 纯函数：`parse_message_event(...)` / `bot_mentioned(...)` / `authorize_message(...)` /
-    `_text_from_content(...)` / `_parse_mentions(...)`；数据结构 `FeishuMessage`、`FeishuCredentials`、
-    `InterceptDecision`；常量 `RECEIVE_EVENT`、`PAIRING_PROMPT`；
-  - 配置读取（都读 `.env`）：`credentials_from_env()`、`connection_mode_from_env()`
+  - 纯函数（**实现已搬到 `feishu_inbound.py`，本模块重导出**）：`parse_message_event(...)` /
+    `bot_mentioned(...)` / `authorize_message(...)` / `_text_from_content(...)` / `_parse_mentions(...)`；
+    数据结构 `FeishuMessage`、`FeishuCredentials`、`InterceptDecision`；常量 `RECEIVE_EVENT`、`PAIRING_PROMPT`；
+  - 配置读取（都读 `.env`；除 `credentials_from_env` 外**实现已搬到 `feishu_config.py`**，本模块重导出）：
+    `credentials_from_env()`、`connection_mode_from_env()`
     （**只认 websocket**，配了别的值含历史 `webhook` 会告警并回落）、`group_policy_from_env()`、
     `dm_policy_from_env()`、`bot_open_id_from_env()`、`bot_name_from_env()`；
   - 向导辅助：`open_entry_url(domain)` / `launcher_url(user_code, *, ...)`；
