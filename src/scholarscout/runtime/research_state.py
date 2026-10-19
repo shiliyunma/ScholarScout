@@ -29,6 +29,7 @@ from typing import Any
 
 from scholarscout.state.db import Database
 from scholarscout.state.migrate import now_iso
+from scholarscout.state.sessions import research_payload, save_research_payload
 
 #: 判重阈值（与诊断脚本口径一致）
 DEFAULT_SIMILARITY = 0.6
@@ -87,27 +88,22 @@ def empty_state(goal: str = "") -> dict[str, Any]:
 
 
 def load_state(db: Database, session_id: str) -> dict[str, Any] | None:
-    row = db.query_one(
-        "SELECT payload_json FROM research_states WHERE session_id = ?", (session_id,)
-    )
-    if row is None:
+    raw = research_payload(db, session_id)
+    if raw is None:
         return None
     try:
-        payload = json.loads(str(row["payload_json"]))
+        payload = json.loads(raw)
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
 
 
 def save_state(db: Database, session_id: str, state: dict[str, Any]) -> None:
-    db.execute(
-        """
-        INSERT INTO research_states (session_id, payload_json, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET payload_json = excluded.payload_json,
-                                              updated_at = excluded.updated_at
-        """,
-        (session_id, json.dumps(state, ensure_ascii=False), now_iso()),
+    save_research_payload(
+        db,
+        session_id,
+        payload_json=json.dumps(state, ensure_ascii=False),
+        updated_at=now_iso(),
     )
 
 

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from scholarscout.state.db import Database
+from scholarscout.state.support import upsert_check
 
 #: 判定的三种结果（写进库、进报告）
 VERDICTS = ("supported", "partial", "unsupported")
@@ -271,31 +272,21 @@ def record_check(
 ) -> str:
     """把判定写进 `support_checks`（可复算、可累积、不重复计费）。"""
     check_id = f"sup_{hashlib.sha256((pair.artifact_id + pair.item_id + pair.evidence_text).encode()).hexdigest()[:12]}"
-    db.execute(
-        """
-        INSERT INTO support_checks (id, artifact_kind, artifact_id, session_id, item_id, claim,
-                                    source_ids_json, evidence_level, verdict, reason, model,
-                                    prompt_version, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (artifact_id, item_id) DO UPDATE SET
-            verdict = excluded.verdict, reason = excluded.reason,
-            evidence_level = excluded.evidence_level, created_at = excluded.created_at
-        """,
-        (
-            check_id,
-            pair.artifact_kind,
-            pair.artifact_id,
-            session_id,
-            pair.item_id,
-            pair.claim,
-            json.dumps(list(pair.source_ids), ensure_ascii=False),
-            pair.evidence_level,
-            result.verdict,
-            result.reason,
-            result.model,
-            result.prompt_version,
-            _now(),
-        ),
+    upsert_check(
+        db,
+        check_id=check_id,
+        artifact_kind=pair.artifact_kind,
+        artifact_id=pair.artifact_id,
+        session_id=session_id,
+        item_id=pair.item_id,
+        claim=pair.claim,
+        source_ids=pair.source_ids,
+        evidence_level=pair.evidence_level,
+        verdict=result.verdict,
+        reason=result.reason,
+        model=result.model,
+        prompt_version=result.prompt_version,
+        created_at=_now(),
     )
     return check_id
 

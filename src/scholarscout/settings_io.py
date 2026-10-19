@@ -24,6 +24,7 @@ import yaml
 from scholarscout import paths
 from scholarscout.config import STYLE_CHOICES, Config, load_config
 from scholarscout.providers.thinking import LEVELS
+from scholarscout.state import maintenance
 
 
 class SettingsError(ValueError):
@@ -599,20 +600,6 @@ def cleanup(
     return {"files": files, "bytes": size}
 
 
-def _database_pages(db: Any) -> int:
-    """逻辑大小（页数 × 页大小）—— VACUUM 真正会收缩的是这个。
-
-    为什么不能只看文件字节数：WAL 模式下写入先进 `-wal`，主库文件可能纹丝不动，
-    于是"整理完文件没变小"会被误读成"整理没用"。
-    """
-    try:
-        page_count = int(db.query_one("PRAGMA page_count")[0])
-        page_size = int(db.query_one("PRAGMA page_size")[0])
-    except Exception:  # pragma: no cover - 拿不到就退化成 0，不编数
-        return 0
-    return page_count * page_size
-
-
 def optimize_database(db: Any, root: Path | None = None) -> dict[str, int]:
     """整理数据库：`VACUUM` + `PRAGMA optimize`，返回整理前后的字节数与页数。
 
@@ -622,14 +609,18 @@ def optimize_database(db: Any, root: Path | None = None) -> dict[str, int]:
     口径：**只整理、不删除任何数据** —— 与"资料本体拒绝清理"这条硬约定不冲突；
     同时给出文件字节数与逻辑页数（WAL 下两者会不一致，只报一个就会误导）。
     代价：**大库会短暂锁库**（几秒到几十秒），期间其它请求可能排队（有 busy_timeout 兜着）。
+
+    分工：SQL 在 `state/maintenance.py`（VACUUM / PRAGMA optimize / 页数），
+    本函数只负责"整理前后各量一次、把差值讲给界面听"。SQL 收进 state 之后，
+    "写库语句只在 state/ 里"是可 grep 的验收口径，不是约定俗成。
     """
     path = Path(db.path) if getattr(db, "path", None) is not None else paths.db_path(root)
     before = path.stat().st_size if path.is_file() else 0
-    pages_before = _database_pages(db)
-    db.execute("VACUUM")
-    db.execute("PRAGMA optimize")
+    pages_before = maintenance.database_pages(db)
+    maintenance.vacuum(db)
+    maintenance.optimize(db)
     after = path.stat().st_size if path.is_file() else 0
-    pages_after = _database_pages(db)
+    pages_after = maintenance.database_pages(db)
     return {
         "before": before,
         "after": after,

@@ -257,10 +257,13 @@ def _record_download(
     resolved_source_id = target["source_id"]
     resolved_doc_id = target["doc_id"]
     if resolved_doc_id:
-        ctx.db.execute(
-            "UPDATE documents SET raw_path = ?, mime = ?, http_status = ?, fetched_at = ?"
-            " WHERE id = ?",
-            (raw_rel, media_type, http_status, fetched_at, resolved_doc_id),
+        archive.set_document_download(
+            ctx.db,
+            resolved_doc_id,
+            raw_path=raw_rel,
+            mime=media_type,
+            http_status=http_status,
+            fetched_at=fetched_at,
         )
         return resolved_doc_id, resolved_source_id, False
 
@@ -297,9 +300,8 @@ def _record_download(
     )
     if not created:
         # 同来源同 sha 已有一行，但它的 raw_path 可能指向已不在盘上的旧位置 → 对齐到这次落盘的位置
-        ctx.db.execute(
-            "UPDATE documents SET raw_path = ?, mime = ?, http_status = ? WHERE id = ?",
-            (raw_rel, media_type, http_status, doc_id),
+        archive.set_document_raw_ref(
+            ctx.db, doc_id, raw_path=raw_rel, mime=media_type, http_status=http_status
         )
     return doc_id, resolved_source_id, not created
 

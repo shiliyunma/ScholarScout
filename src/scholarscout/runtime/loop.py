@@ -864,5 +864,5 @@ def mark_system_prompt(
         style=getattr(config.generation, "style", "default"),
     )
     value = system_prompt_hash(prompt)
-    db.execute("UPDATE sessions SET system_prompt_hash = ? WHERE id = ?", (value, session_id))
+    sessions.set_system_prompt_hash(db, session_id, value)
     return value

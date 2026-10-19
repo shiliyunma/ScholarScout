@@ -145,6 +145,37 @@ def set_session_meta(db: Database, session_id: str, values: dict[str, Any]) -> N
     )
 
 
+def research_payload(db: Database, session_id: str) -> str | None:
+    """读会话的研究台账原文（``research_states.payload_json``）；没有就 None。
+
+    只回**字符串**，反序列化与"坏了当没有"的判断留给运行时（那是领域口径）。
+    """
+    row = db.query_one(
+        "SELECT payload_json FROM research_states WHERE session_id = ?", (session_id,)
+    )
+    return None if row is None else str(row["payload_json"])
+
+
+def save_research_payload(
+    db: Database, session_id: str, *, payload_json: str, updated_at: str
+) -> None:
+    """写研究台账（一会话一行，存在就覆盖 payload 与时间）。"""
+    db.execute(
+        """
+        INSERT INTO research_states (session_id, payload_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET payload_json = excluded.payload_json,
+                                              updated_at = excluded.updated_at
+        """,
+        (session_id, payload_json, updated_at),
+    )
+
+
+def set_system_prompt_hash(db: Database, session_id: str, value: str) -> None:
+    """记下这次回答用的系统提示词哈希（改了提示词，历史就不可比）。"""
+    db.execute("UPDATE sessions SET system_prompt_hash = ? WHERE id = ?", (value, session_id))
+
+
 def list_sessions(db: Database, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     rows = db.query(
         """

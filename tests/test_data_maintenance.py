@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from scholarscout import settings_io
+from scholarscout.state import maintenance
 
 
 def _touch(path: Path, *, age_days: float, size: int = 1024) -> Path:
@@ -81,7 +82,7 @@ def test_optimize_database_shrinks_after_deletes(ctx: object) -> None:
     for index in range(60):
         session_id = sessions.create_session(db, model="stub-model", title=f"占位 {index}")
         sessions.append_message(db, session_id, role="user", content="x" * 800)
-    pages_full = settings_io._database_pages(db)
+    pages_full = maintenance.database_pages(db)
     db.execute("DELETE FROM messages")
     db.execute("DELETE FROM sessions")
     result = settings_io.optimize_database(db)

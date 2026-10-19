@@ -1,7 +1,10 @@
-"""资料库读取（只读，供 archive.* RPC 方法）。表结构见 docs/02 §4/§7。
+"""资料库读写（供 archive.* RPC 与资料库迁移使用）。表结构见 docs/02 §4/§7。
 
-正文不在库里 —— 这里只返回**路径**，由调用方决定是否打开或读取文件
+正文不在库里 —— 读侧只返回**路径**，由调用方决定是否打开或读取文件
 （"正文不入库，但路径必须可发现"，见 docs/01 §3.3）。
+
+写侧只承担"一行几列"的更新（下载回填 / 迁移改路径），不判断该不该写：
+下载去重、sha 不可变、事务里同时改原件与全文这些口径由调用方持有。
 """
 
 from __future__ import annotations
@@ -256,3 +259,44 @@ def read_text(
         "truncated": truncated,
         "reason": "",
     }
+
+
+# ------------------------------------------------------------------ 写（下载回填 / 迁移改路径）
+
+
+def set_document_download(
+    db: Database,
+    doc_id: str,
+    *,
+    raw_path: str,
+    mime: str,
+    http_status: int,
+    fetched_at: str,
+) -> None:
+    """把一次下载的结果回填到已有行：位置 / MIME / 状态码 / 时间。
+
+    **不动** ``sha256``（去重与不可变的锚）与 ``extract_status``（有没有抽正文是另一件事）。
+    """
+    db.execute(
+        "UPDATE documents SET raw_path = ?, mime = ?, http_status = ?, fetched_at = ? WHERE id = ?",
+        (raw_path, mime, http_status, fetched_at, doc_id),
+    )
+
+
+def set_document_raw_ref(
+    db: Database, doc_id: str, *, raw_path: str, mime: str, http_status: int
+) -> None:
+    """只把行的原件位置对齐到盘上的新位置（``fetched_at`` 保持原有那次抓取时间）。"""
+    db.execute(
+        "UPDATE documents SET raw_path = ?, mime = ?, http_status = ? WHERE id = ?",
+        (raw_path, mime, http_status, doc_id),
+    )
+
+
+def set_document_paths(db: Database, doc_id: str, *, raw_path: str, text_path: str) -> None:
+    """原件与全文的路径**在同一个事务里**更新（要么都改，要么都不改）。"""
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET raw_path = ?, text_path = ? WHERE id = ?",
+            (raw_path, text_path, doc_id),
+        )

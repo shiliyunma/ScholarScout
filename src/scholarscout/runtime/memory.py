@@ -27,6 +27,7 @@ import json
 import re
 from typing import Any
 
+from scholarscout.state import facts as state_facts
 from scholarscout.state.db import Database
 from scholarscout.state.migrate import now_iso
 from scholarscout.state.sessions import new_id, session_meta, set_session_meta
@@ -116,10 +117,14 @@ def add_fact(
     if existing is not None:
         return {"created": False, "fact": existing, "reason": "已有相似记忆"}
     fact_id = new_id("mem")
-    db.execute(
-        "INSERT INTO user_facts (id, text, kind, target, source_session, created_at)"
-        " VALUES (?,?,?,?,?,?)",
-        (fact_id, cleaned[:400], kind, target, source_session, now_iso()),
+    state_facts.insert_fact(
+        db,
+        fact_id=fact_id,
+        text=cleaned[:400],
+        kind=kind,
+        target=target,
+        source_session=source_session,
+        created_at=now_iso(),
     )
     return {
         "created": True,
@@ -147,15 +152,9 @@ def update_fact(
     if kind is not None:
         if kind not in KINDS:
             raise ValueError(f"非法类别：{kind!r}")
-        db.execute(
-            "UPDATE user_facts SET text = ?, kind = ?, updated_at = ? WHERE id = ?",
-            (cleaned[:400], kind, now_iso(), fact_id),
-        )
+        state_facts.update_fact(db, fact_id, text=cleaned[:400], kind=kind, updated_at=now_iso())
     else:
-        db.execute(
-            "UPDATE user_facts SET text = ?, updated_at = ? WHERE id = ?",
-            (cleaned[:400], now_iso(), fact_id),
-        )
+        state_facts.update_fact(db, fact_id, text=cleaned[:400], kind=None, updated_at=now_iso())
     return {"ok": True, "id": fact_id}
 
 
@@ -163,7 +162,7 @@ def remove_fact(db: Database, fact_id: str) -> dict[str, Any]:
     row = db.query_one("SELECT id FROM user_facts WHERE id = ?", (fact_id,))
     if row is None:
         raise ValueError(f"记忆不存在：{fact_id}")
-    db.execute("DELETE FROM user_facts WHERE id = ?", (fact_id,))
+    state_facts.delete_fact(db, fact_id)
     return {"ok": True, "id": fact_id}
 
 

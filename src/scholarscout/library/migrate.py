@@ -30,6 +30,7 @@ from typing import Any
 
 from scholarscout import paths
 from scholarscout.library import naming
+from scholarscout.state.archive import set_document_paths
 from scholarscout.state.db import Database
 
 #: 未引用历史文件的隔离目录名（放在各 data 子目录下）。
@@ -218,12 +219,8 @@ def plan_moves(
 
 
 def _update_paths(db: Database, move: Move) -> None:
-    """原件与全文的路径**在同一个事务里**更新（要么都改，要么都不改）。"""
-    with db.transaction() as conn:
-        conn.execute(
-            "UPDATE documents SET raw_path = ?, text_path = ? WHERE id = ?",
-            (move.new_raw, move.new_text, move.doc_id),
-        )
+    """把这条移动的落点写进库（SQL 在 ``state.archive``；这里只做参数搬运，留作测试的缝）。"""
+    set_document_paths(db, move.doc_id, raw_path=move.new_raw, text_path=move.new_text)
 
 
 def _rename_pair(base: Path, move: Move) -> list[tuple[Path, Path]]:
