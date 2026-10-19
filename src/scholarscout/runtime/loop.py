@@ -331,43 +331,16 @@ def run_turn(
                     break
                 budget_stop_used = True
                 tools_for_round = None
-            if stream_enabled:
-                # 这一轮可以是正文（最终答案/前言），也可以是工具调用 —— 两条都走流式：
-                # 只流正文增量，工具调用照原样从 `reply.tool_calls` 拿。
-                streamed_text = ""
-
-                def _on_delta(piece: str) -> None:
-                    nonlocal streamed_text, deltas_sent
-                    streamed_text += piece
-                    deltas_sent += 1
-                    # 推**累计**正文：前端 chat.delta 的处理是"替换正文"，累计值才能直接接管。
-                    _emit(
-                        emit,
-                        "chat.delta",
-                        {
-                            "turn_id": turn_id,
-                            "seq": deltas_sent,
-                            "kind": "text",
-                            "text": streamed_text,
-                        },
-                    )
-
-                reply = ctx.llm.chat_stream(messages, tools=tools_for_round, on_delta=_on_delta)
-            else:
-                reply = ctx.llm.chat(messages, tools=tools_for_round)
-            _accumulate_usage(usage_total, reply)
-            # **每次模型调用立即记账**：原来只在整轮结束记一次，结果是"被停止或中断的轮次
-            # 把已经花掉的 token 全丢了"（真机实测：杀掉实例后该会话用量一条不剩）。
-            # 代价敏感的用户看到的会话累计必须包含花掉的钱，哪怕这一轮被中途取消。
-            traces.record_usage(
-                ctx.db,
-                model=ctx.config.chat.model,
-                purpose="chat",
+            reply, deltas_sent, streamed_text = _call_model(
+                ctx,
+                messages,
+                stream_enabled=stream_enabled,
+                tools=tools_for_round,
+                emit=emit,
                 session_id=session_id,
                 turn_id=turn_id,
-                prompt_tokens=reply.usage.get("prompt_tokens"),
-                completion_tokens=reply.usage.get("completion_tokens"),
-                cached_tokens=reply.usage.get("cached_tokens"),
+                deltas_before=deltas_sent,
+                usage_total=usage_total,
             )
             final_text = reply.content or final_text
 
@@ -728,6 +701,64 @@ def _account_tool_result(
         if tool_ok and query:
             research_state.record_query(state, query)
         research_state.save_state(ctx.db, session_id, state)
+
+
+def _call_model(
+    ctx: TurnContext,
+    messages: list[dict[str, Any]],
+    *,
+    stream_enabled: bool,
+    tools: list[dict[str, Any]] | None,
+    emit: Emitter | None,
+    session_id: str,
+    turn_id: str,
+    deltas_before: int,
+    usage_total: dict[str, int],
+) -> tuple[ChatReply, int, str]:
+    """调一次模型（开流式就边收边推 ``chat.delta``），并把这次调用的钱立即记账。
+
+    返回 ``(reply, 累计已推的增量条数, 本轮收到的流式正文)``。
+    """
+    streamed_text = ""
+    deltas_sent = deltas_before
+    if stream_enabled:
+        # 这一轮可以是正文（最终答案/前言），也可以是工具调用 —— 两条都走流式：
+        # 只流正文增量，工具调用照原样从 `reply.tool_calls` 拿。
+
+        def _on_delta(piece: str) -> None:
+            nonlocal streamed_text, deltas_sent
+            streamed_text += piece
+            deltas_sent += 1
+            # 推**累计**正文：前端 chat.delta 的处理是"替换正文"，累计值才能直接接管。
+            _emit(
+                emit,
+                "chat.delta",
+                {
+                    "turn_id": turn_id,
+                    "seq": deltas_sent,
+                    "kind": "text",
+                    "text": streamed_text,
+                },
+            )
+
+        reply = ctx.llm.chat_stream(messages, tools=tools, on_delta=_on_delta)
+    else:
+        reply = ctx.llm.chat(messages, tools=tools)
+    _accumulate_usage(usage_total, reply)
+    # **每次模型调用立即记账**：原来只在整轮结束记一次，结果是"被停止或中断的轮次
+    # 把已经花掉的 token 全丢了"（真机实测：杀掉实例后该会话用量一条不剩）。
+    # 代价敏感的用户看到的会话累计必须包含花掉的钱，哪怕这一轮被中途取消。
+    traces.record_usage(
+        ctx.db,
+        model=ctx.config.chat.model,
+        purpose="chat",
+        session_id=session_id,
+        turn_id=turn_id,
+        prompt_tokens=reply.usage.get("prompt_tokens"),
+        completion_tokens=reply.usage.get("completion_tokens"),
+        cached_tokens=reply.usage.get("cached_tokens"),
+    )
+    return reply, deltas_sent, streamed_text
 
 
 def _apply_coverage(
