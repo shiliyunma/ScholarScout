@@ -4,7 +4,9 @@
 - 模型**只输出补丁**（几处改动），不重吐整条路线 —— 没被点到的部分一个字节都不变；
 - 补丁里挂的 `source_id` 必须是当前候选资料里真实存在的；资料类条目**不允许"删掉出处"**；
 - 补丁不合法（操作名/字段名/周号/类型写错）就**整条拒绝**并如实说明，绝不写半截；
-- 改写之前**先归档旧版**（`artifact_versions`），改错了能退回去 —— 路线是花钱生成的。
+- 改写之前**先归档旧版**（`artifact_versions`），改错了能退回去 —— 路线是花钱生成的；
+- 回包与其余工具**同形**（`{ok, data, refs}`）：失败一律 `ok:false` + `error`，**不抛** ——
+  模型是照 `ok`/`refs` 读结果的，异常冒泡会把整轮对话打断。
 
 与 ``route.plan`` 的分工：新方向用 `route.plan`；改已有路线（"第 3 周加一条练习"、
 "把每周时长改成 8 小时"）用 `route.revise`，**不要**重新 `route.plan`。
@@ -62,6 +64,20 @@ def render_route(plan: dict[str, Any]) -> str:
     return "\n".join(lines).strip() or "（空路线）"
 
 
+def _failure(message: str, route_id: str = "") -> dict[str, Any]:
+    """失败的**唯一**出口：回 `ok:false` 信封，不抛（与 `research.search` 同口径）。
+
+    为什么失败也带 `data`/`refs`：信封要求成功失败同形，调用方（模型 / RPC / 前端）
+    读 `data` 时不必先判分支；`route_id` 能带就带，日志里对得上是哪条路线。
+    """
+    return {
+        "ok": False,
+        "error": message,
+        "data": {"route_id": route_id, "changes": []},
+        "refs": {"route_ids": [route_id] if route_id else []},
+    }
+
+
 def route_revise(
     ctx: ToolContext,
     route_id: str,
@@ -69,20 +85,20 @@ def route_revise(
 ) -> dict[str, Any]:
     route_id = (route_id or "").strip()
     if not route_id:
-        raise ValueError("route_id 不能为空")
+        return _failure("route_id 不能为空")
     request = (instruction or "").strip()
     if not request:
-        raise ValueError("instruction 不能为空（要改什么必须说清楚）")
+        return _failure("instruction 不能为空（要改什么必须说清楚）", route_id)
 
     row = get_route(ctx.db, route_id)
     if row is None:
-        raise ValueError(f"路线不存在：{route_id}（新方向请用 route.plan）")
+        return _failure(f"路线不存在：{route_id}（新方向请用 route.plan）", route_id)
     plan = row["plan"]
 
     rows = candidate_sources(ctx, source_ids=None, topic=row["topic"])
     allowed = valid_ids(rows)
     if ctx.llm is None:
-        raise ValueError("没有可用模型，无法做增量修改")
+        return _failure("没有可用模型，无法做增量修改", route_id)
 
     pack = PromptPack(ctx.config.summary_cfg.prompts_dir)
     prompt = pack.compose(
@@ -98,8 +114,8 @@ def route_revise(
         changes_ops = patch.get("ops")
         new_plan, changes = apply_ops(plan, changes_ops, allowed_source_ids=allowed)
     except PatchError as exc:
-        # 不合法就整条拒绝：不写半截，也不假装改过
-        raise ValueError(f"增量修改被拒绝（{exc}）—— 原路线未改动") from exc
+        # 不合法就整条拒绝：不写半截，也不假装改过（回包而非抛，见 `_failure`）
+        return _failure(f"增量修改被拒绝（{exc}）—— 原路线未改动", route_id)
 
     summary = str(patch.get("summary") or "").strip() or "按你的要求做了增量修改"
     version = revise_route(ctx.db, route_id, new_plan, note=summary)
@@ -113,11 +129,14 @@ def route_revise(
         }
     )
     return {
-        "route_id": route_id,
-        "version": version,
-        "summary": summary,
-        "changes": changes,
-        "weeks": len(new_plan.get("weeks") or []),
+        "ok": True,
+        "data": {
+            "route_id": route_id,
+            "version": version,
+            "summary": summary,
+            "changes": changes,
+            "weeks": len(new_plan.get("weeks") or []),
+        },
         "refs": {"route_ids": [route_id], "source_ids": source_ids},
     }
 

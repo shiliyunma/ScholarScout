@@ -17,9 +17,9 @@
 检索扇出用空结果、模型要么不给（`use_model=False`）要么用 `StubLlm` 脚本。
 所有调用都是真实 handler + 真实 `ToolSpec`，只把边界依赖换成桩 —— 打桩的是 I/O，不是被测的形状。
 
-现状：`route.revise` 红 —— 成功路径返回**扁平 dict**（`route_id/version/summary/changes/weeks/refs`，
-没有 `ok`/`data`），失败路径直接 `raise ValueError`。它单独用 `xfail(strict=True)` 点名（见文末），
-修法是把里面四行包进 `{ok, data, refs}`，并把 `ValueError` 收敛成 `ok:false` + `error`。
+现状：8 个全绿。`route.revise` 曾经是唯一不同形的（扁平 dict + `raise ValueError`），
+已于 2026-10-19 收敛成 `{ok, data, refs}`（失败 `ok:false` + `error`，不抛）。
+新增工具时**先加到下面的 `SAMPLES`**，这道闸才会真的管到它。
 """
 
 from __future__ import annotations
@@ -208,18 +208,8 @@ def test_success_samples_carry_no_error_and_real_refs(tc: ToolContext) -> None:
         assert refs, f"{name} 成功却没回 refs（回答里的 id 就无从追溯）"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "点名 route.revise（tools/route_revise.py:115-122）：成功回包是**扁平 dict**"
-        "（route_id/version/summary/changes/weeks/refs），没有 ok 与 data —— 8 个工具里唯一一个"
-        "不同形的；同一函数的失败路径（route_revise.py:71-102）也直接 raise ValueError，"
-        "而不是 ok:false + error。修法：四行返回值包进 {ok, data, refs}，"
-        "并把 route_id/instruction 校验与 PatchError 收敛成 ok:false（与 research.search 同口径）。"
-    ),
-)
 def test_route_revise_returns_the_shared_envelope(tc: ToolContext) -> None:
-    """`route.revise` 也必须回信封（现状红，见 xfail 理由点名的那两处）。"""
+    """`route.revise` 也必须回信封（与另外 7 个同形）。"""
     created = _route_plan(tc)
     route_id = str(created["data"]["route_id"])
     tc.llm = StubLlm(
@@ -230,3 +220,22 @@ def test_route_revise_returns_the_shared_envelope(tc: ToolContext) -> None:
     )
     envelope = route_revise(tc, route_id, "每周时长改成 8 小时")
     _assert_envelope("route.revise", envelope)
+    assert envelope["ok"] is True
+    assert envelope["data"]["version"] == 2
+    assert envelope["refs"]["route_ids"] == [route_id]
+
+
+def test_route_revise_failure_is_an_envelope_not_an_exception(tc: ToolContext) -> None:
+    """补丁不合法时**不抛**，回 `ok:false` + 非空 `error`（模型据此换一种改法重试）。
+
+    这是这条 xfail 的另一半：原来 `raise ValueError` 会打断整轮对话，模型连"错在哪"都看不到。
+    """
+    created = _route_plan(tc)
+    route_id = str(created["data"]["route_id"])
+    tc.llm = StubLlm(reply('{"summary": "乱改", "ops": [{"op": "set_week_field"}]}'))
+
+    envelope = route_revise(tc, route_id, "把第 1 周改成别的")
+    _assert_envelope("route.revise", envelope)
+    assert envelope["ok"] is False
+    assert "被拒绝" in envelope["error"]
+    assert envelope["data"]["changes"] == []

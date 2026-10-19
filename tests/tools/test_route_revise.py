@@ -87,12 +87,17 @@ def test_revise_applies_patch_bumps_version_and_archives_old(ctx, route_id) -> N
 
     result = route_revise(tool_ctx(ctx), route_id, "每周改 8 小时；第 1 周加一条练习")
 
-    assert result["version"] == 2
-    assert result["summary"].startswith("把每周时长")
-    assert result["weeks"] == 2
-    assert len(result["changes"]) == 2
-    assert result["changes"][0]["before"] == 6
-    assert result["changes"][1]["target"] == "第 1 周 / 新增第 2 条"
+    assert result["ok"] is True, result.get("error")
+    data = result["data"]
+    assert data["version"] == 2
+    assert data["summary"].startswith("把每周时长")
+    assert data["weeks"] == 2
+    assert len(data["changes"]) == 2
+    assert data["changes"][0]["before"] == 6
+    assert data["changes"][1]["target"] == "第 1 周 / 新增第 2 条"
+    # 成功必须回 refs：回答里提到的路线 id 要能追溯到这条路线
+    assert result["refs"]["route_ids"] == [route_id]
+    assert result["refs"]["source_ids"] == ["src_rev_a"]
 
     row = learning.get_route(ctx.db, route_id)
     assert row is not None
@@ -113,9 +118,10 @@ def test_revise_applies_patch_bumps_version_and_archives_old(ctx, route_id) -> N
 def test_revise_prompt_contains_route_and_instruction(ctx, route_id) -> None:  # type: ignore[no-untyped-def]
     """提示词里必须带着**当前路线原文**与用户要求，否则模型改的就不是这条路。"""
     ctx.llm = StubLlm(reply(json.dumps({"summary": "改了检查点", "ops": []}, ensure_ascii=False)))
-    with pytest.raises(ValueError):
-        # ops 为空 → 引擎拒绝（没有要改的就别调用这个工具）
-        route_revise(tool_ctx(ctx), route_id, "第 2 周检查点改成：交一份可运行的 demo")
+    # ops 为空 → 引擎拒绝（没有要改的就别调用这个工具），但拒绝是**回包**不是抛
+    result = route_revise(tool_ctx(ctx), route_id, "第 2 周检查点改成：交一份可运行的 demo")
+    assert result["ok"] is False
+    assert "被拒绝" in result["error"]
     sent = str(ctx.llm.calls[0]["messages"][0]["content"])
     assert "第 2 周" in sent and "能改起来" in sent
     assert "交一份可运行的 demo" in sent
@@ -129,8 +135,11 @@ def test_invalid_patch_leaves_route_untouched(ctx, route_id) -> None:  # type: i
     }
     ctx.llm = StubLlm(reply(json.dumps(bad, ensure_ascii=False)))
 
-    with pytest.raises(ValueError, match="被拒绝"):
-        route_revise(tool_ctx(ctx), route_id, "把第 1 周标题改一下")
+    result = route_revise(tool_ctx(ctx), route_id, "把第 1 周标题改一下")
+    assert result["ok"] is False
+    assert "被拒绝" in result["error"]
+    # 失败包的 `data.changes` 必须是空的：不许让模型看到「改了点什么」
+    assert result["data"]["changes"] == []
 
     row = learning.get_route(ctx.db, route_id)
     assert row is not None and int(row["version"]) == 1
@@ -140,19 +149,23 @@ def test_invalid_patch_leaves_route_untouched(ctx, route_id) -> None:  # type: i
 
 def test_malformed_patch_is_rejected_without_writing(ctx, route_id) -> None:  # type: ignore[no-untyped-def]
     ctx.llm = StubLlm(reply("我觉得应该把每周时长改成 8 小时（没给 JSON）"))
-    with pytest.raises(ValueError, match="被拒绝"):
-        route_revise(tool_ctx(ctx), route_id, "每周改成 8 小时")
+    result = route_revise(tool_ctx(ctx), route_id, "每周改成 8 小时")
+    assert result["ok"] is False
+    assert "被拒绝" in result["error"]
     assert learning.list_versions(ctx.db, kind="route", artifact_id=route_id) == []
 
 
 def test_unknown_route_is_rejected(ctx) -> None:  # type: ignore[no-untyped-def]
-    with pytest.raises(ValueError, match="路线不存在"):
-        route_revise(tool_ctx(ctx), "rte_nope", "改点东西")
+    result = route_revise(tool_ctx(ctx), "rte_nope", "改点东西")
+    assert result["ok"] is False
+    assert "路线不存在" in result["error"]
+    assert result["refs"]["route_ids"] == ["rte_nope"]
 
 
 def test_revise_needs_an_instruction(ctx, route_id) -> None:  # type: ignore[no-untyped-def]
-    with pytest.raises(ValueError, match="instruction 不能为空"):
-        route_revise(tool_ctx(ctx), route_id, "   ")
+    result = route_revise(tool_ctx(ctx), route_id, "   ")
+    assert result["ok"] is False
+    assert "instruction 不能为空" in result["error"]
 
 
 def test_render_route_is_compact_and_numbered() -> None:
@@ -175,7 +188,9 @@ def test_rpc_revise_and_versions(ctx, route_id) -> None:  # type: ignore[no-unty
     ctx.llm = StubLlm(reply(json.dumps(patch, ensure_ascii=False)))
 
     result = dispatch(ctx, "route.revise", {"route_id": route_id, "instruction": "再加一周收尾"})
-    assert result["version"] == 2
+    assert result["ok"] is True
+    assert result["data"]["version"] == 2
+    assert result["refs"]["route_ids"] == [route_id]
 
     versions = dispatch(ctx, "route.versions", {"route_id": route_id})
     assert [item["version"] for item in versions["items"]] == [1]

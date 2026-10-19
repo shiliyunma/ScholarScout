@@ -446,6 +446,9 @@ def route_revise_rpc(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 
     为什么 RPC 与工具共用一个实现：这是"必须一致"的路径 —— 界面上点一次和模型调用一次
     得产生完全相同的结果与版本行为，分成两份迟早会漂移。
+
+    返回的就是工具的信封（`{ok, data, refs}`）：成功 `ok:true`，失败由这一层翻成
+    `-32602`（与 `route.versions` 的参数错误同一口径）—— 工具自己不抛，调用方要判 `ok`。
     """
     params = _params(params)
     from scholarscout.tools.route_revise import route_revise
@@ -453,10 +456,10 @@ def route_revise_rpc(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     route_id = str(params.get("route_id") or "").strip()
     instruction = str(params.get("instruction") or "").strip()
     tool_ctx = ToolContext(db=ctx.db, config=ctx.config, http=ctx.http, llm=ctx.llm)
-    try:
-        return route_revise(tool_ctx, route_id, instruction)
-    except ValueError as exc:
-        raise RpcError(Code.INVALID_PARAMS, str(exc)) from exc
+    result = route_revise(tool_ctx, route_id, instruction)
+    if not result.get("ok"):
+        raise RpcError(Code.INVALID_PARAMS, str(result.get("error") or "增量修改失败"))
+    return result
 
 
 @method("route.versions")
