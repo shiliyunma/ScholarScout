@@ -26,12 +26,15 @@
 1. **`feishu.py`** —— **传输无关的入站核**。**先读 `FeishuMessageHandler`**：`handle_event(payload)` 做
    事件解析 / 运行时拦截（群 `@提及`、私聊 `pairing|all|allowlist`）/ `session.ensure` + `chat.send` 跑一轮 / 回包
    （回复交给**注入的发送器**）。它**不碰任何 socket**，所以桩事件（甚至一个 dict）就能把整条链路测到底。
-2. **`feishu_ws.py`** —— **入站传输层（唯一一条）**：官方 SDK `lark-oapi` 的 **websocket 长连接**
+2. **`feishu_files.py`** —— **「要文件」意图识别**（纯规则、零 IO；docs/17 §3.12）：一条消息 →
+   `FileRequest`（`path` / `artifact` / `library`）或 `None`。查库、导出、上传、发送都在主进程
+   （`channel.send_file`）；`feishu.py` 仍重导出 `FileRequest` / `parse_file_request`。
+3. **`feishu_ws.py`** —— **入站传输层（唯一一条）**：官方 SDK `lark-oapi` 的 **websocket 长连接**
    （本机主动外连，**不需要公网地址 / 回调 URL / 隧道**，也不绑任何端口）。它只做两件事：收事件 → 归一成报文
    （`event_to_payload`）→ 转交给上面那个核。
-3. **`feishu_setup.py`** —— 飞书接入向导（`--setup-feishu` 落点）：编号问答 → 打印/打开创建入口 →
+4. **`feishu_setup.py`** —— 飞书接入向导（`--setup-feishu` 落点）：编号问答 → 打印/打开创建入口 →
    填 App ID/Secret（只写 `.env`、不回显）→ 生成配对码 → 校验 → 写白名单（**连接方式不做二选一：只有 websocket**）。
-4. `__init__.py` 只是包标记，无逻辑。
+5. `__init__.py` 只是包标记，无逻辑。
 
 ## 3. 哪些是 API（外部可依赖的契约）
 
@@ -46,6 +49,8 @@
     `dm_policy_from_env()`、`bot_open_id_from_env()`、`bot_name_from_env()`；
   - 向导辅助：`open_entry_url(domain)` / `launcher_url(user_code, *, ...)`；
   - 默认发送器 `RecordingSender`（无凭据时**不假装发成功**，只记录 + 告警）。
+- **「要文件」识别 `feishu_files.py`（纯函数，零 IO）**：`parse_file_request(text)` → `FileRequest | None`
+  （`kind ∈ {path, artifact, library}`）；`FileRequest(kind, query, raw)`。`feishu.py` 重导出这两个名字。
 - **传输层 `feishu_ws.py`**（websocket 长连接）：
   `build_client(ctx, *, sender=, dispatcher=, sdk=)` → `FeishuWsClient`
   （`build_client()` / `start(*, block=True, say=)` / `stop()` / `handle_event(event)` / `running` / `client`）；
