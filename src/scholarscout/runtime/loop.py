@@ -324,21 +324,7 @@ def run_turn(
         # 分类是省钱的辅助，不是主流程的前置条件：它挂了，本轮照常检索与回答
         pass
 
-    gaps = research_state.compute_gaps(ctx.db, session_id, state)
-    # 学习者画像（跨会话）：只放"能改变行为"的信息（水平、薄弱块、已做过的主题）。
-    # 纯本地汇总、零模型调用；没有卡片也没有产物时这一段是空串，不会白占 token。
-    from scholarscout.runtime import learner_profile
-
-    profile_note = learner_profile.render_profile_note(learner_profile.build_profile(ctx.db))
-    note = research_state.render_note(state, gaps)
-    if profile_note:
-        note = note + "\n\n" + profile_note
-    # 跨会话记忆（D2）：稳定事实 + "冲突以用户当前说法为准"的规矩
-    from scholarscout.runtime import memory
-
-    facts_note = memory.render_facts_note(ctx.db)
-    if facts_note:
-        note = note + "\n\n" + facts_note
+    note = _render_context_note(ctx, session_id=session_id, state=state)
     messages.append({"role": "system", "content": note})
 
     executed: list[str] = []
@@ -728,6 +714,28 @@ def _maybe_compact(ctx: TurnContext, *, session_id: str, turn_id: str) -> None:
             turn_id,
             exc,
         )
+
+
+def _render_context_note(
+    ctx: TurnContext, *, session_id: str, state: dict[str, Any]
+) -> str:
+    """本轮末尾那条 system 的内容：台账（目标/缺口/已搜查询）+ 学习者画像 + 跨会话记忆。"""
+    gaps = research_state.compute_gaps(ctx.db, session_id, state)
+    # 学习者画像（跨会话）：只放"能改变行为"的信息（水平、薄弱块、已做过的主题）。
+    # 纯本地汇总、零模型调用；没有卡片也没有产物时这一段是空串，不会白占 token。
+    from scholarscout.runtime import learner_profile
+
+    profile_note = learner_profile.render_profile_note(learner_profile.build_profile(ctx.db))
+    note = research_state.render_note(state, gaps)
+    if profile_note:
+        note = note + "\n\n" + profile_note
+    # 跨会话记忆（D2）：稳定事实 + "冲突以用户当前说法为准"的规矩
+    from scholarscout.runtime import memory
+
+    facts_note = memory.render_facts_note(ctx.db)
+    if facts_note:
+        note = note + "\n\n" + facts_note
+    return note
 
 
 def _accumulate_usage(total: dict[str, int], reply: ChatReply) -> None:
