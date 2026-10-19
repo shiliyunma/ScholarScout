@@ -1,31 +1,19 @@
-"""JSON-RPC 错误码（docs/01 §2 的表格就是这里）。
+"""JSON-RPC 错误对象与异常映射（码表见 `rpc/codes.py`，docs/01 §2）。
 
--32700 ~ -32603 是 JSON-RPC 标准；-32000 起是项目私有码。
+码本身定义在 `rpc/codes.py`（**只依赖标准库**，壳层才 import 得动）；本模块负责
+"异常 → 码"的映射，并把 `Code` 原样 re-export（历史调用方都是从这里拿的）。
 """
 
 from __future__ import annotations
 
 import sqlite3
-from enum import IntEnum
 from typing import Any
 
 from scholarscout.paths import PathOutsideDataError
 from scholarscout.providers.llm import LlmError
+from scholarscout.rpc.codes import Code
 
-
-class Code(IntEnum):
-    PARSE_ERROR = -32700
-    INVALID_REQUEST = -32600
-    METHOD_NOT_FOUND = -32601
-    INVALID_PARAMS = -32602
-    INTERNAL_ERROR = -32603
-
-    NOT_CONFIGURED = -32000
-    SERVICE_UNAVAILABLE = -32001
-    NOT_FOUND = -32002
-    FETCH_FORBIDDEN = -32003
-    TIMEOUT = -32004
-    CANCELLED = -32005
+__all__ = ["Code", "RpcError", "from_exception"]
 
 
 class RpcError(Exception):

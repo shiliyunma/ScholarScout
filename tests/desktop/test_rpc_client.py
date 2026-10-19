@@ -20,6 +20,7 @@ from scholarscout.desktop.rpc_client import (
     default_env,
     resolve_timeout,
 )
+from scholarscout.rpc.codes import KNOWN_CODES, Code
 
 
 class QueueReader:
@@ -129,6 +130,26 @@ def test_error_frame_becomes_rpc_call_error() -> None:
         client.call("session.messages", {"session_id": "ses_nope"})
     assert exc.value.code == -32002
     assert "不存在" in str(exc.value)
+
+
+def test_unknown_error_code_never_leaks_out_of_the_shell() -> None:
+    """后端回了个**表外的码**（或没给码）：壳层只能回 `rpc/codes.py` 里的兜底常量。
+
+    为什么必须收敛：前端按 `error.code` 分支，透一个它不认识的码过去等于让错误消失；
+    而壳自己写的默认值也必须来自常量表（裸数字一旦和码表脱钩，改口径就会漏一处）。
+    """
+    assert RpcCallError("壳自己报的错").code == int(Code.NOT_CONFIGURED), (
+        "壳层兜底码必须来自 rpc/codes.py"
+    )
+
+    for error in ({"code": -99999, "message": "野码"}, {"message": "连码都没有"}):
+        proc = FakeProcess()
+        client = _client(proc)
+        proc.stdout.feed(json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}) + "\n")
+        with pytest.raises(RpcCallError) as exc:
+            client.call("system.health")
+        assert exc.value.code == int(Code.NOT_CONFIGURED), f"{error} 应兜底成 {Code.NOT_CONFIGURED}"
+        assert exc.value.code in KNOWN_CODES
 
 
 def test_timeout_raises_with_clear_message() -> None:

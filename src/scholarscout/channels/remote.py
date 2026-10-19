@@ -29,6 +29,9 @@ import threading
 from collections.abc import Callable
 from typing import Any, TextIO
 
+#: 错误码来自 `rpc/codes.py`（只依赖标准库）—— 渠道层只经 rpc 说话，不引 `rpc/errors.py`。
+from scholarscout.rpc.codes import Code, coerce_code
+
 logger = logging.getLogger(__name__)
 
 #: 一次调用的等待上限（秒）。父进程**总会有响应**（哪怕错误），所以这是兜底而非常态。
@@ -38,7 +41,7 @@ DEFAULT_TIMEOUT = 600.0
 class RemoteError(RuntimeError):
     """父进程回了一个错误（或通道坏了）。"""
 
-    def __init__(self, message: str, *, code: int = -32000) -> None:
+    def __init__(self, message: str, *, code: int = Code.NOT_CONFIGURED) -> None:
         super().__init__(message)
         self.code = int(code)
 
@@ -143,7 +146,7 @@ class StdioClient:
             if isinstance(error, dict):
                 raise RemoteError(
                     str(error.get("message") or "主进程返回错误"),
-                    code=int(error.get("code") or -32000),
+                    code=coerce_code(error.get("code")),
                 )
             return message.get("result")
 

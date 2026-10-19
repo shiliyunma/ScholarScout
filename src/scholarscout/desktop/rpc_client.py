@@ -23,6 +23,10 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
+#: 错误码只从 `rpc/codes.py` 拿（它只依赖标准库，壳层 import 它不破分层）。
+#: 不要从 `rpc/errors.py` 拿：那个模块会连带拉起 `providers.llm` 与 sqlite 映射。
+from scholarscout.rpc.codes import Code, coerce_code
+
 EventSink = Callable[[str, dict[str, Any]], None]
 
 #: 读到输出结束的哨兵
@@ -62,7 +66,7 @@ def resolve_timeout(method: str, default: float, explicit: float | None) -> floa
 class RpcCallError(RuntimeError):
     """调用失败：传输层问题或后端返回的 error。"""
 
-    def __init__(self, message: str, *, code: int = -32000) -> None:
+    def __init__(self, message: str, *, code: int = Code.NOT_CONFIGURED) -> None:
         super().__init__(message)
         self.code = code
 
@@ -124,7 +128,7 @@ def _result_of(message: dict[str, Any]) -> Any:
     if isinstance(error, dict):
         raise RpcCallError(
             str(error.get("message") or "后端返回错误"),
-            code=int(error.get("code") or -32000),
+            code=coerce_code(error.get("code")),
         )
     return message.get("result")
 

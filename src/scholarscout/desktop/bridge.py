@@ -18,6 +18,15 @@ from scholarscout import __version__
 from scholarscout.desktop import window_state
 from scholarscout.desktop.rpc_client import RpcCallError, RpcClient
 
+# 错误码只从 `rpc/codes.py` 拿：它只依赖标准库，壳层 import 它不算越层；
+# `rpc/errors.py` 会连带拉起 `providers.llm`，壳不需要那半套。
+from scholarscout.rpc.codes import Code
+
+#: 「窗口还没就绪」沿用协议里的 -32000（`Code.NOT_CONFIGURED`）：前端只透传
+#: `error.code`、不按值分支，换值反而会让「壳没准备好」和「后端没配置」在日志里混在一起。
+#: 给一个说人话的名字，调用点不必知道 -32000 在协议表里叫什么。
+WINDOW_NOT_READY = Code.NOT_CONFIGURED
+
 #: 窗口最小尺寸（逻辑像素）。**只有一处定义**：定义在 `window_state.MIN_SIZE`
 #: （它要按屏幕收窄，且窗口几何的读写都靠它校验）；这里只做别名，别在别处再写一份数字。
 MIN_WINDOW_SIZE = window_state.MIN_SIZE
@@ -98,16 +107,16 @@ class Bridge:
     def rpc(self, method: str, params_json: str = "") -> str:
         """转发一次 JSON-RPC 调用。``params_json`` 为空串表示不带参数。"""
         if not isinstance(method, str) or not method.strip():
-            return error_payload(-32600, "方法名不能为空")
+            return error_payload(Code.INVALID_REQUEST, "方法名不能为空")
         params: dict[str, Any] | None = None
         text = (params_json or "").strip()
         if text:
             try:
                 parsed = json.loads(text)
             except json.JSONDecodeError as exc:
-                return error_payload(-32700, f"参数不是合法 JSON：{exc}")
+                return error_payload(Code.PARSE_ERROR, f"参数不是合法 JSON：{exc}")
             if not isinstance(parsed, dict):
-                return error_payload(-32600, "参数必须是 JSON 对象")
+                return error_payload(Code.INVALID_REQUEST, "参数必须是 JSON 对象")
             params = parsed
         try:
             return ok_payload(self._client.call(method, params))
@@ -129,11 +138,11 @@ class Bridge:
         target = str(url or "").strip()
         lowered = target.lower()
         if not (lowered.startswith("http://") or lowered.startswith("https://")):
-            return error_payload(-32602, "只允许 http/https 链接")
+            return error_payload(Code.INVALID_PARAMS, "只允许 http/https 链接")
         try:
             opened = webbrowser.open(target)
         except Exception as exc:
-            return error_payload(-32603, f"打开链接失败：{exc}")
+            return error_payload(Code.INTERNAL_ERROR, f"打开链接失败：{exc}")
         return ok_payload({"opened": target, "handled": bool(opened)})
 
     # ---------------------------------------------------------------- 窗口控制
@@ -159,25 +168,25 @@ class Bridge:
         """最小化窗口。"""
         window = self._window
         if window is None:
-            return error_payload(-32000, "窗口还没就绪")
+            return error_payload(WINDOW_NOT_READY, "窗口还没就绪")
         try:
             window.minimize()
         except Exception as exc:
-            return error_payload(-32603, f"最小化失败：{exc}")
+            return error_payload(Code.INTERNAL_ERROR, f"最小化失败：{exc}")
         return ok_payload({"minimized": True})
 
     def win_toggle_maximize(self) -> str:
         """最大化 / 还原。自己记状态：不依赖后端是否暴露 ``maximized`` 属性。"""
         window = self._window
         if window is None:
-            return error_payload(-32000, "窗口还没就绪")
+            return error_payload(WINDOW_NOT_READY, "窗口还没就绪")
         try:
             if self._maximized:
                 window.restore()
             else:
                 window.maximize()
         except Exception as exc:
-            return error_payload(-32603, f"最大化失败：{exc}")
+            return error_payload(Code.INTERNAL_ERROR, f"最大化失败：{exc}")
         self._maximized = not self._maximized
         return ok_payload({"maximized": self._maximized})
 
@@ -185,11 +194,11 @@ class Bridge:
         """关闭窗口（走正常销毁流程，几何会被 ``closing`` 事件记下来）。"""
         window = self._window
         if window is None:
-            return error_payload(-32000, "窗口还没就绪")
+            return error_payload(WINDOW_NOT_READY, "窗口还没就绪")
         try:
             window.destroy()
         except Exception as exc:
-            return error_payload(-32603, f"关闭失败：{exc}")
+            return error_payload(Code.INTERNAL_ERROR, f"关闭失败：{exc}")
         return ok_payload({"closed": True})
 
     def win_move(self, x: str = "0", y: str = "0") -> str:
@@ -200,11 +209,11 @@ class Bridge:
         """
         window = self._window
         if window is None:
-            return error_payload(-32000, "窗口还没就绪")
+            return error_payload(WINDOW_NOT_READY, "窗口还没就绪")
         try:
             window.move(int(float(x or 0)), int(float(y or 0)))
         except Exception as exc:
-            return error_payload(-32603, f"移动窗口失败：{exc}")
+            return error_payload(Code.INTERNAL_ERROR, f"移动窗口失败：{exc}")
         return ok_payload({"x": int(float(x or 0)), "y": int(float(y or 0))})
 
     def win_resize(self, width: str = "0", height: str = "0") -> str:
@@ -215,13 +224,13 @@ class Bridge:
         """
         window = self._window
         if window is None:
-            return error_payload(-32000, "窗口还没就绪")
+            return error_payload(WINDOW_NOT_READY, "窗口还没就绪")
         try:
             target_w = max(MIN_WINDOW_SIZE[0], int(float(width or 0)))
             target_h = max(MIN_WINDOW_SIZE[1], int(float(height or 0)))
             window.resize(target_w, target_h)
         except Exception as exc:
-            return error_payload(-32603, f"调整窗口大小失败：{exc}")
+            return error_payload(Code.INTERNAL_ERROR, f"调整窗口大小失败：{exc}")
         return ok_payload({"width": target_w, "height": target_h})
 
     def win_reset_geometry(self) -> str:
@@ -233,7 +242,7 @@ class Bridge:
         try:
             window_state.clear()
         except Exception as exc:
-            return error_payload(-32603, f"清除窗口记录失败：{exc}")
+            return error_payload(Code.INTERNAL_ERROR, f"清除窗口记录失败：{exc}")
         return ok_payload({"cleared": True, "pending": "下次启动生效"})
 
     def shutdown(self) -> str:

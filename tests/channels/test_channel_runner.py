@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from scholarscout.channels import feishu, remote, runner, supervisor
+from scholarscout.rpc.codes import KNOWN_CODES, Code
 
 from ..conftest import redirect_home
 
@@ -150,6 +151,20 @@ def test_stdio_client_maps_error_and_eof() -> None:
     eof_client = remote.StdioClient(stdin=io.StringIO(""), stdout=io.StringIO())
     with pytest.raises(remote.RemoteError):
         eof_client.request("channel.list", {})
+
+
+def test_stdio_client_coerces_an_unknown_code_to_the_shared_constant() -> None:
+    """主进程回了表外的码 → 子进程侧只回 `rpc/codes.py` 的兜底常量（不透野码）。"""
+    lines = io.StringIO(
+        '{"jsonrpc":"2.0","id":1,"error":{"code":-99999,"message":"野码"}}\n'
+        '{"jsonrpc":"2.0","id":2,"error":{"message":"连码都没有"}}\n'
+    )
+    client = remote.StdioClient(stdin=lines, stdout=io.StringIO())
+    for _ in range(2):
+        with pytest.raises(remote.RemoteError) as info:
+            client.request("channel.status", {})
+        assert info.value.code == int(Code.NOT_CONFIGURED)
+        assert info.value.code in KNOWN_CODES
 
 
 def test_remote_context_has_no_database() -> None:

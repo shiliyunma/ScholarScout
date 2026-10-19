@@ -13,8 +13,9 @@
   裸数字散在各处时，改一处口径就会漏掉另一处，而且没人能 grep 出"哪些码在被用"。
 
 分层边界（`tests/test_layering.py`）：`desktop/` 不许 import `runtime/`，而 `rpc/errors.py`
-import 了 `providers.llm`，所以**壳层的 `desktop/bridge.py` 无法 import `Code`** —— 它仍在写裸码。
-这一条是**已知待修**，单独用 `xfail(strict=True)` 点名（修法是给壳层一份协议常量或让 errors 只依赖标准库）。
+import 了 `providers.llm`。所以壳层不 import 它，而 import **只依赖标准库**的 `rpc/codes.py`；
+整个 `src/`（含壳层）都不许散写错误码，`test_error_codes_are_never_written_as_literals_anywhere`
+把这一条钉死。`rpc/codes.py` 与 `rpc/errors.py` 的取值一致性另有专测（`test_code_*`），防漂移。
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from typing import Any
 
 import pytest
 
+from scholarscout.rpc import codes as code_table
+from scholarscout.rpc import errors as errors_module
 from scholarscout.rpc.errors import Code, RpcError, from_exception
 from scholarscout.rpc.server import handle_message
 
@@ -152,16 +155,31 @@ def test_error_codes_are_never_written_as_literals_in_rpc_layer() -> None:
     assert offenders == [], f"rpc/ 里出现裸错误码（改用 Code.X）：{offenders}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "待修：rpc/ 之外仍有裸错误码 —— desktop/bridge.py（-32600/-32602/-32603/-32700/-32000）、"
-        "channels/remote.py 与 desktop/rpc_client.py（默认 -32000）。"
-        "壳层按 tests/test_layering.py 不许 import rpc/errors（它 import 了 providers.llm），"
-        "修法是给壳层一份只依赖标准库的协议常量；属「仍需单独排期」。"
-    ),
-)
 def test_error_codes_are_never_written_as_literals_anywhere() -> None:
-    """整个 `src/` 都不许散写错误码（现状红，见 xfail 理由）。"""
+    """整个 `src/` 都不许散写错误码（含壳层：`desktop/`、`channels/`）。"""
     offenders = _literal_code_sites(SRC)
     assert offenders == [], f"这些地方把错误码写成了裸数字：{offenders}"
+
+
+# ---------------------------------------------------------------------------
+# 防漂移：码表在 `rpc/codes.py`，`rpc/errors.py` 只是 re-export。
+# 两份各写一份数字是最容易悄悄发生的事（改一处口径、另一处照旧），这里逐项钉住。
+# ---------------------------------------------------------------------------
+
+
+def test_errors_reexports_the_very_same_code_table() -> None:
+    """`errors.Code` 必须是 `codes.Code` **本身**，不是抄了同值的一份。"""
+    assert errors_module.Code is code_table.Code
+
+
+@pytest.mark.parametrize("name", sorted(code_table.Code.__members__))
+def test_every_code_value_matches_what_errors_actually_uses(name: str) -> None:
+    """逐名对表：`codes.py` 的值 == `errors.py` 实际用的值。"""
+    assert int(getattr(errors_module.Code, name)) == int(getattr(code_table.Code, name))
+
+
+def test_errors_module_declares_no_numeric_code_of_its_own() -> None:
+    """`errors.py` 里不许出现数字字面量：码只能来自 `Code.X`（否则两边就可能各写一份）。"""
+    tree = ast.parse((SRC / "rpc" / "errors.py").read_text(encoding="utf-8"))
+    literals = [node.value for node in ast.walk(tree) if _int_literal(node) is not None]
+    assert literals == [], f"rpc/errors.py 里出现了裸码：{literals}"
