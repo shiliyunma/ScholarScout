@@ -436,21 +436,16 @@ def run_turn(
                 )
                 _merge_refs(refs_total, tool_refs)
                 # ---- A1/A7：把这一批来源并进台账，看本轮到底有没有新东西
-                fresh = research_state.new_sources(state, list(tool_refs.get("source_ids") or []))
-                fresh_sources.extend(fresh)
-                if canonical == "research.search":
-                    if fresh:
-                        state["empty_rounds"] = 0
-                    elif tool_ok:
-                        # 只有**真的搜过且没新来源**才算"空轮"。没搜（用户选择不检索 / 等用户选类型 /
-                        # 来源报错）不算 —— 否则会把"没搜"误判成"搜不到"，提前触发停搜提示。
-                        state["empty_rounds"] = int(state.get("empty_rounds") or 0) + 1
-                    # 记账（A3 判重的唯一数据源）：**搜成功才记**，失败不记 ——
-                    # 否则一次网络抖动就把这个方向永久锁死。写者只有循环这一个。
-                    query = _query_from_arguments(call.arguments)
-                    if tool_ok and query:
-                        research_state.record_query(state, query)
-                    research_state.save_state(ctx.db, session_id, state)
+                _account_tool_result(
+                    ctx,
+                    session_id=session_id,
+                    state=state,
+                    call=call,
+                    canonical=canonical,
+                    tool_refs=tool_refs,
+                    tool_ok=tool_ok,
+                    fresh_sources=fresh_sources,
+                )
                 executed.append(canonical)
                 messages.append(
                     {
@@ -747,6 +742,35 @@ def _render_context_note(
     if facts_note:
         note = note + "\n\n" + facts_note
     return note
+
+
+def _account_tool_result(
+    ctx: TurnContext,
+    *,
+    session_id: str,
+    state: dict[str, Any],
+    call: ToolCall,
+    canonical: str,
+    tool_refs: Any,
+    tool_ok: bool,
+    fresh_sources: list[str],
+) -> None:
+    """A1/A7：把一次工具结果并进跨轮台账 —— 新来源、空轮计数、已搜查询（A3 判重数据源）。"""
+    fresh = research_state.new_sources(state, list(tool_refs.get("source_ids") or []))
+    fresh_sources.extend(fresh)
+    if canonical == "research.search":
+        if fresh:
+            state["empty_rounds"] = 0
+        elif tool_ok:
+            # 只有**真的搜过且没新来源**才算"空轮"。没搜（用户选择不检索 / 等用户选类型 /
+            # 来源报错）不算 —— 否则会把"没搜"误判成"搜不到"，提前触发停搜提示。
+            state["empty_rounds"] = int(state.get("empty_rounds") or 0) + 1
+        # 记账（A3 判重的唯一数据源）：**搜成功才记**，失败不记 ——
+        # 否则一次网络抖动就把这个方向永久锁死。写者只有循环这一个。
+        query = _query_from_arguments(call.arguments)
+        if tool_ok and query:
+            research_state.record_query(state, query)
+        research_state.save_state(ctx.db, session_id, state)
 
 
 def _accumulate_usage(total: dict[str, int], reply: ChatReply) -> None:
