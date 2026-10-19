@@ -526,45 +526,8 @@ def run_turn(
             exc,
         )
 
-    # ---- D2：跨会话记忆。每个会话最多抽一次，且要在"有值得记的迹象"时才抽。
-    # 失败不影响本轮结果（回答已经生成好了）；开销按 purpose="memory" 如实记账，
-    # 免得它变成看不见的暗开销（用户对成本敏感，这条尤其重要）。
-    if bool(getattr(ctx.config.generation, "memory_by_model", True)) and ctx.llm is not None:
-        try:
-            # P1-1：nudge_turns=0（默认）时行为与引入前逐字一致（每会话最多一次）
-            nudge_turns = int(getattr(ctx.config.generation, "memory_nudge_turns", 0) or 0)
-            if ctx.config.summary_cfg is not None and memory.should_extract(
-                ctx.db, session_id, nudge_turns=nudge_turns
-            ):
-                outcome = memory.extract_facts(
-                    ctx.llm,
-                    ctx.db,
-                    session_id,
-                    prompts_dir=ctx.config.summary_cfg.prompts_dir,
-                )
-                # 记基准轮（抽到空表也记）—— 否则下一轮会再次触发，白花钱
-                memory.mark_extracted(ctx.db, session_id)
-                usage = outcome.get("usage") or {}
-                if usage:
-                    traces.record_usage(
-                        ctx.db,
-                        model=ctx.config.summary.model,
-                        purpose="memory",
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        prompt_tokens=usage.get("prompt_tokens"),
-                        completion_tokens=usage.get("completion_tokens"),
-                        cached_tokens=usage.get("cached_tokens"),
-                    )
-        except Exception as exc:
-            # 仍然是"只吞不抛"（回答已经生成好了），但记忆抽取失败必须留痕：
-            # 它同时会吃掉 purpose="memory" 的那条用量记账，静默就等于暗开销。
-            logger.warning(
-                "跨会话记忆抽取失败（不影响本轮结果）：session=%s turn=%s err=%s",
-                session_id,
-                turn_id,
-                exc,
-            )
+    # ---- D2：跨会话记忆（每个会话最多抽一次；失败不影响本轮结果，开销如实记账）。
+    _extract_memory(ctx, session_id=session_id, turn_id=turn_id)
 
     message_id = sessions.append_message(
         ctx.db,
@@ -771,6 +734,51 @@ def _account_tool_result(
         if tool_ok and query:
             research_state.record_query(state, query)
         research_state.save_state(ctx.db, session_id, state)
+
+
+def _extract_memory(ctx: TurnContext, *, session_id: str, turn_id: str) -> None:
+    """D2：跨会话记忆。每个会话最多抽一次，且要在"有值得记的迹象"时才抽。
+
+    失败不影响本轮结果（回答已经生成好了）；开销按 purpose="memory" 如实记账，
+    免得它变成看不见的暗开销（用户对成本敏感，这条尤其重要）。
+    """
+    if not (bool(getattr(ctx.config.generation, "memory_by_model", True)) and ctx.llm is not None):
+        return
+    try:
+        # P1-1：nudge_turns=0（默认）时行为与引入前逐字一致（每会话最多一次）
+        nudge_turns = int(getattr(ctx.config.generation, "memory_nudge_turns", 0) or 0)
+        if ctx.config.summary_cfg is not None and memory.should_extract(
+            ctx.db, session_id, nudge_turns=nudge_turns
+        ):
+            outcome = memory.extract_facts(
+                ctx.llm,
+                ctx.db,
+                session_id,
+                prompts_dir=ctx.config.summary_cfg.prompts_dir,
+            )
+            # 记基准轮（抽到空表也记）—— 否则下一轮会再次触发，白花钱
+            memory.mark_extracted(ctx.db, session_id)
+            usage = outcome.get("usage") or {}
+            if usage:
+                traces.record_usage(
+                    ctx.db,
+                    model=ctx.config.summary.model,
+                    purpose="memory",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    prompt_tokens=usage.get("prompt_tokens"),
+                    completion_tokens=usage.get("completion_tokens"),
+                    cached_tokens=usage.get("cached_tokens"),
+                )
+    except Exception as exc:
+        # 仍然是"只吞不抛"（回答已经生成好了），但记忆抽取失败必须留痕：
+        # 它同时会吃掉 purpose="memory" 的那条用量记账，静默就等于暗开销。
+        logger.warning(
+            "跨会话记忆抽取失败（不影响本轮结果）：session=%s turn=%s err=%s",
+            session_id,
+            turn_id,
+            exc,
+        )
 
 
 def _accumulate_usage(total: dict[str, int], reply: ChatReply) -> None:
