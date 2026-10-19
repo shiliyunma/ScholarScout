@@ -267,51 +267,8 @@ def run_turn(
     sessions.append_message(ctx.db, session_id, role="user", content=text)
 
     specs = ctx.tools(toolsets)
-    # ---- D3：历史超过阈值就先压一次（**同一段只压一次**，提要与"已覆盖到第几条"存进台账）。
-    # 失败了退回规则式裁剪（_fit_history），本轮照常 —— 压缩是省钱手段，不能因为它弄挂一轮。
-    if bool(getattr(ctx.config.generation, "compact_by_model", True)) and ctx.llm is not None:
-        try:
-            threshold = int(
-                getattr(ctx.config.runtime, "compact_after_chars", compaction.DEFAULT_AFTER_CHARS)
-            )
-            if ctx.config.summary_cfg is not None and compaction.should_compact(
-                ctx.db, session_id, after_chars=threshold
-            ):
-                outcome = compaction.compact(
-                    ctx.llm,
-                    ctx.db,
-                    session_id,
-                    prompts_dir=ctx.config.summary_cfg.prompts_dir,
-                )
-                if outcome.get("summary"):
-                    compaction.save_summary(
-                        ctx.db,
-                        session_id,
-                        summary=str(outcome["summary"]),
-                        covered=int(outcome["covered"]),
-                    )
-                usage = outcome.get("usage") or {}
-                if usage:
-                    traces.record_usage(
-                        ctx.db,
-                        model=ctx.config.summary.model,
-                        purpose="compact",
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        prompt_tokens=usage.get("prompt_tokens"),
-                        completion_tokens=usage.get("completion_tokens"),
-                        cached_tokens=usage.get("cached_tokens"),
-                    )
-        except Exception as exc:
-            # 仍然是"只吞不抛"（压缩失败不该让这一轮开不起来），但必须留痕：
-            # 否则压缩/记账一直失败，用户只会看到上下文越来越长、账单对不上，
-            # 却没有任何一处日志说明为什么。控制流与原来完全一致。
-            logger.warning(
-                "压缩与压缩记账失败（本轮照常继续，历史不压缩）：session=%s turn=%s err=%s",
-                session_id,
-                turn_id,
-                exc,
-            )
+    # ---- D3：历史超过阈值就先压一次（同一段只压一次；失败退回规则式裁剪，本轮照常）。
+    _maybe_compact(ctx, session_id=session_id, turn_id=turn_id)
     messages = build_messages(ctx.db, session_id, config=ctx.config, toolsets=toolsets)
     tool_decls = registry.openai_tools(specs) or None
 
@@ -720,6 +677,57 @@ def run_turn(
         refs=refs_total,
         error=error_message,
     )
+
+
+def _maybe_compact(ctx: TurnContext, *, session_id: str, turn_id: str) -> None:
+    """D3：历史超过阈值就先压一次（**同一段只压一次**，提要与"已覆盖到第几条"存进台账）。
+
+    失败了退回规则式裁剪（_fit_history），本轮照常 —— 压缩是省钱手段，不能因为它弄挂一轮。
+    """
+    if not (bool(getattr(ctx.config.generation, "compact_by_model", True)) and ctx.llm is not None):
+        return
+    try:
+        threshold = int(
+            getattr(ctx.config.runtime, "compact_after_chars", compaction.DEFAULT_AFTER_CHARS)
+        )
+        if ctx.config.summary_cfg is not None and compaction.should_compact(
+            ctx.db, session_id, after_chars=threshold
+        ):
+            outcome = compaction.compact(
+                ctx.llm,
+                ctx.db,
+                session_id,
+                prompts_dir=ctx.config.summary_cfg.prompts_dir,
+            )
+            if outcome.get("summary"):
+                compaction.save_summary(
+                    ctx.db,
+                    session_id,
+                    summary=str(outcome["summary"]),
+                    covered=int(outcome["covered"]),
+                )
+            usage = outcome.get("usage") or {}
+            if usage:
+                traces.record_usage(
+                    ctx.db,
+                    model=ctx.config.summary.model,
+                    purpose="compact",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    prompt_tokens=usage.get("prompt_tokens"),
+                    completion_tokens=usage.get("completion_tokens"),
+                    cached_tokens=usage.get("cached_tokens"),
+                )
+    except Exception as exc:
+        # 仍然是"只吞不抛"（压缩失败不该让这一轮开不起来），但必须留痕：
+        # 否则压缩/记账一直失败，用户只会看到上下文越来越长、账单对不上，
+        # 却没有任何一处日志说明为什么。控制流与原来完全一致。
+        logger.warning(
+            "压缩与压缩记账失败（本轮照常继续，历史不压缩）：session=%s turn=%s err=%s",
+            session_id,
+            turn_id,
+            exc,
+        )
 
 
 def _accumulate_usage(total: dict[str, int], reply: ChatReply) -> None:
