@@ -511,20 +511,14 @@ def run_turn(
         )
 
     # ---- A1/A2：把模型回填的覆盖状态并进台账；记账标记从**可见正文**里剥掉。
-    # 标记解析不出来就什么都不改（保持 open）—— 猜覆盖等于自欺。
-    try:
-        if research_state.apply_coverage(state, final_text, fresh_sources):
-            final_text = research_state.strip_marker(final_text)
-        research_state.save_state(ctx.db, session_id, state)
-    except Exception as exc:
-        # 控制流不变（台账写回失败不拖垮这一轮），但要能看见：
-        # 静默失败 = 下一轮带着同一份旧台账跑，用户只会觉得"它怎么又忘了"。
-        logger.warning(
-            "跨轮台账写回失败（保持 open，本轮照常收尾）：session=%s turn=%s err=%s",
-            session_id,
-            turn_id,
-            exc,
-        )
+    final_text = _apply_coverage(
+        ctx,
+        session_id=session_id,
+        turn_id=turn_id,
+        state=state,
+        final_text=final_text,
+        fresh_sources=fresh_sources,
+    )
 
     # ---- D2：跨会话记忆（每个会话最多抽一次；失败不影响本轮结果，开销如实记账）。
     _extract_memory(ctx, session_id=session_id, turn_id=turn_id)
@@ -734,6 +728,34 @@ def _account_tool_result(
         if tool_ok and query:
             research_state.record_query(state, query)
         research_state.save_state(ctx.db, session_id, state)
+
+
+def _apply_coverage(
+    ctx: TurnContext,
+    *,
+    session_id: str,
+    turn_id: str,
+    state: dict[str, Any],
+    final_text: str,
+    fresh_sources: list[str],
+) -> str:
+    """A1/A2：把模型回填的覆盖状态并进台账，并从可见正文里剥掉记账标记。
+
+    标记解析不出来就什么都不改（保持 open）—— 猜覆盖等于自欺。台账写回失败不拖垮这一轮，
+    但必须留痕：静默失败 = 下一轮带着同一份旧台账跑，用户只会觉得"它怎么又忘了"。
+    """
+    try:
+        if research_state.apply_coverage(state, final_text, fresh_sources):
+            final_text = research_state.strip_marker(final_text)
+        research_state.save_state(ctx.db, session_id, state)
+    except Exception as exc:
+        logger.warning(
+            "跨轮台账写回失败（保持 open，本轮照常收尾）：session=%s turn=%s err=%s",
+            session_id,
+            turn_id,
+            exc,
+        )
+    return final_text
 
 
 def _extract_memory(ctx: TurnContext, *, session_id: str, turn_id: str) -> None:
