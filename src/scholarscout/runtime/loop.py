@@ -272,57 +272,8 @@ def run_turn(
     messages = build_messages(ctx.db, session_id, config=ctx.config, toolsets=toolsets)
     tool_decls = registry.openai_tools(specs) or None
 
-    # ---- A1/A2：把跨轮研究台账与"缺口清单"注入到**本轮消息的最后**。
-    # 为什么放最后而不是最前：服务端缓存按"从头的最长公共前缀"命中（A6），
-    # 台账每轮都会变（已搜查询、缺口都会增长），放前面等于每轮都让缓存失效。
-    state = research_state.load_state(ctx.db, session_id) or research_state.empty_state(
-        goal=text.strip()[:200]
-    )
-    # 「连续无新增」是**轮内**计数：上一轮留下的计数不能带进这一轮，
-    # 否则用户换个话题继续问时，第一轮就会被立刻叫停。
-    state["empty_rounds"] = 0
-    if not state.get("questions") and not state.get("used_queries"):
-        # 开局拆一次子问题（每会话一次的小调用）——关掉开关就退化成"只有目标 + 只有缺口"
-        if (
-            bool(getattr(ctx.config.runtime, "plan_by_model", False))
-            and ctx.llm is not None
-            and ctx.config.summary_cfg is not None
-        ):
-            questions, reason = research_state.decompose_with_reason(
-                ctx.llm, text, prompts_dir=ctx.config.summary_cfg.prompts_dir
-            )
-            state["questions"] = questions
-            if reason:
-                # 留痕：拆不出来时缺口粒度会退化，台账里要看得见（真机栽过一次）
-                state["plan_error"] = reason
-        research_state.save_state(ctx.db, session_id, state)
-    # ---- 方案 3：本轮检索偏好位（`runtime/search_intent.py`）。**不进系统提示** —— 它写进
-    # 研究台账的 payload_json，系统提示仍是静态文本，`system_prompt_hash` 与用户点选无关。
-    # 规则优先（"只看论文/别搜了"不调模型），模糊查询才花一次极小调用；失败开放，绝不阻断本轮。
-    try:
-        intent = search_intent.resolve_turn(
-            ctx.llm,
-            text,
-            state=state,
-            turn_id=turn_id,
-            prompts_dir=ctx.config.summary_cfg.prompts_dir if ctx.config.summary_cfg else None,
-            enabled=bool(getattr(ctx.config.runtime, "classify_search_intent", True)),
-        )
-        if intent is not None and intent.usage:
-            # 这次小调用的钱也要记账（purpose="intent"）—— 否则"关掉它能省多少"没人答得出来
-            traces.record_usage(
-                ctx.db,
-                model=ctx.config.chat.model,
-                purpose="intent",
-                session_id=session_id,
-                turn_id=turn_id,
-                prompt_tokens=intent.usage.get("prompt_tokens"),
-                completion_tokens=intent.usage.get("completion_tokens"),
-            )
-        research_state.save_state(ctx.db, session_id, state)
-    except Exception:
-        # 分类是省钱的辅助，不是主流程的前置条件：它挂了，本轮照常检索与回答
-        pass
+    # ---- A1/A2：跨轮研究台账与本轮检索偏好位（详见 _prepare_research_state）。
+    state = _prepare_research_state(ctx, session_id=session_id, text=text, turn_id=turn_id)
 
     note = _render_context_note(ctx, session_id=session_id, state=state)
     messages.append({"role": "system", "content": note})
@@ -714,6 +665,66 @@ def _maybe_compact(ctx: TurnContext, *, session_id: str, turn_id: str) -> None:
             turn_id,
             exc,
         )
+
+
+def _prepare_research_state(
+    ctx: TurnContext, *, session_id: str, text: str, turn_id: str
+) -> dict[str, Any]:
+    """读跨轮研究台账 → 开局拆子问题（每会话一次）→ 解析本轮检索偏好位（方案 3）。
+
+    「连续无新增」是**轮内**计数：上一轮留下的计数不能带进这一轮，
+    否则用户换个话题继续问时，第一轮就会被立刻叫停。
+    """
+    # ---- A1/A2：把跨轮研究台账与"缺口清单"注入到**本轮消息的最后**。
+    # 为什么放最后而不是最前：服务端缓存按"从头的最长公共前缀"命中（A6），
+    # 台账每轮都会变（已搜查询、缺口都会增长），放前面等于每轮都让缓存失效。
+    state = research_state.load_state(ctx.db, session_id) or research_state.empty_state(
+        goal=text.strip()[:200]
+    )
+    state["empty_rounds"] = 0
+    if not state.get("questions") and not state.get("used_queries"):
+        # 开局拆一次子问题（每会话一次的小调用）——关掉开关就退化成"只有目标 + 只有缺口"
+        if (
+            bool(getattr(ctx.config.runtime, "plan_by_model", False))
+            and ctx.llm is not None
+            and ctx.config.summary_cfg is not None
+        ):
+            questions, reason = research_state.decompose_with_reason(
+                ctx.llm, text, prompts_dir=ctx.config.summary_cfg.prompts_dir
+            )
+            state["questions"] = questions
+            if reason:
+                # 留痕：拆不出来时缺口粒度会退化，台账里要看得见（真机栽过一次）
+                state["plan_error"] = reason
+        research_state.save_state(ctx.db, session_id, state)
+    # ---- 方案 3：本轮检索偏好位（`runtime/search_intent.py`）。**不进系统提示** —— 它写进
+    # 研究台账的 payload_json，系统提示仍是静态文本，`system_prompt_hash` 与用户点选无关。
+    # 规则优先（"只看论文/别搜了"不调模型），模糊查询才花一次极小调用；失败开放，绝不阻断本轮。
+    try:
+        intent = search_intent.resolve_turn(
+            ctx.llm,
+            text,
+            state=state,
+            turn_id=turn_id,
+            prompts_dir=ctx.config.summary_cfg.prompts_dir if ctx.config.summary_cfg else None,
+            enabled=bool(getattr(ctx.config.runtime, "classify_search_intent", True)),
+        )
+        if intent is not None and intent.usage:
+            # 这次小调用的钱也要记账（purpose="intent"）—— 否则"关掉它能省多少"没人答得出来
+            traces.record_usage(
+                ctx.db,
+                model=ctx.config.chat.model,
+                purpose="intent",
+                session_id=session_id,
+                turn_id=turn_id,
+                prompt_tokens=intent.usage.get("prompt_tokens"),
+                completion_tokens=intent.usage.get("completion_tokens"),
+            )
+        research_state.save_state(ctx.db, session_id, state)
+    except Exception:
+        # 分类是省钱的辅助，不是主流程的前置条件：它挂了，本轮照常检索与回答
+        pass
+    return state
 
 
 def _render_context_note(
