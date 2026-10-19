@@ -352,38 +352,7 @@ def run_turn(
                 # 不在落库前 append 那条 assistant tool_calls，免得留下"有调用没结果"的悬空消息。
                 break
 
-            assistant_row = sessions.append_message(
-                ctx.db,
-                session_id,
-                role="assistant",
-                content=reply.content or "",
-                tool_calls_json=json.dumps(
-                    [
-                        {
-                            "id": call.id,
-                            "type": "function",
-                            "function": {"name": call.name, "arguments": call.arguments},
-                        }
-                        for call in reply.tool_calls
-                    ],
-                    ensure_ascii=False,
-                ),
-            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": reply.content or "",
-                    "tool_calls": [
-                        {
-                            "id": call.id,
-                            "type": "function",
-                            "function": {"name": call.name, "arguments": call.arguments},
-                        }
-                        for call in reply.tool_calls
-                    ],
-                }
-            )
-            del assistant_row  # 已落库，无需再用
+            _append_tool_call_request(ctx, session_id=session_id, reply=reply, messages=messages)
 
             if budget.remaining < len(reply.tool_calls):
                 stop_reason = "tool_limit"
@@ -759,6 +728,44 @@ def _call_model(
         cached_tokens=reply.usage.get("cached_tokens"),
     )
     return reply, deltas_sent, streamed_text
+
+
+def _append_tool_call_request(
+    ctx: TurnContext, *, session_id: str, reply: ChatReply, messages: list[dict[str, Any]]
+) -> None:
+    """把模型这一轮的 tool_calls 落库，并写进本轮消息（下一轮模型与回放都要看到它）。"""
+    assistant_row = sessions.append_message(
+        ctx.db,
+        session_id,
+        role="assistant",
+        content=reply.content or "",
+        tool_calls_json=json.dumps(
+            [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+                for call in reply.tool_calls
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    messages.append(
+        {
+            "role": "assistant",
+            "content": reply.content or "",
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+                for call in reply.tool_calls
+            ],
+        }
+    )
+    del assistant_row  # 已落库，无需再用
 
 
 def _apply_coverage(
