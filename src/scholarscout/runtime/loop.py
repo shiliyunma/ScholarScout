@@ -29,6 +29,7 @@ from scholarscout.runtime import (
 from scholarscout.runtime import (
     compaction,
     context_budget,
+    memory,
     registry,
     research_state,
     search_intent,
@@ -621,9 +622,7 @@ def _prepare_research_state(
     return state
 
 
-def _render_context_note(
-    ctx: TurnContext, *, session_id: str, state: dict[str, Any]
-) -> str:
+def _render_context_note(ctx: TurnContext, *, session_id: str, state: dict[str, Any]) -> str:
     """本轮末尾那条 system 的内容：台账（目标/缺口/已搜查询）+ 学习者画像 + 跨会话记忆。"""
     gaps = research_state.compute_gaps(ctx.db, session_id, state)
     # 学习者画像（跨会话）：只放"能改变行为"的信息（水平、薄弱块、已做过的主题）。
