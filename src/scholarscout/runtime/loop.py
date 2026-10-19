@@ -18,17 +18,15 @@ from collections.abc import Sequence
 from typing import Any
 
 from scholarscout.config import Config
-from scholarscout.providers.llm import LlmError, ToolCall
+from scholarscout.providers.llm import LlmError
 from scholarscout.runtime import (
     budget as daily_budget,
 )
 from scholarscout.runtime import (
     compaction,
     context_budget,
-    memory,
     registry,
     research_state,
-    search_intent,
 )
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
 from scholarscout.runtime.toolctx import TurnBudget
@@ -36,15 +34,20 @@ from scholarscout.runtime.turn_steps import (
     Emitter,
     TurnContext,
     TurnResult,
+    account_tool_result,
     append_tool_call_request,
+    apply_coverage,
     bind_emitter,
     call_model,
     emit_event,
     execute_tool,
+    extract_memory,
+    maybe_compact,
     merge_refs,
-    query_from_arguments,
+    prepare_research_state,
+    render_context_note,
 )
-from scholarscout.state import sessions, traces
+from scholarscout.state import sessions
 from scholarscout.state.db import Database
 
 logger = logging.getLogger(__name__)
@@ -155,14 +158,14 @@ def run_turn(
 
     specs = ctx.tools(toolsets)
     # ---- D3：历史超过阈值就先压一次（同一段只压一次；失败退回规则式裁剪，本轮照常）。
-    _maybe_compact(ctx, session_id=session_id, turn_id=turn_id)
+    maybe_compact(ctx, session_id=session_id, turn_id=turn_id)
     messages = build_messages(ctx.db, session_id, config=ctx.config, toolsets=toolsets)
     tool_decls = registry.openai_tools(specs) or None
 
     # ---- A1/A2：跨轮研究台账与本轮检索偏好位（详见 _prepare_research_state）。
-    state = _prepare_research_state(ctx, session_id=session_id, text=text, turn_id=turn_id)
+    state = prepare_research_state(ctx, session_id=session_id, text=text, turn_id=turn_id)
 
-    note = _render_context_note(ctx, session_id=session_id, state=state)
+    note = render_context_note(ctx, session_id=session_id, state=state)
     messages.append({"role": "system", "content": note})
 
     executed: list[str] = []
@@ -265,7 +268,7 @@ def run_turn(
                 )
                 merge_refs(refs_total, tool_refs)
                 # ---- A1/A7：把这一批来源并进台账，看本轮到底有没有新东西
-                _account_tool_result(
+                account_tool_result(
                     ctx,
                     session_id=session_id,
                     state=state,
@@ -340,7 +343,7 @@ def run_turn(
         )
 
     # ---- A1/A2：把模型回填的覆盖状态并进台账；记账标记从**可见正文**里剥掉。
-    final_text = _apply_coverage(
+    final_text = apply_coverage(
         ctx,
         session_id=session_id,
         turn_id=turn_id,
@@ -350,7 +353,7 @@ def run_turn(
     )
 
     # ---- D2：跨会话记忆（每个会话最多抽一次；失败不影响本轮结果，开销如实记账）。
-    _extract_memory(ctx, session_id=session_id, turn_id=turn_id)
+    extract_memory(ctx, session_id=session_id, turn_id=turn_id)
 
     message_id = sessions.append_message(
         ctx.db,
@@ -395,239 +398,6 @@ def run_turn(
         refs=refs_total,
         error=error_message,
     )
-
-
-def _maybe_compact(ctx: TurnContext, *, session_id: str, turn_id: str) -> None:
-    """D3：历史超过阈值就先压一次（**同一段只压一次**，提要与"已覆盖到第几条"存进台账）。
-
-    失败了退回规则式裁剪（_fit_history），本轮照常 —— 压缩是省钱手段，不能因为它弄挂一轮。
-    """
-    if not (bool(getattr(ctx.config.generation, "compact_by_model", True)) and ctx.llm is not None):
-        return
-    try:
-        threshold = int(
-            getattr(ctx.config.runtime, "compact_after_chars", compaction.DEFAULT_AFTER_CHARS)
-        )
-        if ctx.config.summary_cfg is not None and compaction.should_compact(
-            ctx.db, session_id, after_chars=threshold
-        ):
-            outcome = compaction.compact(
-                ctx.llm,
-                ctx.db,
-                session_id,
-                prompts_dir=ctx.config.summary_cfg.prompts_dir,
-            )
-            if outcome.get("summary"):
-                compaction.save_summary(
-                    ctx.db,
-                    session_id,
-                    summary=str(outcome["summary"]),
-                    covered=int(outcome["covered"]),
-                )
-            usage = outcome.get("usage") or {}
-            if usage:
-                traces.record_usage(
-                    ctx.db,
-                    model=ctx.config.summary.model,
-                    purpose="compact",
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    prompt_tokens=usage.get("prompt_tokens"),
-                    completion_tokens=usage.get("completion_tokens"),
-                    cached_tokens=usage.get("cached_tokens"),
-                )
-    except Exception as exc:
-        # 仍然是"只吞不抛"（压缩失败不该让这一轮开不起来），但必须留痕：
-        # 否则压缩/记账一直失败，用户只会看到上下文越来越长、账单对不上，
-        # 却没有任何一处日志说明为什么。控制流与原来完全一致。
-        logger.warning(
-            "压缩与压缩记账失败（本轮照常继续，历史不压缩）：session=%s turn=%s err=%s",
-            session_id,
-            turn_id,
-            exc,
-        )
-
-
-def _prepare_research_state(
-    ctx: TurnContext, *, session_id: str, text: str, turn_id: str
-) -> dict[str, Any]:
-    """读跨轮研究台账 → 开局拆子问题（每会话一次）→ 解析本轮检索偏好位（方案 3）。
-
-    「连续无新增」是**轮内**计数：上一轮留下的计数不能带进这一轮，
-    否则用户换个话题继续问时，第一轮就会被立刻叫停。
-    """
-    # ---- A1/A2：把跨轮研究台账与"缺口清单"注入到**本轮消息的最后**。
-    # 为什么放最后而不是最前：服务端缓存按"从头的最长公共前缀"命中（A6），
-    # 台账每轮都会变（已搜查询、缺口都会增长），放前面等于每轮都让缓存失效。
-    state = research_state.load_state(ctx.db, session_id) or research_state.empty_state(
-        goal=text.strip()[:200]
-    )
-    state["empty_rounds"] = 0
-    if not state.get("questions") and not state.get("used_queries"):
-        # 开局拆一次子问题（每会话一次的小调用）——关掉开关就退化成"只有目标 + 只有缺口"
-        if (
-            bool(getattr(ctx.config.runtime, "plan_by_model", False))
-            and ctx.llm is not None
-            and ctx.config.summary_cfg is not None
-        ):
-            questions, reason = research_state.decompose_with_reason(
-                ctx.llm, text, prompts_dir=ctx.config.summary_cfg.prompts_dir
-            )
-            state["questions"] = questions
-            if reason:
-                # 留痕：拆不出来时缺口粒度会退化，台账里要看得见（真机栽过一次）
-                state["plan_error"] = reason
-        research_state.save_state(ctx.db, session_id, state)
-    # ---- 方案 3：本轮检索偏好位（`runtime/search_intent.py`）。**不进系统提示** —— 它写进
-    # 研究台账的 payload_json，系统提示仍是静态文本，`system_prompt_hash` 与用户点选无关。
-    # 规则优先（"只看论文/别搜了"不调模型），模糊查询才花一次极小调用；失败开放，绝不阻断本轮。
-    try:
-        intent = search_intent.resolve_turn(
-            ctx.llm,
-            text,
-            state=state,
-            turn_id=turn_id,
-            prompts_dir=ctx.config.summary_cfg.prompts_dir if ctx.config.summary_cfg else None,
-            enabled=bool(getattr(ctx.config.runtime, "classify_search_intent", True)),
-        )
-        if intent is not None and intent.usage:
-            # 这次小调用的钱也要记账（purpose="intent"）—— 否则"关掉它能省多少"没人答得出来
-            traces.record_usage(
-                ctx.db,
-                model=ctx.config.chat.model,
-                purpose="intent",
-                session_id=session_id,
-                turn_id=turn_id,
-                prompt_tokens=intent.usage.get("prompt_tokens"),
-                completion_tokens=intent.usage.get("completion_tokens"),
-            )
-        research_state.save_state(ctx.db, session_id, state)
-    except Exception:
-        # 分类是省钱的辅助，不是主流程的前置条件：它挂了，本轮照常检索与回答
-        pass
-    return state
-
-
-def _render_context_note(ctx: TurnContext, *, session_id: str, state: dict[str, Any]) -> str:
-    """本轮末尾那条 system 的内容：台账（目标/缺口/已搜查询）+ 学习者画像 + 跨会话记忆。"""
-    gaps = research_state.compute_gaps(ctx.db, session_id, state)
-    # 学习者画像（跨会话）：只放"能改变行为"的信息（水平、薄弱块、已做过的主题）。
-    # 纯本地汇总、零模型调用；没有卡片也没有产物时这一段是空串，不会白占 token。
-    from scholarscout.runtime import learner_profile
-
-    profile_note = learner_profile.render_profile_note(learner_profile.build_profile(ctx.db))
-    note = research_state.render_note(state, gaps)
-    if profile_note:
-        note = note + "\n\n" + profile_note
-    # 跨会话记忆（D2）：稳定事实 + "冲突以用户当前说法为准"的规矩
-    from scholarscout.runtime import memory
-
-    facts_note = memory.render_facts_note(ctx.db)
-    if facts_note:
-        note = note + "\n\n" + facts_note
-    return note
-
-
-def _account_tool_result(
-    ctx: TurnContext,
-    *,
-    session_id: str,
-    state: dict[str, Any],
-    call: ToolCall,
-    canonical: str,
-    tool_refs: Any,
-    tool_ok: bool,
-    fresh_sources: list[str],
-) -> None:
-    """A1/A7：把一次工具结果并进跨轮台账 —— 新来源、空轮计数、已搜查询（A3 判重数据源）。"""
-    fresh = research_state.new_sources(state, list(tool_refs.get("source_ids") or []))
-    fresh_sources.extend(fresh)
-    if canonical == "research.search":
-        if fresh:
-            state["empty_rounds"] = 0
-        elif tool_ok:
-            # 只有**真的搜过且没新来源**才算"空轮"。没搜（用户选择不检索 / 等用户选类型 /
-            # 来源报错）不算 —— 否则会把"没搜"误判成"搜不到"，提前触发停搜提示。
-            state["empty_rounds"] = int(state.get("empty_rounds") or 0) + 1
-        # 记账（A3 判重的唯一数据源）：**搜成功才记**，失败不记 ——
-        # 否则一次网络抖动就把这个方向永久锁死。写者只有循环这一个。
-        query = query_from_arguments(call.arguments)
-        if tool_ok and query:
-            research_state.record_query(state, query)
-        research_state.save_state(ctx.db, session_id, state)
-
-
-def _apply_coverage(
-    ctx: TurnContext,
-    *,
-    session_id: str,
-    turn_id: str,
-    state: dict[str, Any],
-    final_text: str,
-    fresh_sources: list[str],
-) -> str:
-    """A1/A2：把模型回填的覆盖状态并进台账，并从可见正文里剥掉记账标记。
-
-    标记解析不出来就什么都不改（保持 open）—— 猜覆盖等于自欺。台账写回失败不拖垮这一轮，
-    但必须留痕：静默失败 = 下一轮带着同一份旧台账跑，用户只会觉得"它怎么又忘了"。
-    """
-    try:
-        if research_state.apply_coverage(state, final_text, fresh_sources):
-            final_text = research_state.strip_marker(final_text)
-        research_state.save_state(ctx.db, session_id, state)
-    except Exception as exc:
-        logger.warning(
-            "跨轮台账写回失败（保持 open，本轮照常收尾）：session=%s turn=%s err=%s",
-            session_id,
-            turn_id,
-            exc,
-        )
-    return final_text
-
-
-def _extract_memory(ctx: TurnContext, *, session_id: str, turn_id: str) -> None:
-    """D2：跨会话记忆。每个会话最多抽一次，且要在"有值得记的迹象"时才抽。
-
-    失败不影响本轮结果（回答已经生成好了）；开销按 purpose="memory" 如实记账，
-    免得它变成看不见的暗开销（用户对成本敏感，这条尤其重要）。
-    """
-    if not (bool(getattr(ctx.config.generation, "memory_by_model", True)) and ctx.llm is not None):
-        return
-    try:
-        # P1-1：nudge_turns=0（默认）时行为与引入前逐字一致（每会话最多一次）
-        nudge_turns = int(getattr(ctx.config.generation, "memory_nudge_turns", 0) or 0)
-        if ctx.config.summary_cfg is not None and memory.should_extract(
-            ctx.db, session_id, nudge_turns=nudge_turns
-        ):
-            outcome = memory.extract_facts(
-                ctx.llm,
-                ctx.db,
-                session_id,
-                prompts_dir=ctx.config.summary_cfg.prompts_dir,
-            )
-            # 记基准轮（抽到空表也记）—— 否则下一轮会再次触发，白花钱
-            memory.mark_extracted(ctx.db, session_id)
-            usage = outcome.get("usage") or {}
-            if usage:
-                traces.record_usage(
-                    ctx.db,
-                    model=ctx.config.summary.model,
-                    purpose="memory",
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    prompt_tokens=usage.get("prompt_tokens"),
-                    completion_tokens=usage.get("completion_tokens"),
-                    cached_tokens=usage.get("cached_tokens"),
-                )
-    except Exception as exc:
-        # 仍然是"只吞不抛"（回答已经生成好了），但记忆抽取失败必须留痕：
-        # 它同时会吃掉 purpose="memory" 的那条用量记账，静默就等于暗开销。
-        logger.warning(
-            "跨会话记忆抽取失败（不影响本轮结果）：session=%s turn=%s err=%s",
-            session_id,
-            turn_id,
-            exc,
-        )
 
 
 def mark_system_prompt(
