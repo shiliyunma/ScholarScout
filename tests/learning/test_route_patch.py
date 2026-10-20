@@ -15,9 +15,22 @@ import json
 import pytest
 
 from scholarscout.learning.route_patch import (
+    _OPS,
+    OP_NAMES,
     PatchError,
     apply_ops,
     parse_patch,
+)
+
+#: 补丁引擎对外宣称支持的 op —— 就是原来那串 if/elif 的分支集。
+EXPECTED_OPS = (
+    "set_plan_field",
+    "set_week_field",
+    "set_item_field",
+    "add_item",
+    "remove_item",
+    "add_week",
+    "remove_week",
 )
 
 
@@ -75,6 +88,18 @@ def test_set_plan_field_changes_only_that_field() -> None:
     assert plan == before
     untouched = {k: v for k, v in new_plan.items() if k not in ("weekly_hours", "stats")}
     assert untouched == {k: v for k, v in before.items() if k not in ("weekly_hours", "stats")}
+
+
+def test_set_week_field_changes_only_that_week() -> None:
+    plan = _plan()
+    new_plan, changes = apply_ops(
+        plan, [{"op": "set_week_field", "week": 2, "field": "checkpoint", "value": "能写一页复盘"}]
+    )
+    assert new_plan["weeks"][1]["checkpoint"] == "能写一页复盘"
+    assert new_plan["weeks"][0] == plan["weeks"][0]
+    assert changes == [
+        {"target": "第 2 周 / checkpoint", "before": "改一处并验证", "after": "能写一页复盘"}
+    ]
 
 
 def test_set_item_field_keeps_other_items_identical() -> None:
@@ -176,6 +201,48 @@ def test_stats_follow_the_edits() -> None:
 def test_bad_ops_are_rejected(op: dict, message: str) -> None:
     with pytest.raises(PatchError, match=message):
         apply_ops(_plan(), [op], allowed_source_ids={"src_a", "src_b"})
+
+
+def test_unknown_op_error_text_is_exactly_the_same() -> None:
+    """改映射表最容易改坏的一处：未知 op 的**错误类型与全文**必须一字不差。
+
+    这条钉的是"行为等价" —— 报错文案是给用户看的，也是 `tools/route_revise` 判失败的依据。
+    """
+    with pytest.raises(PatchError) as excinfo:
+        apply_ops(_plan(), [{"op": "rewrite_everything"}])
+    assert type(excinfo.value) is PatchError
+    assert str(excinfo.value) == (
+        f"第 1 处（rewrite_everything）：不认识的操作名（可用：{' / '.join(EXPECTED_OPS)}）"
+    )
+    # 位置前缀也跟着位置走，不是写死的"第 1 处"
+    with pytest.raises(PatchError) as second:
+        apply_ops(
+            _plan(),
+            [
+                {"op": "set_plan_field", "field": "level", "value": "进阶"},
+                {"op": "rewrite_everything"},
+            ],
+        )
+    assert str(second.value).startswith("第 2 处（rewrite_everything）：不认识的操作名")
+
+
+def test_non_string_op_names_are_unknown_ops_not_crashes() -> None:
+    """op 名写成列表/字典时原本就走"不认识的操作名"，不能变成不可哈希的 TypeError。"""
+    for name in (None, 42, ["add_week"], {"op": "add_week"}):
+        with pytest.raises(PatchError, match="不认识的操作名"):
+            apply_ops(_plan(), [{"op": name}])
+
+
+def test_op_table_keys_match_the_supported_ops() -> None:
+    """映射表的键集＝原来 if/elif 的 op 集，顺序也一致（报错文案按这个顺序拼）。
+
+    加新 op 却忘了登记，会在这一条上直接断——而不是上线后被动变成"不认识的操作名"。
+    """
+    assert tuple(_OPS) == EXPECTED_OPS
+    assert OP_NAMES == EXPECTED_OPS
+    for name, handler in _OPS.items():
+        assert callable(handler)
+        assert handler.__name__ == f"_op_{name}"  # 函数名要能看出它管哪个 op
 
 
 def test_removing_the_last_week_is_rejected() -> None:

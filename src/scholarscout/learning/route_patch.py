@@ -23,6 +23,8 @@ from __future__ import annotations
 import copy
 import json
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 #: 允许修改的周级字段
@@ -106,142 +108,192 @@ def _clean_item(raw: Any, allowed: set[str] | None) -> dict[str, Any]:
     return item
 
 
+@dataclass
+class _OpContext:
+    """一次补丁应用的共享状态：改哪份计划、改动明细往哪儿记、哪些 source_id 算数。"""
+
+    plan: dict[str, Any]
+    changes: list[dict[str, Any]]
+    allowed_source_ids: set[str] | None
+
+
+#: 单个 op 的处理函数：`(共享状态, 这一处改动, 报错用的定位前缀) -> None`，
+#: **只负责这一个 op**，出错直接抛 `PatchError`（不做"尽力而为"）。
+_OpHandler = Callable[["_OpContext", dict[str, Any], str], None]
+
+
+def _op_set_plan_field(ctx: _OpContext, op: dict[str, Any], where: str) -> None:
+    """改整条路线的字段（weekly_hours 走整数校验，其余走非空文本）。"""
+    field = op.get("field")
+    if field not in PLAN_FIELDS:
+        raise PatchError(f"{where}：计划级只允许改 {'/'.join(PLAN_FIELDS)}")
+    before = ctx.plan.get(field)
+    value: Any = None
+    if field == "weekly_hours":
+        value = _as_int(op.get("value"), what="weekly_hours", low=1, high=40)
+    else:
+        value = _as_text(op.get("value"), what=field)
+    ctx.plan[field] = value
+    ctx.changes.append({"target": f"整条路线 / {field}", "before": before, "after": value})
+
+
+def _op_set_week_field(ctx: _OpContext, op: dict[str, Any], where: str) -> None:
+    """改某一周的字段（先取周、再校验字段名——顺序决定报哪条错，别调）。"""
+    index, entry = _week_at(ctx.plan, op.get("week"))
+    field = op.get("field")
+    if field not in WEEK_FIELDS:
+        raise PatchError(f"{where}：周级只允许改 {'/'.join(WEEK_FIELDS)}")
+    before = entry.get(field)
+    value = _as_text(op.get("value"), what=field)
+    entry[field] = value
+    ctx.changes.append({"target": f"第 {index} 周 / {field}", "before": before, "after": value})
+
+
+def _op_set_item_field(ctx: _OpContext, op: dict[str, Any], where: str) -> None:
+    """改某一条目的字段（kind/est_minutes/source_id 各有一套校验，别混）。"""
+    index, entry = _week_at(ctx.plan, op.get("week"))
+    item_index, item = _item_at(entry, op.get("item"))
+    field = op.get("field")
+    if field not in ITEM_FIELDS:
+        raise PatchError(f"{where}：条目只允许改 {'/'.join(ITEM_FIELDS)}")
+    before = item.get(field)
+    value = None
+    if field == "kind":
+        if op.get("value") not in ITEM_KINDS:
+            raise PatchError(f"条目类型必须是 {'/'.join(ITEM_KINDS)} 之一")
+        value = op["value"]
+    elif field == "est_minutes":
+        value = _as_int(op.get("value"), what="est_minutes", low=1, high=600)
+    elif field == "source_id":
+        value = _check_source_id(op.get("value"), ctx.allowed_source_ids)
+        if not value and item.get("kind") in RESOURCE_KINDS:
+            raise PatchError(
+                "资料类条目不能把 source_id 改成空（要么换一条真实资料，要么删掉这条）"
+            )
+    else:
+        value = _as_text(op.get("value"), what=field)
+    item[field] = value
+    ctx.changes.append(
+        {
+            "target": f"第 {index} 周 第 {item_index} 条 / {field}",
+            "before": before,
+            "after": value,
+        }
+    )
+
+
+def _op_add_item(ctx: _OpContext, op: dict[str, Any], where: str) -> None:
+    """往某一周末尾追加一条（走 `_clean_item` 的完整校验）。"""
+    index, entry = _week_at(ctx.plan, op.get("week"))
+    item = _clean_item(op.get("item"), ctx.allowed_source_ids)
+    entry.setdefault("items", []).append(item)
+    ctx.changes.append(
+        {
+            "target": f"第 {index} 周 / 新增第 {len(entry['items'])} 条",
+            "before": None,
+            "after": item.get("title"),
+        }
+    )
+
+
+def _op_remove_item(ctx: _OpContext, op: dict[str, Any], where: str) -> None:
+    """删掉某一周的第 N 条。"""
+    index, entry = _week_at(ctx.plan, op.get("week"))
+    item_index, item = _item_at(entry, op.get("item"))
+    entry["items"].pop(item_index - 1)
+    ctx.changes.append(
+        {
+            "target": f"第 {index} 周 / 删除第 {item_index} 条",
+            "before": item.get("title"),
+            "after": None,
+        }
+    )
+
+
+def _op_add_week(ctx: _OpContext, op: dict[str, Any], where: str) -> None:
+    """在路线末尾新增一周（目标/检查点必填，条目逐条走 `_clean_item`）。"""
+    raw = op.get("week")
+    if not isinstance(raw, dict):
+        raise PatchError(f"{where}：week 必须是一个对象")
+    entry: dict[str, Any] = {
+        "goal": _as_text(raw.get("goal"), what="goal"),
+        "checkpoint": _as_text(raw.get("checkpoint"), what="checkpoint"),
+        "items": [],
+    }
+    for raw_item in raw.get("items") or []:
+        entry["items"].append(_clean_item(raw_item, ctx.allowed_source_ids))
+    ctx.plan.setdefault("weeks", []).append(entry)
+    ctx.changes.append(
+        {
+            "target": f"新增第 {len(ctx.plan['weeks'])} 周",
+            "before": None,
+            "after": entry["goal"],
+        }
+    )
+
+
+def _op_remove_week(ctx: _OpContext, op: dict[str, Any], where: str) -> None:
+    """删掉第 N 周；路线至少留一周（删完编号由 `_renumber` 收拢）。"""
+    index, entry = _week_at(ctx.plan, op.get("week"))
+    if len(ctx.plan.get("weeks") or []) <= 1:
+        raise PatchError("不能删掉最后一周（路线至少要有一周）")
+    ctx.plan["weeks"].pop(index - 1)
+    ctx.changes.append({"target": f"删除第 {index} 周", "before": entry.get("goal"), "after": None})
+
+
+#: op 名 → 处理函数。**新增 op 必须同时登记在这里**，否则 `apply_ops` 会当成未知操作拒绝
+#: （`tests/learning/test_route_patch.py` 用一条断言锁住键集，防止漏登记）。
+_OPS: dict[str, _OpHandler] = {
+    "set_plan_field": _op_set_plan_field,
+    "set_week_field": _op_set_week_field,
+    "set_item_field": _op_set_item_field,
+    "add_item": _op_add_item,
+    "remove_item": _op_remove_item,
+    "add_week": _op_add_week,
+    "remove_week": _op_remove_week,
+}
+
+#: 允许的操作名（顺序即报错文案里"可用：…"的顺序）
+OP_NAMES: tuple[str, ...] = tuple(_OPS)
+
+
 def apply_ops(
     plan: dict[str, Any],
     ops: Any,
     *,
     allowed_source_ids: set[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """应用补丁 → `(新计划, 改动明细)`；任何一处不合法都抛 `PatchError`（不写半截结果）。"""
+    """应用补丁 → `(新计划, 改动明细)`；任何一处不合法都抛 `PatchError`（不写半截结果）。
+
+    这里只做三件事：**查表 → 交给对应的 `_op_*` → 收尾重排/重算统计**。
+    每个 op 的校验与改动都在自己的函数里，读一个 op 不用在两百行分支里翻。
+    """
     if not isinstance(ops, list) or not ops:
         raise PatchError("ops 必须是非空数组（没有要改的就不要调用这个工具）")
     if len(ops) > MAX_OPS:
         raise PatchError(f"一次最多改 {MAX_OPS} 处，收到 {len(ops)} 处")
 
-    new_plan = copy.deepcopy(plan)
-    changes: list[dict[str, Any]] = []
+    ctx = _OpContext(
+        plan=copy.deepcopy(plan),
+        changes=[],
+        allowed_source_ids=allowed_source_ids,
+    )
 
     for position, op in enumerate(ops, start=1):
         if not isinstance(op, dict):
             raise PatchError(f"第 {position} 处改动不是对象")
         name = op.get("op")
         where = f"第 {position} 处（{name}）"
+        # 只对字符串查表：op 名写成列表/字典时原本就走到"不认识的操作名"，不能因为
+        # 不可哈希而在 .get() 上炸出 TypeError（那会换掉对外可见的错误类型）。
+        handler = _OPS.get(name) if isinstance(name, str) else None
+        if handler is None:
+            raise PatchError(f"{where}：不认识的操作名（可用：{' / '.join(OP_NAMES)}）")
+        handler(ctx, op, where)
 
-        if name == "set_plan_field":
-            field = op.get("field")
-            if field not in PLAN_FIELDS:
-                raise PatchError(f"{where}：计划级只允许改 {'/'.join(PLAN_FIELDS)}")
-            before = new_plan.get(field)
-            value: Any = None
-            if field == "weekly_hours":
-                value = _as_int(op.get("value"), what="weekly_hours", low=1, high=40)
-            else:
-                value = _as_text(op.get("value"), what=field)
-            new_plan[field] = value
-            changes.append({"target": f"整条路线 / {field}", "before": before, "after": value})
-
-        elif name == "set_week_field":
-            index, entry = _week_at(new_plan, op.get("week"))
-            field = op.get("field")
-            if field not in WEEK_FIELDS:
-                raise PatchError(f"{where}：周级只允许改 {'/'.join(WEEK_FIELDS)}")
-            before = entry.get(field)
-            value = _as_text(op.get("value"), what=field)
-            entry[field] = value
-            changes.append({"target": f"第 {index} 周 / {field}", "before": before, "after": value})
-
-        elif name == "set_item_field":
-            index, entry = _week_at(new_plan, op.get("week"))
-            item_index, item = _item_at(entry, op.get("item"))
-            field = op.get("field")
-            if field not in ITEM_FIELDS:
-                raise PatchError(f"{where}：条目只允许改 {'/'.join(ITEM_FIELDS)}")
-            before = item.get(field)
-            value = None
-            if field == "kind":
-                if op.get("value") not in ITEM_KINDS:
-                    raise PatchError(f"条目类型必须是 {'/'.join(ITEM_KINDS)} 之一")
-                value = op["value"]
-            elif field == "est_minutes":
-                value = _as_int(op.get("value"), what="est_minutes", low=1, high=600)
-            elif field == "source_id":
-                value = _check_source_id(op.get("value"), allowed_source_ids)
-                if not value and item.get("kind") in RESOURCE_KINDS:
-                    raise PatchError(
-                        "资料类条目不能把 source_id 改成空（要么换一条真实资料，要么删掉这条）"
-                    )
-            else:
-                value = _as_text(op.get("value"), what=field)
-            item[field] = value
-            changes.append(
-                {
-                    "target": f"第 {index} 周 第 {item_index} 条 / {field}",
-                    "before": before,
-                    "after": value,
-                }
-            )
-
-        elif name == "add_item":
-            index, entry = _week_at(new_plan, op.get("week"))
-            item = _clean_item(op.get("item"), allowed_source_ids)
-            entry.setdefault("items", []).append(item)
-            changes.append(
-                {
-                    "target": f"第 {index} 周 / 新增第 {len(entry['items'])} 条",
-                    "before": None,
-                    "after": item.get("title"),
-                }
-            )
-
-        elif name == "remove_item":
-            index, entry = _week_at(new_plan, op.get("week"))
-            item_index, item = _item_at(entry, op.get("item"))
-            entry["items"].pop(item_index - 1)
-            changes.append(
-                {
-                    "target": f"第 {index} 周 / 删除第 {item_index} 条",
-                    "before": item.get("title"),
-                    "after": None,
-                }
-            )
-
-        elif name == "add_week":
-            raw = op.get("week")
-            if not isinstance(raw, dict):
-                raise PatchError(f"{where}：week 必须是一个对象")
-            entry = {
-                "goal": _as_text(raw.get("goal"), what="goal"),
-                "checkpoint": _as_text(raw.get("checkpoint"), what="checkpoint"),
-                "items": [],
-            }
-            for raw_item in raw.get("items") or []:
-                entry["items"].append(_clean_item(raw_item, allowed_source_ids))
-            new_plan.setdefault("weeks", []).append(entry)
-            changes.append(
-                {
-                    "target": f"新增第 {len(new_plan['weeks'])} 周",
-                    "before": None,
-                    "after": entry["goal"],
-                }
-            )
-
-        elif name == "remove_week":
-            index, entry = _week_at(new_plan, op.get("week"))
-            if len(new_plan.get("weeks") or []) <= 1:
-                raise PatchError("不能删掉最后一周（路线至少要有一周）")
-            new_plan["weeks"].pop(index - 1)
-            changes.append(
-                {"target": f"删除第 {index} 周", "before": entry.get("goal"), "after": None}
-            )
-
-        else:
-            raise PatchError(
-                f"{where}：不认识的操作名（可用：set_plan_field / set_week_field / set_item_field / add_item / remove_item / add_week / remove_week）"
-            )
-
-    _renumber(new_plan)
-    new_plan["stats"] = _restats(new_plan, plan.get("stats") or {})
-    return new_plan, changes
+    _renumber(ctx.plan)
+    ctx.plan["stats"] = _restats(ctx.plan, plan.get("stats") or {})
+    return ctx.plan, ctx.changes
 
 
 def _renumber(plan: dict[str, Any]) -> None:
