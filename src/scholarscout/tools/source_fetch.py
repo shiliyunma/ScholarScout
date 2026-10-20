@@ -49,6 +49,20 @@ from scholarscout.state.ingest import (
 )
 from scholarscout.state.migrate import now_iso
 from scholarscout.summary.pipeline import SummaryInput, summarize
+from scholarscout.tools.mineru_fallback import _mineru_fallback
+
+#: 本模块对外的名字。``_mineru_fallback`` 已搬到 ``tools/mineru_fallback.py``（扫描版兜底的
+#: 降级顺序策略），这里**重导出**它：``tests/tools/test_mineru_fallback_order.py`` 按老路径
+#: ``from scholarscout.tools.source_fetch import _mineru_fallback`` 取，一字不改。
+__all__ = [
+    "DESCRIPTION",
+    "PARAMETERS",
+    "SPEC",
+    "_mineru_fallback",
+    "guess_source_type",
+    "register",
+    "source_fetch",
+]
 
 DESCRIPTION = (
     "取回一条资料的原文：下载原件存到本地、抽取正文、生成中文摘要并入库，返回 doc_id、"
@@ -117,48 +131,6 @@ def _pdf_text(content: bytes, *, budget_s: float) -> tuple[str, str, str, str]:
     if text:
         return text, "ok", "local", ""
     return "", "no_text_layer", "local", "没有文字层（多为扫描版）→ 交给 MinerU"
-
-
-def _mineru_fallback(
-    ctx: ToolContext, url: str, *, content: bytes | None = None, filename: str = "scan.pdf"
-) -> tuple[str, str, str, str]:
-    """落地 MinerU 兜底（决议第 8 题）：本地抽不出文字时，交给官方 API。
-
-    **顺序**：手里已经有字节就**优先直传**（预签名上传），失败再退回"提交 URL 让 MinerU 自己去下"。
-    为什么这么排：URL 那条要求 MinerU 能下到那个 PDF（内网地址、需要登录、CDN 抖动、
-    robots 拒爬都会失败），而我们**刚刚才把字节下载到本地** —— 直传少一个失败点，
-    而且免 Token 也能用（Agent 轻量接口 ≤10MB/≤20 页）。实测 2026-10-07：本地造的
-    无文字层扫描版样本直传 **10.3 秒**拿到中文 Markdown。
-
-    失败要**如实**记 ``mineru_failed`` + 原因 —— 服务暂不可用与"文档确实没有内容"是两件事。
-    """
-    from scholarscout.fetch.mineru import parse_pdf_bytes, parse_pdf_url
-    from scholarscout.fetch.settings import mineru_token
-
-    http = ctx.require_http()
-    token = mineru_token()
-    # MinerU 轮询阶段的预算（分阶段超时里的"解析服务"那一段）：以前写死 180s，
-    # 而"直传 + URL 提交"是**两次**调用 → 最坏 360s。改成配置项（默认 90s 一次）。
-    poll_timeout_s = float(ctx.config.fetch_cfg.mineru_poll_timeout_s)
-    direct_detail = ""
-
-    if content:
-        direct = parse_pdf_bytes(
-            http, content, filename=filename, token=token, timeout_s=poll_timeout_s
-        )
-        if direct.ok:
-            return direct.text, "ok", "mineru", f"{direct.engine} 解析（本地直传）"
-        direct_detail = f"直传 {direct.state}: {direct.detail}"
-
-    if not url:
-        return "", "mineru_failed", "mineru", direct_detail or "既没有本地字节也没有 URL"
-
-    result = parse_pdf_url(http, url, token=token, timeout_s=poll_timeout_s)
-    if result.ok:
-        return result.text, "ok", "mineru", f"{result.engine} 解析（URL 提交）"
-    url_detail = f"URL 提交 {result.state}: {result.detail}"
-    detail = f"{direct_detail}；{url_detail}" if direct_detail else url_detail
-    return "", "mineru_failed", "mineru", detail
 
 
 def _document_row(ctx: ToolContext, source_id: str, sha256: str) -> dict[str, Any] | None:
