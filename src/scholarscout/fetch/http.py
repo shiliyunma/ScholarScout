@@ -24,6 +24,8 @@
 （本机不可达）再加一整段。真机库（``run/state.db``）里就是 **486.3s / 243.2s** 的单次调用，
 三条 486s 全是 ``http://arxiv.org/abs/...``，那一轮 6 次 ``source.fetch`` 合计 836s ——
 远超桌面端 180s 的响应超时，界面直接判定"调用失败"，整条链路在用户眼里停摆。
+
+契约类型（``FetchError`` / ``FetchResult``）在 ``fetch/contract.py``；本模块重导出，旧 import 路径不变。
 """
 
 from __future__ import annotations
@@ -34,12 +36,24 @@ import threading
 import time
 import urllib.robotparser
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
 import httpx
+
+# 契约类型已拆到 `fetch/contract.py`：此处 import 即重导出（`from ...http import FetchError` 照旧）。
+from scholarscout.fetch.contract import FetchError, FetchResult
+
+__all__ = [
+    "DEFAULT_ACCEPT",
+    "DEFAULT_CONNECT_TIMEOUT_S",
+    "DEFAULT_ROBOTS_EXEMPT_HOSTS",
+    "DEFAULT_ROBOTS_TIMEOUT_S",
+    "FetchError",
+    "FetchResult",
+    "HttpClient",
+]
 
 DEFAULT_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 
@@ -56,29 +70,6 @@ _RETRYABLE_STATUS = (429, 500, 502, 503, 504)
 _ERROR_BODY_CHARS = 500
 
 
-def _code_msg_from_text(text: str) -> tuple[int, str]:
-    """从平台回包正文里取 `(code, msg)`；不是 JSON / 没有 `code` 一律回 `(0, "")`。
-
-    只认**顶层** `code`（飞书的形状：`{"code":99992361,"msg":"open_id cross app",...}`），
-    不猜嵌套、不猜别的键名 —— 猜错就会在日志里编出一个不存在的错误码。
-    """
-    raw = (text or "").strip()
-    if not raw:
-        return 0, ""
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return 0, ""
-    if not isinstance(payload, dict):
-        return 0, ""
-    try:
-        code = int(payload.get("code") or 0)
-    except (TypeError, ValueError):
-        return 0, ""
-    msg = payload.get("msg")
-    return (code, str(msg)) if code else (0, "")
-
-
 def _body_snippet(response: httpx.Response) -> str:
     """取回包正文的截断片段（读不到就回空串 —— 取证失败不能把原错误盖掉）。"""
     try:
@@ -86,77 +77,6 @@ def _body_snippet(response: httpx.Response) -> str:
     except Exception:  # 已读流 / 解码失败都只当作「没有正文」
         return ""
     return raw.decode("utf-8", errors="replace")[:_ERROR_BODY_CHARS]
-
-
-class FetchError(Exception):
-    """抓取失败。``kind`` 让上层映射成契约错误码（见 rpc/errors.py）。"""
-
-    KINDS = (
-        "forbidden",  # 403 / 451，或 robots 不允许
-        "rate_limited",  # 429
-        "not_found",  # 404
-        "server",  # 5xx
-        "timeout",
-        "network",
-        "too_large",
-        "bad_request",  # 其它 4xx
-    )
-
-    def __init__(
-        self,
-        kind: str,
-        message: str,
-        *,
-        url: str = "",
-        status: int | None = None,
-        body: str = "",
-    ) -> None:
-        if kind not in self.KINDS:
-            raise ValueError(f"未知抓取错误类型：{kind!r}")
-        super().__init__(message)
-        self.kind = kind
-        self.url = url
-        self.status = status
-        #: 平台回包正文的**截断片段**（默认空）。4xx/5xx 的语义常只写在回包里
-        #: （飞书把 `code`/`msg` 全放 body，如 `99992361 open_id cross app`），
-        #: 只留状态码会让上层「看得见失败、看不见原因」。这里只留证、不改消息文本。
-        self.body = body
-
-    def platform_code(self) -> tuple[int, str]:
-        """从回包正文里取 `(code, msg)`（平台错误码口径；取不到回 `(0, "")`）。
-
-        为什么放在错误对象上：`fetch/` 是唯一出网层，回包到这一层就被丢掉了；
-        出站发送器（`fetch/feishu_send.py`）要报「飞书返回 99992361」就只能从这里拿。
-        """
-        return _code_msg_from_text(self.body)
-
-
-@dataclass(frozen=True)
-class FetchResult:
-    url: str
-    status: int
-    content: bytes
-    headers: dict[str, str] = field(default_factory=dict)
-    media_type: str = ""
-    from_cache: bool = False
-    elapsed_ms: int = 0
-
-    @property
-    def charset(self) -> str:
-        raw = self.media_type
-        if "charset=" in raw:
-            return raw.split("charset=", 1)[1].split(";")[0].strip() or "utf-8"
-        return "utf-8"
-
-    @property
-    def text(self) -> str:
-        try:
-            return self.content.decode(self.charset)
-        except (LookupError, UnicodeDecodeError):
-            return self.content.decode("utf-8", errors="replace")
-
-    def json(self) -> Any:
-        return json.loads(self.text)
 
 
 class _RateLimiter:
