@@ -89,7 +89,12 @@ def _dpi_scale() -> float:
         return 1.0
 
 
-def _remember_geometry(window: Any, *, before: dict[str, Any] | None = None) -> None:
+def _remember_geometry(
+    window: Any,
+    *,
+    before: dict[str, Any] | None = None,
+    screens: list[tuple[int, int, int, int]] | None = None,
+) -> None:
     """记住窗口大小/位置（写到 `config.yaml` 的 `ui.window`，下次打开同尺寸）。
 
     **为什么一律存几何、不判断"是否最大化"**：pywebview 的 `window.width/height` 报的是
@@ -128,6 +133,8 @@ def _remember_geometry(window: Any, *, before: dict[str, Any] | None = None) -> 
             x=payload["x"] if isinstance(payload["x"], int) else None,
             y=payload["y"] if isinstance(payload["y"], int) else None,
             maximized=False,
+            # 屏幕信息给写端用：写前 normalize 会把超出屏幕的尺寸/屏外的 x-y 收回来
+            screens=screens,
         )
     except Exception as exc:  # 纯辅助：失败只记一行，不影响退出
         print(f"[desktop] 窗口几何没记住（不影响使用）：{exc}", file=sys.stderr)
@@ -199,7 +206,7 @@ def launch(
     # 关闭前把几何记下来；`closing` 在销毁之前触发，属性还能读到。
     # 另挂 `closed` 与 start() 之后的兜底：不同后端的事件可用性不完全一致。
     def _save_geometry(_window: Any = None) -> None:
-        _remember_geometry(window, before=geometry)
+        _remember_geometry(window, before=geometry, screens=screens)
 
     for event_name in ("closing", "closed"):
         event = getattr(window.events, event_name, None)
@@ -235,7 +242,7 @@ def launch(
                 start_kwargs["icon"] = icon  # GTK/QT 才认这个参数
         webview.start(**start_kwargs)
     finally:
-        _remember_geometry(window, before=geometry)  # 兜底：万一上面的事件没触发
+        _remember_geometry(window, before=geometry, screens=screens)  # 兜底：万一上面的事件没触发
         client.close()
     return 0
 

@@ -44,8 +44,9 @@
   `MIN_WINDOW_SIZE`（最小尺寸**只有这一处定义**）、`JS_EVENT_FUNCTION`（前端事件入口名）。
 - **图标 `icon.py`**：`set_app_user_model_id(app_id=)`、`apply_window_icon(title, ico_path, *, ...)`、
   `APP_USER_MODEL_ID`。
-- **窗口几何 `window_state.py`**：`load(run_dir, *, screens=)`、`save(run_dir, *, width, height, x, y, maximized)`、
-  `state_path(run_dir)`、`MIN_SIZE`。
+- **窗口几何 `window_state.py`**：`load(path, *, screens=)`、`save(*, width, height, x, y, maximized, path=, screens=)`
+  （**写前必过 `normalize`**：脏值/最小化不写、几何没变不重写）、`clear(path=)`、`config_path(path=)`、
+  `normalize(raw, *, screens=)`、`same(left, right)`、`MIN_SIZE`。
 - **资源校验 `assets.py`**：`verify_ui(ui=)`（返回问题清单，空=通过）、`main()`、`ui_dir()`、`called_methods(text)`。
 
 调用方：`__main__.py`（`--desktop` / `--check-ui`）、`scripts/scout.py`、`tests/desktop/`。

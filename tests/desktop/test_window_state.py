@@ -232,6 +232,143 @@ def test_save_is_atomic_and_leaves_no_tmp_file(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*.tmp")), "原子写没有留下 .tmp（崩在中间会把配置截断成半截）"
 
 
+# ── 写前 normalize：脏值不许落盘（"几何每夜静默失效"的根因） ──────────────
+#
+# 事故形状：save 只做 max(1, int()) → 最小化后的 0x0、DPI 换算出的 158x26、
+# 拔掉外接屏后的 x: -21333 全被写进 config.yaml；读端 normalize 见到非法值整对丢弃
+# → 回默认 → 关窗又把脏值写回去。用户看到"窗口大小每夜变回默认"，日志里什么都没有。
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [
+        (1, 26),  # DPI 换算后的残值（真实出现过：width: 158 / height: 26）
+        (159, 27),
+        (1279, 799),  # 刚好差一像素
+    ],
+)
+def test_save_never_writes_a_size_below_the_minimum(
+    tmp_path: Path, width: int, height: int
+) -> None:
+    """比最小尺寸小的"尺寸"不是用户选的几何 → 落盘的只能是读端认可的默认尺寸。"""
+    path = cfg(tmp_path)
+    ws.save(width=width, height=height, path=path)
+
+    window = read(path)["ui"]["window"]
+    assert (window["width"], window["height"]) == ws.DEFAULT_SIZE
+    assert window["width"] >= ws.MIN_SIZE[0] and window["height"] >= ws.MIN_SIZE[1]
+
+
+def test_save_clamps_a_size_larger_than_the_screen(tmp_path: Path) -> None:
+    path = cfg(tmp_path)
+    ws.save(width=4000, height=3000, path=path, screens=SCREEN)
+    window = read(path)["ui"]["window"]
+    assert (window["width"], window["height"]) == (1920, 1080)
+
+
+def test_save_drops_a_position_that_is_off_every_screen(tmp_path: Path) -> None:
+    """`x: -21333`（外接屏拔掉后的残值）不许落盘：位置整对不写，只记尺寸。"""
+    path = cfg(tmp_path)
+    ws.save(width=1520, height=960, x=-21333, y=-21333, path=path, screens=SCREEN)
+
+    window = read(path)["ui"]["window"]
+    assert "x" not in window and "y" not in window
+    assert (window["width"], window["height"]) == (1520, 960)
+
+
+def test_save_keeps_a_legal_position_on_a_left_monitor(tmp_path: Path) -> None:
+    """写端也不能把左侧副屏的负坐标误杀（读端同样的规则）。"""
+    screens = [(-1920, 0, 1920, 1080), (0, 0, 1920, 1080)]
+    path = cfg(tmp_path)
+    ws.save(width=1520, height=960, x=-1800, y=100, path=path, screens=screens)
+    window = read(path)["ui"]["window"]
+    assert (window["x"], window["y"]) == (-1800, 100)
+
+
+def test_save_keeps_legal_geometry_verbatim(tmp_path: Path) -> None:
+    """合法值原样保留 —— normalize 只该纠正非法值，不该顺手改用户的选择。"""
+    path = cfg(tmp_path)
+    ws.save(width=1520, height=960, x=40, y=30, path=path, screens=SCREEN)
+    assert read(path)["ui"]["window"] == {
+        "width": 1520,
+        "height": 960,
+        "maximized": False,
+        "x": 40,
+        "y": 30,
+    }
+
+
+@pytest.mark.parametrize("bad", [(0, 0), (0, 900), (1440, 0), (-1, -1)])
+def test_minimized_or_hidden_window_is_not_written(tmp_path: Path, bad: tuple[int, int]) -> None:
+    """最小化/隐藏时 window.width/height 报 0（或负）—— 那不是几何，一个字节都不该动。"""
+    path = cfg(tmp_path)
+    write(path, {"ui": {"theme": "dark", "window": {"width": 1520, "height": 960}}})
+    before_text = path.read_text(encoding="utf-8")
+    before_mtime = path.stat().st_mtime_ns
+
+    ws.save(width=bad[0], height=bad[1], path=path)
+
+    assert path.read_text(encoding="utf-8") == before_text
+    assert path.stat().st_mtime_ns == before_mtime, "文件被重写过（最小化不该写）"
+    assert read(path)["ui"]["window"] == {"width": 1520, "height": 960}
+
+
+def test_save_ignores_a_non_numeric_size(tmp_path: Path) -> None:
+    """窗口属性拿不到时可能是字符串/None：不许崩，也不许把垃圾写进配置。"""
+    path = cfg(tmp_path)
+    write(path, {"ui": {"window": {"width": 1440, "height": 900}}})
+    before_text = path.read_text(encoding="utf-8")
+
+    ws.save(width="abc", height=None, path=path)
+
+    assert path.read_text(encoding="utf-8") == before_text
+    assert (ws.load(path)["width"], ws.load(path)["height"]) == (1440, 900)
+
+
+def test_unchanged_geometry_does_not_rewrite_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """关窗时几何没变就不许重写 `config.yaml`（重写会丢注释）——按写次数断言。"""
+    path = cfg(tmp_path)
+    ws.save(width=1520, height=960, x=40, y=30, path=path, screens=SCREEN)
+
+    writes: list[Path] = []
+    original = ws._atomic_write
+
+    def counting_write(target: Path, payload: dict) -> None:
+        writes.append(target)
+        original(target, payload)
+
+    monkeypatch.setattr(ws, "_atomic_write", counting_write)
+    before_text = path.read_text(encoding="utf-8")
+
+    ws.save(width=1520, height=960, x=40, y=30, path=path, screens=SCREEN)
+
+    assert writes == [], "几何没变却重写了 config.yaml"
+    assert path.read_text(encoding="utf-8") == before_text
+
+
+def test_save_repairs_dirty_values_already_in_the_file(tmp_path: Path) -> None:
+    """盘上已经躺着脏值（width: 158 / x: -21333）时，写一次就该把它修正成合法值。"""
+    path = cfg(tmp_path)
+    write(
+        path,
+        {
+            "llm": {"model": "deepseek-chat"},
+            "ui": {"window": {"width": 158, "height": 26, "x": -21333, "y": -21333}},
+        },
+    )
+
+    ws.save(width=1520, height=960, path=path, screens=SCREEN)
+
+    window = read(path)["ui"]["window"]
+    assert (window["width"], window["height"]) == (1520, 960)
+    assert "x" not in window and "y" not in window
+    assert read(path)["llm"]["model"] == "deepseek-chat"
+    # 修完之后读端读到的就是它自己写的值（不再"写脏值 → 读时丢弃 → 回默认"循环）
+    assert ws.load(path, screens=SCREEN) == ws.normalize(window, screens=SCREEN)
+
+
 def test_clear_restores_default_and_keeps_other_keys(tmp_path: Path) -> None:
     path = cfg(tmp_path)
     write(

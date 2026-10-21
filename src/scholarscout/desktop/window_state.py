@@ -146,25 +146,43 @@ def save(
     y: int | None = None,
     maximized: bool = False,
     path: Path | None = None,
+    screens: list[tuple[int, int, int, int]] | None = None,
 ) -> dict[str, Any]:
-    """把窗口几何写进 `config.yaml` 的 `ui.window`（深合并 + 原子写）。
+    """把窗口几何写进 `config.yaml` 的 `ui.window`（**写前必过 `normalize`** + 原子写）。
+
+    **为什么写前必须 normalize**（这里踩过最安静的一个坑）：`save` 原来只做 `max(1, int())`，
+    于是最小化的窗口（0x0 / 负值）、DPI 换算后的 158x26、拔掉外接屏后的 `x: -21333` 全都被
+    原样写进文件；读端 `normalize` 见到非法值**整对丢弃** → 回默认尺寸 → 关窗又把同一批脏值
+    写回去。用户看到的是"窗口大小每夜静默失效"，日志里一句都没有。所以写端和读端用**同一个**
+    判定函数，落盘的值一定是读端认可的：
+
+    - 宽高 < 最小尺寸 / 超出屏幕 → 由 `normalize` 收成默认尺寸或屏内尺寸；
+    - x/y 落在屏外 → 位置整对不写（只记尺寸，位置交给系统居中）；
+    - **最小化/隐藏不写**：宽高为 0 或负、或根本不是整数，不是用户选出来的几何，
+      这时不碰文件，直接返回文件里现有的（已校验）几何；
+    - **几何没变不写**：与文件里现有的值一致就跳过（重写会丢注释），比较的是文件里的
+      **原始**值 —— 所以文件里躺着脏值时这里会判成"变了"，顺手把它修正掉。
 
     写失败会抛异常，由调用方决定只记日志 —— 关窗路径绝不能因为存不了几何而卡住。
     """
-    payload: dict[str, Any] = {
-        "width": max(1, int(width)),
-        "height": max(1, int(height)),
-        "maximized": bool(maximized),
-    }
+    if _positive_int(width) is None or _positive_int(height) is None:
+        # 最小化/隐藏/脏值：不写。返回盘上现有的几何（调用方据此也能看出"没动"）。
+        return load(path, screens=screens)
+    raw: dict[str, Any] = {"width": width, "height": height, "maximized": maximized is True}
     if x is not None and y is not None:
-        payload["x"], payload["y"] = int(x), int(y)
+        raw["x"], raw["y"] = x, y
+    payload = normalize(raw, screens=screens)
     target = config_path(path)
-    raw = _read_dict(target)
-    section = raw.get("ui")
+    current = _read_dict(target)
+    section = current.get("ui")
     section = dict(section) if isinstance(section, dict) else {}
+    stored = section.get("window")
+    if isinstance(stored, dict) and same(stored, payload):
+        # 与盘上的**原值**一致才跳过：盘上是脏值时不能算"没变"（那正是要修的东西）
+        return payload
     section["window"] = payload
-    raw["ui"] = section
-    _atomic_write(target, raw)
+    current["ui"] = section
+    _atomic_write(target, current)
     return payload
 
 
