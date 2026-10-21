@@ -78,8 +78,9 @@
   丢了模型就会开始编 id，守卫拦下后重试，成本反而更高。
 - **一本预算账**：`TurnBudget` 由主循环与子任务（`research.delegate`）**共用** —— 委派子任务实际消耗的
   工具调用数会 `spend` 回同一个账，主循环剩余预算因此变少（`docs/01 §5.18`）。
-- **默认工具集是 `research`**：`get_tools()` 在 `toolsets` 为空/`None` 时只取 `research` 工具集；
-  `kb` 工具集受 `features.enable_kb` 门控（默认关，论文消融开关）。见 `registry.py` 与
+- **默认工具集是 `research`**：`get_tools()` 在 `toolsets` 为空/`None` 时只取 `research` 工具集。
+  工具集白名单只有 `research` 一个 —— 曾经的 `kb` 工具集与 `features.enable_kb` 因为
+  「开了什么都不发生」被整批删掉（docs/23，不留假功能）。见 `registry.py` 与
   `tests/runtime/test_registry.py`。
 - **台账写者只有一个**：查询判重台账只由 `loop.py` 在**搜成功**后 `record_query` 并落库，工具只读不写
   （两个写者会丢更新）。无 `session_id` 时不做判重。

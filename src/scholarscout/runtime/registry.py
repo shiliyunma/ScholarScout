@@ -15,10 +15,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from scholarscout.config import Features
-
 #: 工具集白名单（docs/01 §5.0）
-TOOLSETS = ("research", "kb")
+TOOLSETS = ("research",)
 
 #: API 允许的工具名字符集（DeepSeek / OpenAI 同款校验）
 _WIRE_SAFE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -30,7 +28,7 @@ _WIRE_SEPARATOR = "__"
 def wire_name(name: str) -> str:
     """规范名 → 线上名：``research.search`` → ``research__search``。
 
-    已经是合法字符集的（如 ``kb_search``）原样返回。
+    已经是合法字符集的（如 ``research_search``）原样返回。
     """
     return name if _WIRE_SAFE.match(name) else name.replace(".", _WIRE_SEPARATOR)
 
@@ -118,18 +116,16 @@ def get_spec(name: str) -> ToolSpec | None:
     return _REGISTRY.get(name) or _REGISTRY.get(canonical_name(name))
 
 
-def get_tools(
-    toolsets: Sequence[str] | None = None,
-    *,
-    features: Features | None = None,
-) -> list[ToolSpec]:
-    """按工具集取工具。``kb`` 工具集受 ``features.enable_kb`` 控制（论文消融开关）。"""
+def get_tools(toolsets: Sequence[str] | None = None) -> list[ToolSpec]:
+    """按工具集取工具（工具集白名单见 :data:`TOOLSETS`）。
+
+    **没有按特性开关过滤这一步**：一个开关如果开了什么都不发生，就是假功能 ——
+    曾经的 ``kb`` 工具集 + ``features.enable_kb`` 正是这样被删掉的（docs/23）。
+    """
     wanted = set(toolsets) if toolsets else {"research"}
     specs: list[ToolSpec] = []
     for spec in _REGISTRY.values():
         if spec.toolset not in wanted:
-            continue
-        if spec.toolset == "kb" and features is not None and not features.enable_kb:
             continue
         specs.append(spec)
     return sorted(specs, key=lambda s: s.name)

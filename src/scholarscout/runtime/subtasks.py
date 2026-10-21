@@ -352,7 +352,7 @@ def run_subtask(
         {"turn_id": turn_id, "seq": seq, "index": seq, "goal": goal_text},
     )
 
-    specs = registry.get_tools([toolset], features=ctx.config.features)
+    specs = registry.get_tools([toolset])
     tool_decls = registry.openai_tools(specs) or None
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SUBTASK_SYSTEM_PROMPT},

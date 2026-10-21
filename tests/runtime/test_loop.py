@@ -203,20 +203,3 @@ def test_second_turn_sees_history(ctx: AppContext) -> None:
     assert "第一轮回答" in contents
     assert "第二轮问题" in contents
     assert messages[0]["role"] == "system"
-
-
-def test_kb_tools_not_passed_when_disabled(ctx: AppContext) -> None:
-    registry.register(
-        ToolSpec(
-            name="kb.search",
-            description="d",
-            parameters=ECHO_SCHEMA,
-            handler=lambda **_: {},
-            toolset="kb",
-        )
-    )
-    session_id = _session(ctx)
-    stub = StubLlm(reply("好"))
-    ctx.llm = stub
-    loop.run_turn(_context(ctx), session_id=session_id, text="查知识库", toolsets=["kb"])
-    assert stub.calls[0]["tools"] is None, "enable_kb=False 时不应把 kb 工具暴露给模型"

@@ -339,7 +339,7 @@ def test_source_fetch_is_visible_to_model_via_loop(ctx: AppContext) -> None:
     names = registry.registered_names()
     assert "research.search" in names
     assert "source.fetch" in names
-    assert registry.get_tools(["research"], features=ctx.config.features)
+    assert registry.get_tools(["research"])
 
 
 # ---------------------------------------------------------------------------

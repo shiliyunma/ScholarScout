@@ -191,7 +191,6 @@ library:
 
 # ===== 装配开关（论文消融用）=====
 features:
-  enable_kb: false                # kb.search 降级通道，默认关
   enable_mineru: true
   enable_topic_map: true
   enable_route_plan: true

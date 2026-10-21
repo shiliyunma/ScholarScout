@@ -58,8 +58,9 @@
 - `delegate.py`：`research_delegate`
 - `source_context.py`：`candidate_sources`、`attach_text`、`render_sources`、`valid_ids`、`degrade_reason`
 
-**工具集（toolset）**：`runtime/registry.py` 的 `TOOLSETS = ("research", "kb")`；`research` 是默认
-（`get_tools()` 在 `toolsets` 为空/`None` 时只取它），`kb` 受 `features.enable_kb` 门控（默认关，论文消融开关）。
+**工具集（toolset）**：`runtime/registry.py` 的 `TOOLSETS = ("research",)`；`research` 是默认
+（`get_tools()` 在 `toolsets` 为空/`None` 时只取它）。曾经的 `kb` 工具集与 `features.enable_kb`
+已在「不留假功能」下整批删除（docs/23）。
 
 ## 4. 谁维护、去哪看更多
 

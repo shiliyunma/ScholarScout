@@ -231,7 +231,6 @@ class RuntimeProfile:
 
 @dataclass(frozen=True)
 class Features:
-    enable_kb: bool = False
     enable_mineru: bool = True
     enable_topic_map: bool = True
     enable_route_plan: bool = True
@@ -464,7 +463,6 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             daily_cost_budget=_optional_positive_float(runtime_section.get("daily_cost_budget")),
         ),
         features=Features(
-            enable_kb=bool(feature_section.get("enable_kb", False)),
             enable_mineru=bool(feature_section.get("enable_mineru", True)),
             enable_topic_map=bool(feature_section.get("enable_topic_map", True)),
             enable_route_plan=bool(feature_section.get("enable_route_plan", True)),

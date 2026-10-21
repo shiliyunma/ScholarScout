@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
-from scholarscout.config import Features
+from scholarscout.config import Features, RuntimeProfile
 from scholarscout.runtime import registry
 from scholarscout.runtime.registry import ToolSpec, tool
+
+#: 仓库根（本文件在 ``tests/runtime/`` 下，往上两级）
+CONFIG_EXAMPLE = Path(__file__).resolve().parents[2] / "config.example.yaml"
 
 SCHEMA = {
     "type": "object",
@@ -57,17 +62,25 @@ def test_unknown_toolset_rejected() -> None:
 
 def test_default_toolsets_is_research() -> None:
     registry.register(_spec("research.a"))
-    registry.register(_spec("kb.b", toolset="kb"))
     names = [s.name for s in registry.get_tools(None)]
     assert names == ["research.a"]
 
 
-def test_kb_toolset_gated_by_feature_flag() -> None:
-    registry.register(_spec("kb.b", toolset="kb"))
-    off = registry.get_tools(["kb"], features=Features(enable_kb=False))
-    on = registry.get_tools(["kb"], features=Features(enable_kb=True))
-    assert off == []
-    assert [s.name for s in on] == ["kb.b"]
+def test_enable_kb_switch_is_gone() -> None:
+    """守卫：``enable_kb`` 空开关已彻底删掉（docs/23，不留假功能）。
+
+    开着什么都不发生比没有这个开关更坏 —— 它让人以为"已支持知识库"。所以四件事一起钉住：
+    ① ``Features`` / ``RuntimeProfile`` 上都没有这个属性；② ``kb`` 不在工具集白名单里
+    （再注册 ``toolset="kb"`` 会当场 ``ValueError``）；③ 示例配置里不再有这行键；
+    ④ ``get_tools()`` 不再收 ``features`` 参数（死过滤没有回来的入口）。
+    """
+    assert getattr(Features(), "enable_kb", None) is None
+    assert getattr(RuntimeProfile(), "enable_kb", None) is None
+    assert "kb" not in registry.TOOLSETS
+    assert "enable_kb" not in CONFIG_EXAMPLE.read_text(encoding="utf-8")
+    assert "features" not in inspect.signature(registry.get_tools).parameters
+    with pytest.raises(ValueError, match="未知工具集"):
+        registry.register(_spec("kb.b", toolset="kb"))
 
 
 def test_openai_declaration_nests_parameters_under_function() -> None:

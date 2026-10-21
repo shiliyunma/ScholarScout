@@ -53,7 +53,7 @@ class TurnContext:
     cancel_event: threading.Event | None = None
 
     def tools(self, toolsets: Sequence[str] | None) -> list[registry.ToolSpec]:
-        return registry.get_tools(toolsets, features=self.config.features)
+        return registry.get_tools(toolsets)
 
     def is_cancelled(self, turn_id: str) -> bool:
         """这一轮被取消了吗（步间检查）。

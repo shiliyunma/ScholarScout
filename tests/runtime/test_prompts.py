@@ -88,7 +88,6 @@ def test_no_single_brace_placeholders_in_prompt_files() -> None:
 
 def test_prompt_names_active_toolsets() -> None:
     assert "当前可用工具集：research" in build_system_prompt(toolsets=["research"])
-    assert "research, kb" in build_system_prompt(toolsets=["research", "kb"])
 
 
 def test_hash_is_stable_and_short() -> None:

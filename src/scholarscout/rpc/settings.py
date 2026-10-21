@@ -29,7 +29,6 @@ def config_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
             "allow_clarify": ctx.config.runtime.allow_clarify,
         },
         "features": {
-            "enable_kb": ctx.config.features.enable_kb,
             "enable_mineru": ctx.config.features.enable_mineru,
             "enable_topic_map": ctx.config.features.enable_topic_map,
             "enable_route_plan": ctx.config.features.enable_route_plan,

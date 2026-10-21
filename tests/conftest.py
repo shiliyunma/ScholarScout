@@ -180,7 +180,7 @@ def config(tmp_path: Path) -> Config:
             # 需要它的用例自己 `replace(config.runtime, classify_search_intent=True)` 打开。
             classify_search_intent=False,
         ),
-        features=Features(enable_kb=False),
+        features=Features(),
         # 标题默认**关掉**：否则每个走 chat.send 的测试都要多备一条桩回复（那是噪声）。
         # 标题行为由 tests/runtime/test_title_suggest.py 显式打开开关来测。
         generation=Generation(title_by_model=False),

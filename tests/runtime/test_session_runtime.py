@@ -626,7 +626,7 @@ config = Config(
     chat=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
     summary=LlmProfile(model="stub-model", base_url="http://localhost:9/v1", temperature=0.0),
     runtime=RuntimeProfile(max_tool_calls_per_turn=1, stream=False),
-    features=Features(enable_kb=False),
+    features=Features(),
     generation=Generation(title_by_model=False),
     data_dir=root / "data",
     db_path=root / "driver.db",
