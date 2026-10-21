@@ -49,6 +49,7 @@ from scholarscout.state.ingest import (
 )
 from scholarscout.state.migrate import now_iso
 from scholarscout.summary.pipeline import SummaryInput, summarize
+from scholarscout.tools.envelope import ToolResult, fail, ok
 from scholarscout.tools.mineru_fallback import _mineru_fallback
 
 #: 本模块对外的名字。``_mineru_fallback`` 已搬到 ``tools/mineru_fallback.py``（扫描版兜底的
@@ -168,7 +169,7 @@ def source_fetch(
     url: str | None = None,
     source_id: str | None = None,
     force: bool = False,
-) -> dict[str, Any]:
+) -> ToolResult:
     if not url and not source_id:
         raise ValueError("必须给 url 或 source_id 之一")
     if not url:
@@ -202,18 +203,18 @@ def source_fetch(
         # 在工具内就地兜成 ``ok=false`` + 可读原因 —— 调用方跳过这一条，其余来源照旧完成。
         # 以前 FetchError 会冒泡出工具边界：模型只看到一句异常，以为\"这轮废了\"，
         # 于是反复重试同一批不可达 URL，直到烧光工具预算并开始编造。
-        return {
-            "ok": False,
-            "error": _fetch_failure_reason(exc, requested_url),
-            "data": {
+        return fail(
+            exc.kind,
+            _fetch_failure_reason(exc, requested_url),
+            data={
                 "requested_url": requested_url,
                 "fetched_url": requested_url,
                 "used_landing_page": True,
                 "error_kind": exc.kind,
                 "status": exc.status,
             },
-            "refs": {},
-        }
+            refs={},
+        )
 
     content: bytes = response.content
     sha256 = hashlib.sha256(content).hexdigest()
@@ -235,9 +236,8 @@ def source_fetch(
         found = _document_row(ctx, str(existing_source["id"]), sha256)
         if found is not None:
             summary = latest_summary(ctx.db, str(found["id"]))
-            return {
-                "ok": True,
-                "data": {
+            return ok(
+                {
                     "doc_id": found["id"],
                     "source_id": found["source_id"],
                     "mime": found["mime"],
@@ -257,12 +257,12 @@ def source_fetch(
                     "cached": True,
                     "summary": _summary_payload(summary),
                 },
-                "refs": {
+                refs={
                     "source_ids": [str(found["source_id"])],
                     "doc_ids": [str(found["id"])],
                     "summary_ids": [str(summary["id"])] if summary else [],
                 },
-            }
+            )
 
     # ---- 抽正文 + 落文件
     doc_id = sessions.new_id("doc")
@@ -502,9 +502,8 @@ def source_fetch(
 
     _record_use(ctx, source_id=resolved_source_id, doc_id=doc_id, summary_ids=summary_ids)
 
-    return {
-        "ok": True,
-        "data": {
+    return ok(
+        {
             "doc_id": doc_id,
             "source_id": resolved_source_id,
             "mime": media_type,
@@ -524,12 +523,12 @@ def source_fetch(
             "cached": False,
             "summary": summary_payload,
         },
-        "refs": {
+        refs={
             "source_ids": [resolved_source_id],
             "doc_ids": [doc_id],
             "summary_ids": summary_ids,
         },
-    }
+    )
 
 
 def _record_use(ctx: ToolContext, *, source_id: str, doc_id: str, summary_ids: list[str]) -> None:

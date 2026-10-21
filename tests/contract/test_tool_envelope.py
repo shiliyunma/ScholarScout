@@ -28,9 +28,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
-from scholarscout.fetch.http import FetchError
+from scholarscout.fetch.http import FetchError, HttpClient
 from scholarscout.rpc.methods import AppContext
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.tools import delegate as delegate_tool
@@ -239,3 +240,113 @@ def test_route_revise_failure_is_an_envelope_not_an_exception(tc: ToolContext) -
     assert envelope["ok"] is False
     assert "被拒绝" in envelope["error"]
     assert envelope["data"]["changes"] == []
+
+
+# ------------------------------------------------------- 迁移前后逐键相等（换写法不换形状）
+
+#: 迁移**前**（HEAD 里手写字典字面量）各分支的键序。
+#: 逐条抄自 `HEAD:src/scholarscout/tools/{source_fetch,route_revise,delegate}.py` 的 `return {...}`：
+#: 引入构造器只许换写法，键集与键序必须一字不动 —— 前端与模型都按这些键读。
+PRE_REFACTOR_KEY_ORDER: dict[str, dict[str, list[str]]] = {
+    "source.fetch/失败": {
+        "envelope": ["ok", "error", "data", "refs"],
+        "data": ["requested_url", "fetched_url", "used_landing_page", "error_kind", "status"],
+        "refs": [],
+    },
+    "source.fetch/成功": {
+        "envelope": ["ok", "data", "refs"],
+        "data": [
+            "doc_id",
+            "source_id",
+            "mime",
+            "chars",
+            "lang",
+            "bytes",
+            "ext",
+            "raw_path",
+            "text_path",
+            "requested_url",
+            "fetched_url",
+            "used_landing_page",
+            "extract_status",
+            "extract_engine",
+            "extract_detail",
+            "truncated",
+            "cached",
+            "summary",
+        ],
+        "refs": ["source_ids", "doc_ids", "summary_ids"],
+    },
+    "route.revise/被拒": {
+        "envelope": ["ok", "error", "data", "refs"],
+        "data": ["route_id", "changes"],
+        "refs": ["route_ids"],
+    },
+    "research.delegate/失败": {
+        "envelope": ["ok", "error", "data", "refs"],
+        "data": ["items", "counts", "consumed_tool_calls"],
+        "refs": ["source_ids"],
+    },
+}
+
+#: 抓取成功用的一页正文（够长才会走"抽取 + 摘要"那条完整成功分支）
+PAGE = (
+    "<html lang='zh'><head><title>信封闸</title></head><body><main>"
+    + "<p>教育智能体先检索再作答，正文落盘、摘要入库，回包的键序不许变。</p>" * 20
+    + "</main></body></html>"
+)
+
+
+def _assert_same_key_order(case: str, envelope: dict[str, Any]) -> None:
+    """一边对齐基线，一边报出到底哪一层漂了（只看键序，不看值）。"""
+    baseline = PRE_REFACTOR_KEY_ORDER[case]
+    assert list(envelope) == baseline["envelope"], f"{case}：信封键序变了"
+    assert list(envelope["data"]) == baseline["data"], f"{case}：data 键序变了"
+    assert list(envelope["refs"]) == baseline["refs"], f"{case}：refs 键序变了"
+
+
+def test_source_fetch_failure_keeps_the_pre_refactor_shape(tc: ToolContext) -> None:
+    """抓取失败（404 → 工具内兜成 `ok:false`）：键集/键序与迁移前逐键相同。"""
+    envelope = _fetch(tc)
+    _assert_same_key_order("source.fetch/失败", envelope)
+    assert envelope["ok"] is False and envelope["refs"] == {}
+
+
+def test_source_fetch_success_keeps_the_pre_refactor_shape(tc: ToolContext) -> None:
+    """抓取成功（真抽取 + 落盘，摘要因无模型标 unavailable）：键集/键序与迁移前逐键相同。"""
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, text=PAGE, headers={"content-type": "text/html; charset=utf-8"}
+        )
+    )
+    stub = replace(tc, http=HttpClient(respect_robots=False, transport=transport), llm=None)
+
+    envelope = fetch_tool.source_fetch(stub, url="https://docs.example.com/envelope")
+
+    _assert_same_key_order("source.fetch/成功", envelope)
+    assert envelope["ok"] is True
+    assert "error" not in envelope, "成功信封不许带 error（连 null 都不带）"
+
+
+def test_route_revise_rejection_keeps_the_pre_refactor_shape(tc: ToolContext) -> None:
+    """补丁不合法 → `ok:false` + `error`：失败信封的键集/键序与迁移前逐键相同。"""
+    created = _route_plan(tc)
+    route_id = str(created["data"]["route_id"])
+    tc.llm = StubLlm(reply('{"summary": "乱改", "ops": [{"op": "set_week_field"}]}'))
+
+    envelope = route_revise(tc, route_id, "把第 1 周改成别的")
+
+    _assert_same_key_order("route.revise/被拒", envelope)
+    assert envelope["ok"] is False
+    # 这条用例传入了有效 route_id，被拒时 refs 应当原样带着它（不是空数组）
+    assert envelope["refs"] == {"route_ids": [route_id]}, "被拒时 refs 应带着传入的 route_id"
+
+
+def test_delegate_failure_keeps_the_pre_refactor_shape(tc: ToolContext) -> None:
+    """子任务总开关未打开 → 失败信封；连 `data.counts` 的内层键序也与迁移前一致。"""
+    envelope = _delegate(tc)
+
+    _assert_same_key_order("research.delegate/失败", envelope)
+    assert envelope["ok"] is False
+    assert list(envelope["data"]["counts"]) == ["requested", "ran", "failed"]
+    assert envelope["refs"] == {"source_ids": []}

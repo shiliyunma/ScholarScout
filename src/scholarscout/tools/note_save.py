@@ -14,6 +14,7 @@ from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.learning import save_note
 from scholarscout.state.sessions import new_id
+from scholarscout.tools.envelope import ToolResult, ok
 
 DESCRIPTION = (
     "把结论固化成笔记、总结或抽背卡（正反面），并导出 Markdown 到本地。"
@@ -81,7 +82,7 @@ def note_save(
     cards: list[dict[str, str]] | None = None,
     refs: dict[str, Any] | None = None,
     tags: list[str] | None = None,
-) -> dict[str, Any]:
+) -> ToolResult:
     if kind not in {"summary", "note", "card"}:
         raise ValueError(f"非法 kind：{kind!r}")
 
@@ -129,9 +130,8 @@ def note_save(
         note_id=note_id,
     )
 
-    return {
-        "ok": True,
-        "data": {
+    return ok(
+        {
             "note_id": saved_id,
             "kind": kind,
             "title": note_title,
@@ -139,13 +139,13 @@ def note_save(
             "card_count": len(normalized_cards),
             "cards": normalized_cards,
         },
-        "refs": {
+        refs={
             "note_ids": [saved_id],
             "source_ids": list((refs or {}).get("source_ids") or []),
             "doc_ids": list((refs or {}).get("doc_ids") or []),
             "summary_ids": list((refs or {}).get("summary_ids") or []),
         },
-    }
+    )
 
 
 SPEC = ToolSpec(

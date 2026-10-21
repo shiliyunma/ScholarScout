@@ -21,6 +21,7 @@ from scholarscout.state.ingest import (
     save_grade,
 )
 from scholarscout.summary.prompts import PromptPack
+from scholarscout.tools.envelope import ToolResult, ok
 
 DESCRIPTION = (
     "判断资料的权威性与相关性：权威性由来源分层规则表判定（可解释、可复现），"
@@ -118,7 +119,7 @@ def source_grade(
     topic: str | None = None,
     use_model: bool = True,
     limit: int | None = None,
-) -> dict[str, Any]:
+) -> ToolResult:
     params: dict[str, Any] = {
         "source_ids": source_ids,
         "urls": urls,
@@ -204,17 +205,16 @@ def source_grade(
     for item in items:
         summary_counts[item["verdict"]] = summary_counts.get(item["verdict"], 0) + 1
 
-    return {
-        "ok": True,
-        "data": {
+    return ok(
+        {
             "items": items,
             "skipped": skipped,
             "counts": summary_counts,
             "topic": topic,
             "relevance_engine": "model" if use_llm else ("local" if topic else "none"),
         },
-        "refs": {"source_ids": [str(item["source_id"]) for item in items]},
-    }
+        refs={"source_ids": [str(item["source_id"]) for item in items]},
+    )
 
 
 SPEC = ToolSpec(

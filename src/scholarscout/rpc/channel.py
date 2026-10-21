@@ -400,7 +400,6 @@ def _probe_bot(ctx: AppContext, platform: str, domain: str) -> dict[str, Any]:
         "bot_name": probe.app_name,
         "bot_open_id": probe.open_id,
         "token_expire": probe.token_expire,
-        "error": None,
     }
 
 

@@ -18,6 +18,7 @@ from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.learning import save_route
 from scholarscout.summary.prompts import PromptPack
+from scholarscout.tools.envelope import ToolResult, ok
 from scholarscout.tools.source_context import (
     candidate_sources,
     degrade_reason,
@@ -232,7 +233,7 @@ def route_plan(
     weekly_hours: int = 6,
     source_ids: list[str] | None = None,
     use_model: bool = True,
-) -> dict[str, Any]:
+) -> ToolResult:
     topic = topic.strip()
     if not topic:
         raise ValueError("topic 不能为空")
@@ -290,9 +291,8 @@ def route_plan(
         session_id=ctx.session_id,
     )
 
-    return {
-        "ok": True,
-        "data": {
+    return ok(
+        {
             "route_id": route_id,
             "topic": topic,
             "level": level,
@@ -301,8 +301,8 @@ def route_plan(
             "weeks": plan["weeks"],
             "stats": plan["stats"],
         },
-        "refs": {"route_ids": [route_id], "source_ids": sorted(allowed)},
-    }
+        refs={"route_ids": [route_id], "source_ids": sorted(allowed)},
+    )
 
 
 SPEC = ToolSpec(

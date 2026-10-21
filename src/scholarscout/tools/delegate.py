@@ -27,6 +27,7 @@ from scholarscout.runtime.subtasks import (
     subtasks_enabled,
 )
 from scholarscout.runtime.toolctx import ToolContext
+from scholarscout.tools.envelope import ErrorEnvelope, ToolResult, fail, ok
 
 DESCRIPTION = (
     "把 2-3 个**互不依赖**的调研子问题分别交给子任务查清楚，返回各自的结论。"
@@ -53,18 +54,18 @@ PARAMETERS: dict[str, Any] = {
 }
 
 
-def _fail(reason: str, *, requested: int = 0) -> dict[str, Any]:
+def _fail(reason: str, *, requested: int = 0) -> ErrorEnvelope:
     """统一的失败包络（``ok=false`` + 原因；``data``/``refs`` 与成功时同形，方便调用方不分支）。"""
-    return {
-        "ok": False,
-        "error": reason,
-        "data": {
+    return fail(
+        "delegate_unavailable",
+        reason,
+        data={
             "items": [],
             "counts": {"requested": requested, "ran": 0, "failed": 0},
             "consumed_tool_calls": 0,
         },
-        "refs": {"source_ids": []},
-    }
+        refs={"source_ids": []},
+    )
 
 
 def _merge_refs(sources: Iterable[dict[str, Any]]) -> dict[str, list[str]]:
@@ -89,7 +90,7 @@ def _merge_refs(sources: Iterable[dict[str, Any]]) -> dict[str, list[str]]:
     return merged
 
 
-def research_delegate(ctx: ToolContext, goals: list[str] | None = None) -> dict[str, Any]:
+def research_delegate(ctx: ToolContext, goals: list[str] | None = None) -> ToolResult:
     """跑一批**互不依赖**的子问题，返回各自的结论。
 
     四种失败情形都在这里收敛成 ``ok=false``（绝不外抛异常）：
@@ -151,26 +152,25 @@ def research_delegate(ctx: ToolContext, goals: list[str] | None = None) -> dict[
 
     if ran == 0:
         # 全部子任务都没拿到结论：如实回失败（与 research.search 的"全来源失败"口径一致）。
-        return {
-            "ok": False,
-            "error": "全部子任务都没产出结论（预算或检索失败）—— 请用主流程自己推进",
-            "data": {
+        return fail(
+            "delegate_no_result",
+            "全部子任务都没产出结论（预算或检索失败）—— 请用主流程自己推进",
+            data={
                 "items": items,
                 "counts": {"requested": len(clean), "ran": 0, "failed": len(clean)},
                 "consumed_tool_calls": consumed,
             },
-            "refs": _merge_refs(result.refs for result in results),
-        }
+            refs=_merge_refs(result.refs for result in results),
+        )
 
-    return {
-        "ok": True,
-        "data": {
+    return ok(
+        {
             "items": items,
             "counts": {"requested": len(clean), "ran": ran, "failed": len(clean) - ran},
             "consumed_tool_calls": consumed,
         },
-        "refs": _merge_refs(result.refs for result in results),
-    }
+        refs=_merge_refs(result.refs for result in results),
+    )
 
 
 SPEC = ToolSpec(

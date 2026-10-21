@@ -15,6 +15,7 @@ from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.learning import save_topic_map
 from scholarscout.summary.prompts import PromptPack
+from scholarscout.tools.envelope import ToolResult, ok
 from scholarscout.tools.source_context import (
     candidate_sources,
     degrade_reason,
@@ -169,7 +170,7 @@ def topic_build_map(
     source_ids: list[str] | None = None,
     max_nodes: int = 20,
     use_model: bool = True,
-) -> dict[str, Any]:
+) -> ToolResult:
     topic = topic.strip()
     if not topic:
         raise ValueError("topic 不能为空")
@@ -210,9 +211,8 @@ def topic_build_map(
         session_id=ctx.session_id,
     )
 
-    return {
-        "ok": True,
-        "data": {
+    return ok(
+        {
             "topic_id": topic_id,
             "topic": topic,
             "mode": mode,
@@ -222,8 +222,8 @@ def topic_build_map(
             "edges": graph["edges"],
             "stats": graph["stats"],
         },
-        "refs": {"topic_ids": [topic_id], "source_ids": sorted(allowed)},
-    }
+        refs={"topic_ids": [topic_id], "source_ids": sorted(allowed)},
+    )
 
 
 SPEC = ToolSpec(

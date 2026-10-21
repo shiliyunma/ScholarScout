@@ -35,6 +35,7 @@ from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.subtasks import fetch_many
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.ingest import upsert_source
+from scholarscout.tools.envelope import ToolResult, fail, ok
 
 DESCRIPTION = (
     "在多个来源里检索资料并入库，返回带 source_id 的结果，"
@@ -185,7 +186,7 @@ def _choice_event(ctx: ToolContext, *, query: str, intent: search_intent.Intent 
         )
 
 
-def _skipped_result(query: str) -> dict[str, Any]:
+def _skipped_result(query: str) -> ToolResult:
     """用户选择不检索：**不搜**，但要让模型明确知道"该直接回答"。
 
     ``ok=False`` 是刻意的：这一轮确实没拿到任何证据。主循环也只对"真的搜过且没新来源"计
@@ -196,34 +197,42 @@ def _skipped_result(query: str) -> dict[str, Any]:
         "用户已选择本轮不检索。请不要调用检索类工具，直接用已有上下文/通用知识回答，"
         "并在回答里说明哪些部分没有资料支撑。"
     )
-    return {
-        "ok": False,
-        "skipped": True,
-        "data": {"items": [], "skipped": True, "query": query, "note": note},
-        "refs": {"source_ids": []},
-    }
+    # ok:false 就必须带非空 error（docs/01 §5.0）：模型读 error 决定下一步，界面读 data.note 展示。
+    # 顶层 skipped 是已知例外（前端在读，见 tools/envelope.py 顶注），位置不动。
+    return fail(
+        "search_skipped",
+        "本轮按用户要求没有检索（skipped）：直接用已有上下文/通用知识回答，"
+        "并说明哪些部分没有资料支撑。",
+        data={"items": [], "skipped": True, "query": query},
+        note=note,
+        refs={"source_ids": []},
+        skipped=True,
+    )
 
 
-def _choice_result(query: str, intent: search_intent.Intent) -> dict[str, Any]:
+def _choice_result(query: str, intent: search_intent.Intent) -> ToolResult:
     """分类置信度低且用户没表态：**不猜**，把选项交出去（模型转述给用户）。"""
     options = search_intent.options()
     note = (
         "这次没说清要哪类资料，先别搜。请把下面这些选项转成一个简短的问题问用户，"
         "等他/她选完再检索（不要自己替用户选，也不要换个说法重搜）。"
     )
-    return {
-        "ok": False,
-        "needs_choice": True,
-        "options": options,
-        "data": {
+    # options / needs_choice 留在信封顶层（已知例外，前端直接渲染选择卡）；error 写"先问用户"，
+    # 模型不必从 data.note 里猜下一步该怎么处理。
+    return fail(
+        "search_needs_choice",
+        "没说清要哪类资料（needs_choice）：先按 options 问用户选一类，选完再检索。",
+        data={
             "needs_choice": True,
             "items": [],  # 与其它返回路径同形（预算投影/模型都按 data.items 读结果）
             "query": query,
             "note": note,
             "intent": intent.as_dict(),
         },
-        "refs": {"source_ids": []},
-    }
+        refs={"source_ids": []},
+        needs_choice=True,
+        options=options,
+    )
 
 
 def research_search(
@@ -233,7 +242,7 @@ def research_search(
     limit: int | None = None,
     year_from: int | None = None,
     sort: str = "relevance",
-) -> dict[str, Any]:
+) -> ToolResult:
     # ---- 方案 3：先核**每轮检索偏好位**再决定搜不搜/搜哪一层。
     # 偏好位存在研究台账里（不是系统提示）：工具签名与提示词一字未改，改的只是"这一轮查哪几个来源"。
     preference, intent = search_intent.preference_for(ctx)
@@ -294,19 +303,21 @@ def research_search(
         picked = search_intent.filter_providers(wanted, providers, preference)
         if not picked:
             label = search_intent.label_of(preference)
-            return {
-                "ok": False,
-                "data": {
+            # ok:false 必须带非空 error（docs/01 §5.0）：这一层没接通是**结论**，不能让模型猜
+            return fail(
+                "search_family_unavailable",
+                f"用户只要{label}，但这一层现在没有可用的来源（缺 key 或没配实例）。",
+                data={
                     "items": [],
                     "provider_status": [],
                     "query": query,
-                    "note": (
-                        f"用户只要{label}，但这一层现在没有可用的来源（缺 key 或没配实例）。"
-                        "请如实告诉用户这一层没接通，不要改用别的类型检索。"
-                    ),
                 },
-                "refs": {"source_ids": []},
-            }
+                note=(
+                    f"用户只要{label}，但这一层现在没有可用的来源（缺 key 或没配实例）。"
+                    "请如实告诉用户这一层没接通，不要改用别的类型检索。"
+                ),
+                refs={"source_ids": []},
+            )
         if picked != wanted:
             dropped = [name for name in wanted if name not in picked]
             family_note = (
@@ -345,23 +356,23 @@ def research_search(
 
     failure = _all_providers_failed(status) if not items else None
     if failure is not None:
-        return {
-            "ok": False,
-            "error": failure,
-            "data": {"items": [], "provider_status": status, "query": query, "note": family_note},
-            "refs": {"source_ids": []},
-        }
+        return fail(
+            "search_all_failed",
+            failure,
+            data={"items": [], "provider_status": status, "query": query},
+            note=family_note,
+            refs={"source_ids": []},
+        )
 
-    return {
-        "ok": True,
-        "data": {
+    return ok(
+        {
             "items": items,
             "provider_status": status,
             "query": query,
-            "note": family_note,
         },
-        "refs": {"source_ids": source_ids},
-    }
+        note=family_note,
+        refs={"source_ids": source_ids},
+    )
 
 
 def _all_providers_failed(status: list[dict[str, Any]]) -> str | None:

@@ -21,6 +21,7 @@ from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state.learning import get_route, revise_route
 from scholarscout.summary.prompts import PromptPack
+from scholarscout.tools.envelope import ErrorEnvelope, ToolResult, fail, ok
 from scholarscout.tools.source_context import candidate_sources, render_sources, valid_ids
 
 DESCRIPTION = (
@@ -64,25 +65,25 @@ def render_route(plan: dict[str, Any]) -> str:
     return "\n".join(lines).strip() or "（空路线）"
 
 
-def _failure(message: str, route_id: str = "") -> dict[str, Any]:
+def _failure(message: str, route_id: str = "") -> ErrorEnvelope:
     """失败的**唯一**出口：回 `ok:false` 信封，不抛（与 `research.search` 同口径）。
 
     为什么失败也带 `data`/`refs`：信封要求成功失败同形，调用方（模型 / RPC / 前端）
     读 `data` 时不必先判分支；`route_id` 能带就带，日志里对得上是哪条路线。
     """
-    return {
-        "ok": False,
-        "error": message,
-        "data": {"route_id": route_id, "changes": []},
-        "refs": {"route_ids": [route_id] if route_id else []},
-    }
+    return fail(
+        "revise_rejected",
+        message,
+        data={"route_id": route_id, "changes": []},
+        refs={"route_ids": [route_id] if route_id else []},
+    )
 
 
 def route_revise(
     ctx: ToolContext,
     route_id: str,
     instruction: str,
-) -> dict[str, Any]:
+) -> ToolResult:
     route_id = (route_id or "").strip()
     if not route_id:
         return _failure("route_id 不能为空")
@@ -128,17 +129,16 @@ def route_revise(
             if item.get("source_id")
         }
     )
-    return {
-        "ok": True,
-        "data": {
+    return ok(
+        {
             "route_id": route_id,
             "version": version,
             "summary": summary,
             "changes": changes,
             "weeks": len(new_plan.get("weeks") or []),
         },
-        "refs": {"route_ids": [route_id], "source_ids": source_ids},
-    }
+        refs={"route_ids": [route_id], "source_ids": source_ids},
+    )
 
 
 SPEC = ToolSpec(
