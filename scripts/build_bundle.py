@@ -21,12 +21,21 @@
 
 ## 特意**不**打进去的
 
-- `.env` 与 `config.yaml`（**密钥不该出现在分发件里**）。要连配置一起拷，显式加 `--with-config`。
+- **真 `.env`**（含 API 密钥）：默认只拷 `.env.example` 模板。要连自己机器上的真 `.env`
+  一起拷，必须显式加 `--with-secrets`，而且打完的**自检会直接失败**（见下）——
+  这条不是多余的：上一轮用 `--with-config` 把真密钥打进了 `ScholarScout-Portable/`，
+  这种包发给任何人就是泄密，而它在目录里看起来和别的东西一模一样。
 - `data/`、`run/`（用户的资料与账本）。首次运行会在 exe 旁边自动建出来。
 
+## 打完自检（`assert_bundle_no_secrets`）
+
+产物里只要有 `.env` 且其中**任一值非空** → 打印键名（**不打印值**）并以非 0 退出。
+所以"带真密钥的包"不可能被这个脚本静默产出来；`.env.example`（值全空）不触发。
+
 用法：
-    python scripts/build_bundle.py                # → ScholarScout-Portable/
-    python scripts/build_bundle.py --with-config  # 连 .env / config.yaml 一起拷（自己机器用）
+    python scripts/build_bundle.py                # → ScholarScout-Portable/（只带 .env.example）
+    python scripts/build_bundle.py --with-config  # 再带上 config.yaml（**不含密钥**）
+    python scripts/build_bundle.py --with-secrets # 再带上真 .env —— 会被自检拦下，仅排障用
     python scripts/build_bundle.py --name MyBuild --dist-dir D:/out
 """
 
@@ -90,7 +99,77 @@ def _pyinstaller_args(name: str, dist_dir: Path, work_dir: Path, spec_dir: Path)
     return args
 
 
-def build(name: str, dist_dir: Path, *, with_config: bool) -> Path:
+def leaked_env_keys(env_path: Path) -> list[str]:
+    """`.env` 里**值非空**的键名（只回键名，**绝不回值** —— 日志会进聊天记录与工单）。"""
+    keys: list[str] = []
+    for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):  # shell 风格的 .env 也能读
+            line = line[len("export ") :].strip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        if value.strip().strip("'\""):
+            keys.append(key.strip())
+    return keys
+
+
+def assert_bundle_no_secrets(target: Path) -> None:
+    """打包后自检：产物里不许有**带非空值**的 `.env`（有就非 0 退出）。
+
+    为什么是"打完再查"而不是"拷之前判断"：拷贝路径有三条（`--with-config` 的历史行为、
+    `--with-secrets`、将来别的地方顺手 `copy2`），只盯住其中一条迟早漏；查产物目录才是
+    对着"要送出去的那个东西"验收。`.env.example` 值全空，不触发。
+    """
+    env = target / ".env"
+    if not env.is_file():
+        return
+    keys = leaked_env_keys(env)
+    if keys:
+        raise SystemExit(
+            f"打包自检失败：{env} 里有非空值（{', '.join(keys)}）—— 分发件不能带真密钥。\n"
+            f"  处理：删掉 {env}（模板 .env.example 已随包），或去掉 --with-secrets 重新打包。"
+        )
+    print("     自检：包内 .env 没有非空值（只有模板/空值）")
+
+
+def stage_files(target: Path, *, with_config: bool, with_secrets: bool) -> None:
+    """把「exe 旁边该有的东西」放进产物目录（提示词、说明文件、配置模板）。
+
+    分级很清楚：模板永远带；`config.yaml` 要 `--with-config`；**真 `.env` 要 `--with-secrets`**。
+    """
+    prompts_src = ROOT / "prompts"
+    if prompts_src.is_dir():
+        shutil.copytree(prompts_src, target / "prompts", dirs_exist_ok=True)
+    for name_only in SIDE_FILES:
+        source = ROOT / name_only
+        if source.exists():
+            shutil.copy2(source, target / name_only)
+    example = ROOT / "config.example.yaml"
+    if example.exists() and not (target / "config.yaml").exists():
+        shutil.copy2(example, target / "config.yaml")
+
+    if with_config:
+        print("     带上本机的 config.yaml（不含密钥，但可能含本地路径/模型名；默认不带）…")
+        source = ROOT / "config.yaml"
+        if source.exists():
+            shutil.copy2(source, target / "config.yaml")
+
+    if with_secrets:
+        print("     " + "!" * 62)
+        print("     !! --with-secrets：正在把真 .env（含 API 密钥）拷进包！")
+        print("     !! 这个包**只能自己用**；发给任何人之前必须删掉包里的 .env。")
+        print("     " + "!" * 62)
+        source = ROOT / ".env"
+        if source.exists():
+            shutil.copy2(source, target / ".env")
+        else:
+            print("     （项目根没有 .env，没东西可拷）")
+
+
+def build(name: str, dist_dir: Path, *, with_config: bool, with_secrets: bool = False) -> Path:
     work_dir = ROOT / "build" / "bundle"
     spec_dir = ROOT / "build" / "spec"
     spec_dir.mkdir(parents=True, exist_ok=True)
@@ -122,24 +201,10 @@ def build(name: str, dist_dir: Path, *, with_config: bool) -> Path:
         target = dist_dir
         exe = target / f"{name}.exe"
 
-    print("[2/3] 放上「旁边要有的东西」（提示词、说明文件）…")
-    prompts_src = ROOT / "prompts"
-    if prompts_src.is_dir():
-        shutil.copytree(prompts_src, target / "prompts", dirs_exist_ok=True)
-    for name_only in SIDE_FILES:
-        source = ROOT / name_only
-        if source.exists():
-            shutil.copy2(source, target / name_only)
-    example = ROOT / "config.example.yaml"
-    if example.exists() and not (target / "config.yaml").exists():
-        shutil.copy2(example, target / "config.yaml")
-
-    if with_config:
-        print("     连 .env 与 config.yaml 一起拷（**含密钥**，只有自己机器才这么用）…")
-        for name_only in (".env", "config.yaml"):
-            source = ROOT / name_only
-            if source.exists():
-                shutil.copy2(source, target / name_only)
+    print("[2/3] 放上「旁边要有的东西」（提示词、说明文件、配置模板）…")
+    stage_files(target, with_config=with_config, with_secrets=with_secrets)
+    # 自检放在拷完之后：验收的是"要送出去的那个目录"，不是"我以为拷了什么"
+    assert_bundle_no_secrets(target)
 
     print("[3/3] 完成")
     size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
@@ -159,9 +224,21 @@ def main() -> int:
         default=str(ROOT / "ScholarScout-Portable"),
         help="产物目录（默认 项目根/ScholarScout-Portable，最外层最顺手）",
     )
-    parser.add_argument("--with-config", action="store_true", help="连 .env / config.yaml 一起拷")
+    parser.add_argument(
+        "--with-config", action="store_true", help="连 config.yaml 一起拷（不含密钥）"
+    )
+    parser.add_argument(
+        "--with-secrets",
+        action="store_true",
+        help="连真 .env（含 API 密钥）一起拷；打完自检会失败，仅自己排障用",
+    )
     args = parser.parse_args()
-    build(args.name, Path(args.dist_dir), with_config=args.with_config)
+    build(
+        args.name,
+        Path(args.dist_dir),
+        with_config=args.with_config,
+        with_secrets=args.with_secrets,
+    )
     return 0
 
 
