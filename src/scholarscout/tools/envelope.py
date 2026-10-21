@@ -22,6 +22,32 @@
 把它们挪进 `data` 就是**改对外形状 + 改前端**，不在本批范围。所以这里把它们列进
 :data:`KNOWN_EXTRA_KEYS` 显式放行，其余未知顶层键仍然直接报错 —— 例外有名单、有原因，
 新增工具不许再往顶层加键（要交给模型的东西一律进 `data`）。
+
+**本项目里有四种「信封」，只有第一种归本模块管**（别把它们当同一个契约「顺手统一」：
+2/3/4 的键集各有消费方，套上 `ok()`/`fail()` 就是改对外形状）：
+
+1. **工具信封** —— `tools/*.py` 的 handler 返回值，**唯一构造点就是本模块**：
+   成功 `{ok, data, refs}`、失败 `{ok, error, data, refs}`（外加已知例外
+   `skipped/needs_choice/options`）。消费方：主循环（`runtime/turn_steps.py`）、
+   前端卡片、`tests/contract/test_tool_envelope.py`。全仓扫描确认 `tools/` 之外
+   **没有任何一处**再手写它（2026-10 复核，剩余 0 处）。
+2. **RPC 回执** —— `rpc/*.py` 里 `@method` 的返回值（`channel` / `archive` /
+   `session` / `settings` / `feishu` / `learning` / `research` / `channel_file`）：
+   `{ok, ...}` 后跟各方法自己的键，如 `channel.py` 的 `{ok, code, message_id, error?}`、
+   `{ok, mode, platform, latency_ms, error?}`、`session.py` 的 `{ok, session_id, ...}`。
+   **没有 `data` / `refs`**。消费方：桌面壳的 JSON-RPC 客户端（错误走 `rpc/codes.py`）。
+3. **壳层桥接回执** —— `desktop/bridge.py`：成功 `{ok, result}`、失败 `{ok, error}`，
+   其中 **`error` 是对象**（`{code, message}`，前端直接渲染），不是文案字符串。
+   消费方：WebView 里的 `window.scoutEvent` 与 pywebview 的 js_api 返回值。
+4. **发送器回执** —— `fetch/feishu_send.py`（`SendOutcome.as_dict`）、
+   `fetch/feishu_file.py`、`channels/runner.py`：`{ok, message_id, code, error?}`
+   （发文件时多 `file_key/file_name/size_bytes`）。消费方：渠道子进程与 `channel.send`，
+   用来判「这条消息到底发出去没」。
+
+另外两处**不是信封**，别误认：`runtime/turn_steps.py` 的
+`{turn_id, seq, call_id, ok, digest?, latency_ms?, refs}` 是**审计/事件记录**（还进库），
+`runtime/context_budget.py` 的 `{ok, data}` 是**给模型的投影**（刻意丢掉 `refs` 省 token）。
+它们都不是工具回包，套构造器就改了输出。
 """
 
 from __future__ import annotations
