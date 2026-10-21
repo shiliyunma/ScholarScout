@@ -224,6 +224,14 @@ class RuntimeProfile:
     #: **默认 None = 不限制**（`<= 0` / `bool` 也按"不限制"归一）。超限后：正在跑的这一轮收口
     #: （不再给新工具、如实总结）且 `stop_reason="budget"`，新的轮次直接拒绝。
     daily_token_budget: int | None = None
+    #: **会话级**工具调用上限（docs/20 §5.1，评审 R-07）：一个会话**累计**能调多少次工具
+    #: （跨轮累计，取自 `tool_traces` 的行数，落库口径所以重启后仍然准）。
+    #: **默认 None = 不限制**（与 `daily_token_budget` 同一归一函数 `_optional_positive_int`：
+    #: 非数字 / `<= 0` / `bool` 一律当"不限制"）。超限后：正在跑的这一轮在**下一次工具调用前**
+    #: 收口（只再给一次无工具总结，`stop_reason="session_tool_limit"`，已生成正文不丢），
+    #: 该会话后续的新轮次直接拒绝（`session_tool_limit_exceeded`）。
+    #: 与每日封顶的区别：它**不随时间回血** —— 算的是会话，不是自然日。
+    max_tool_calls_per_session: int | None = None
     #: 每日金额封顶：**只在配了单价（`est_cost` 非空）时才生效**；单价未配时不算金额、
     #: 这条上限也不生效（绝不按估算单价折出一个好看的数字）。默认 None = 不限制。
     daily_cost_budget: float | None = None
@@ -460,6 +468,11 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             # 每日封顶（docs/20 §5.1）：**默认无上限**；`<= 0` / bool / 非数字一律归一成 None。
             # `0` 读成"不限制"而不是"上限 0"（见 `_optional_positive_int` 的理由）。
             daily_token_budget=_optional_positive_int(runtime_section.get("daily_token_budget")),
+            # 会话级工具调用上限（docs/20 §5.1）：**默认无上限**，与上一行同一归一函数。
+            # D3 同款坑：加了字段必须接这一行，否则 YAML 里写它会被静默忽略。
+            max_tool_calls_per_session=_optional_positive_int(
+                runtime_section.get("max_tool_calls_per_session")
+            ),
             daily_cost_budget=_optional_positive_float(runtime_section.get("daily_cost_budget")),
         ),
         features=Features(

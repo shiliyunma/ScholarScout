@@ -278,6 +278,24 @@ class SessionRuntime:
                     "budget": exceeded,
                     "running": self._running_snapshot(),
                 }
+        # ---- 会话级工具预算的**第二处**检查点（docs/20 §5.1）：这个会话的累计调用数已到顶 →
+        # 直接拒绝新轮次（不排队、不偷偷放行）。计数来自 `tool_traces`（落库），所以重启后照样拦。
+        # 没配上限时 `session_guard is None` → 不查库，行为与引入前逐字一致。
+        session_guard = daily_budget.session_guard_from_runtime(self._host.config.runtime)
+        if session_guard is not None:
+            spent = session_guard.exceeded(self._host.db, session_id)
+            if spent is not None:
+                return {
+                    "ok": False,
+                    "reason": daily_budget.SESSION_REJECT_REASON,
+                    "session_tool_budget": spent,
+                    "note": (
+                        f"本会话的工具调用已达上限（{spent['used']} / {spent['limit']}）："
+                        "这条上限按会话累计、不随时间回血；请新开一个会话继续，"
+                        "或在 config.yaml 调高 runtime.max_tool_calls_per_session。"
+                    ),
+                    "running": self._running_snapshot(),
+                }
         with self._lock:
             if self._closed:
                 return {"ok": False, "reason": "shutdown", "note": "会话运行时已关闭"}
@@ -364,9 +382,16 @@ class SessionRuntime:
 
         ``global_budget``：滚动 24 小时的已用/上限/是否超限（`runtime/budget.py` 的稳定形状）。
         **没配上限时** ``enabled=False``、各项为 ``None`` —— 不假报 0（0 会被读成"没花钱"）。
+
+        ``session_tool_budget``：**会话级**工具调用预算（docs/20 §5.1）—— 与 `global_budget` 并列，
+        形状见 `budget.session_tool_snapshot`。给了 `session_id` 才有 `used`/`exceeded`
+        （没有会话就无从计数，如实回 `None`，不猜）。
         """
         # 预算快照要在锁外取（要查库，不该占着运行时锁）
         global_budget = daily_budget.snapshot(self._host.config.runtime, self._host.db)
+        session_tool_budget = daily_budget.session_tool_snapshot(
+            self._host.config.runtime, self._host.db, session_id=session_id
+        )
         with self._lock:
             running = [
                 unit.handle.as_dict() for unit in self._units.values() if unit.handle is not None
@@ -379,6 +404,9 @@ class SessionRuntime:
                 # 滚动 24 小时的用量/上限/是否超限（`budget.snapshot` 的稳定形状）。
                 # 没配上限时 `enabled=False` 且各项为 None —— 不假报 0。
                 "global_budget": global_budget,
+                # 会话级工具调用预算（docs/20 §5.1）：与 global_budget 并列的读数口。
+                # 未配置时 enabled=False；没给 session_id 时 used/exceeded 为 None（无从计数）。
+                "session_tool_budget": session_tool_budget,
             }
             if session_id:
                 unit = self._units.get(session_id)

@@ -65,6 +65,22 @@ def record_trace(
     return trace_id
 
 
+def count_tool_calls(db: Database, *, session_id: str) -> int:
+    """这个会话**累计发生过**多少次工具调用（含失败与未注册的，跨轮）。
+
+    为什么用本表而不是另建计数表：`tool_traces` 是"调用次数"的唯一取数入口（见模块文档），
+    每次调用都**当场**落一行 —— 于是会话级工具预算不需要内存计数器，也不需要新表，
+    **重启进程后照样算得准**（`tests/runtime/test_session_tool_budget.py` 钉着这条）。
+
+    口径边界（如实写清）：子任务（`research.delegate`）内部的调用也按主会话的 `session_id`
+    落轨迹，所以**同样计入**本会话的额度 —— 它们烧的是同一个会话的钱。
+    """
+    row = db.query_one(
+        "SELECT count(*) AS calls FROM tool_traces WHERE session_id = ?", (session_id,)
+    )
+    return int(row["calls"]) if row is not None else 0
+
+
 def list_traces(
     db: Database,
     *,

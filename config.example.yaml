@@ -78,6 +78,15 @@ runtime:
   # 金额上限：**只在配了单价（`est_cost` 非空）时才生效**；单价未配时不算金额、这条上限不生效
   #（绝不按估算单价折出一个好看的数字）。null = 不限制。
   daily_cost_budget: null
+  # ---- 会话级工具调用上限（docs/20 §5.1）**默认无上限** ----
+  # 一个会话**累计**能调多少次工具（跨轮累计，取自 tool_traces 的行数 —— 落库口径，
+  # 重启进程后仍然准；子任务内部的调用也按主会话记账，所以同样计入）。
+  # 超限行为：① 正在跑的这一轮在**下一次工具调用前**停手，只再给一次无工具总结，
+  # `stop_reason="session_tool_limit"`（已生成正文不丢）；② 该会话后续的新轮次直接拒绝
+  # （`session_tool_limit_exceeded`），提示用户新开会话 —— 这条闸**不随时间回血**。
+  # 当前用量在 `chat.status` 的 `session_tool_budget` 键里（未配置时 enabled=false）。
+  # null / 不写 = 不限制；`0` 与负数**也按"不限制"**归一（与 daily_token_budget 同一口径）。
+  max_tool_calls_per_session: null
 
 # ===== 摘要流水线（照 AIHOT 的"截断 + 一次调用"，见 docs/04）=====
 summary:

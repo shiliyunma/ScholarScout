@@ -60,6 +60,9 @@ NON_DEFAULT_VALUES: dict[str, object] = {
     # 第 8 步：每日用量封顶（docs/20 §5.1/§5.2）。**默认 None = 不限制**；`<= 0`/bool 也归一成 None。
     "daily_token_budget": 4321,
     "daily_cost_budget": 1.25,
+    # 会话级工具调用上限（docs/20 §5.1，评审 R-07）：**默认 None = 不限制**，
+    # 与 daily_token_budget 同一归一函数（`_optional_positive_int`）。
+    "max_tool_calls_per_session": 40,
 }
 
 

@@ -1,4 +1,6 @@
-"""每日用量封顶（docs/20 §5.1 / §5.2 的「全局用量封顶」）：**默认无上限**。
+"""用量封顶（docs/20 §5.1 / §5.2）：**两处都是默认无上限**。
+
+一、每日用量封顶（滚动 24 小时，按 ``usage_records`` 汇总）
 
 口径三条（写死在这里，别处不许另算）：
 
@@ -19,6 +21,24 @@
 
 - ``SessionRuntime.submit_turn()`` —— 已超则**拒绝这一轮**（``reason="daily_budget_exceeded"``）；
 - ``runtime/loop.run_turn`` 里**每一次模型调用之前** —— 正在跑的那一轮当场收口。
+
+二、会话级工具调用上限（``runtime.max_tool_calls_per_session``，默认 ``None`` = 不限）
+
+为什么还需要它（``docs/20 §5.1``，评审 R-07）：上面那条是**滚动 24 小时**的、按 token 的
+总量闸，一个下午能把今天的额度烧完 —— 而"这个会话已经调了 80 次工具"这件事在账本里
+看得见，却没有任何地方拦它。这条闸把**一个会话**的累计工具调用数按住，
+于是"最坏成本"= 会话上限 × 单次工具成本，而不是"用户手速 × 不限"。
+
+- **计数口径**：``tool_traces`` 里该会话的**行数**（``state/traces.py::count_tool_calls``）——
+  **跨轮累计、落库**，不是本轮的 ``TurnBudget``；进程重启后照样算得准。
+  子任务内部的调用也按主会话 id 落轨迹，因此同样计入（同一个会话的一本账）。
+- **检查点**：``loop.run_turn`` 里**每一次工具调用之前**（真正执行之前）判一次；
+  超限就**不执行**那一次调用，进入与每日封顶同一套"无工具收口"（只再给一次无工具总结），
+  ``stop_reason="session_tool_limit"``，已生成的正文照常落库；
+  之后该会话的 ``submit_turn`` 一律拒绝（``reason="session_tool_limit_exceeded"``），
+  直到用户新开会话 —— 这条闸**不随时间回血**（它算的是会话，不是自然日）。
+- **默认 ``None``**：``session_guard_from_runtime()`` 回 ``None`` → 不查库、不判断，
+  行为与引入本能力之前逐字一致（可断言的回归点）。
 """
 
 from __future__ import annotations
@@ -27,6 +47,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from scholarscout.state import traces
 from scholarscout.state.db import Database
 
 #: 统计窗口（小时）。改成自然日要同时改文档与界面口径，所以只在这里写一次。
@@ -36,6 +57,11 @@ WINDOW_HOURS = 24.0
 STOP_REASON = "budget"
 #: ``submit_turn`` 的拒绝理由（RPC 层据此给明确提示）
 REJECT_REASON = "daily_budget_exceeded"
+
+#: 会话级上限用尽时的收口理由（进 ``stop_reason``，与 ``docs/01 §4`` 的枚举一致）
+SESSION_STOP_REASON = "session_tool_limit"
+#: 会话级上限用尽后 ``submit_turn`` 的拒绝理由（同 ``daily_budget_exceeded`` 的角色）
+SESSION_REJECT_REASON = "session_tool_limit_exceeded"
 
 
 def _positive_int(value: object) -> int | None:
@@ -210,3 +236,82 @@ def snapshot(runtime_cfg: object, db: Database, *, now: datetime | None = None) 
             "reason": None,
         }
     return guard.snapshot(db, now=now)
+
+
+@dataclass(frozen=True)
+class SessionToolGuard:
+    """会话级工具调用上限的"已启用"形态。**只在配了正数时才被创建**（``session_guard_from_runtime``）。
+
+    计数**不回内存**：每次判定都去 ``tool_traces`` 数该会话的行数。慢不了（一张按会话过滤的
+    小表、单会话行数上限就是几十），换来的是"重启后仍然准"与"多会话并行时不会各记一份账"。
+    """
+
+    limit: int
+
+    def used(self, db: Database, session_id: str) -> int:
+        """该会话**已经发生**的工具调用数（含失败、未注册、子任务内部的调用）。"""
+        return traces.count_tool_calls(db, session_id=session_id)
+
+    def snapshot(self, db: Database, session_id: str) -> dict[str, Any]:
+        """当前用量 + 是否超限（给 ``chat.status`` 与拒绝载荷用，形状稳定）。"""
+        used = self.used(db, session_id)
+        exceeded = used >= self.limit
+        return {
+            "enabled": True,
+            "session_id": session_id,
+            "limit": self.limit,
+            "used": used,
+            "remaining": max(0, self.limit - used),
+            "exceeded": exceeded,
+            # 超限的理由与 ``stop_reason`` 同一个字符串：界面不必再维护第二套映射
+            "reason": SESSION_STOP_REASON if exceeded else None,
+        }
+
+    def exceeded(self, db: Database, session_id: str) -> dict[str, Any] | None:
+        """超限就回快照，否则回 ``None``（调用点写法：``snap = guard.exceeded(db, sid)``）。"""
+        state = self.snapshot(db, session_id)
+        return state if state["exceeded"] else None
+
+
+def session_guard_from_runtime(runtime_cfg: object) -> SessionToolGuard | None:
+    """从 ``config.runtime`` 造会话级守卫；**没配（或 <= 0 / bool / 非数字）时回 ``None``**。
+
+    归一化走本模块的 :func:`_positive_int` —— 与 ``daily_token_budget`` **同一口径**：
+    ``None`` / 非数字 / ``<= 0`` / ``bool`` 一律当"不限制"，不另定一套。
+    """
+    limit = _positive_int(getattr(runtime_cfg, "max_tool_calls_per_session", None))
+    return None if limit is None else SessionToolGuard(limit=limit)
+
+
+def session_tool_snapshot(
+    runtime_cfg: object, db: Database, *, session_id: str | None = None
+) -> dict[str, Any]:
+    """给 ``chat.status`` 用的会话级快照（与 ``global_budget`` 并列的读数口）。
+
+    - 未配置 → ``enabled=False``，各项 ``None``（**不假报 0** —— 0 会被读成"一次都没用过"）；
+    - 配了但没给 ``session_id`` → 只回上限，``used`` / ``exceeded`` 为 ``None``
+      （没有会话就无从计数，**不猜**）；
+    - 给了会话 → ``used`` / ``remaining`` / ``exceeded`` 都是真实值。
+    """
+    guard = session_guard_from_runtime(runtime_cfg)
+    if guard is None:
+        return {
+            "enabled": False,
+            "session_id": session_id,
+            "limit": None,
+            "used": None,
+            "remaining": None,
+            "exceeded": False,
+            "reason": None,
+        }
+    if not session_id:
+        return {
+            "enabled": True,
+            "session_id": None,
+            "limit": guard.limit,
+            "used": None,
+            "remaining": None,
+            "exceeded": None,
+            "reason": None,
+        }
+    return guard.snapshot(db, session_id)

@@ -205,6 +205,13 @@ def run_turn(
     # 超限**不新造事件名**：收口只体现在 `chat.done` 的 `stop_reason="budget"`。
     guard = daily_budget.from_runtime(ctx.config.runtime)
     budget_stop_used = False
+    # ---- 会话级工具调用上限（docs/20 §5.1，评审 R-07）：**每一次工具调用之前**都要判。
+    # 与每日封顶同一套"无工具收口"语义，只是理由不同（`session_tool_limit`），且**不回血**：
+    # 计数来自 `tool_traces`（跨轮累计、落库），所以重启进程后照样算得准。
+    # 没配上限时 `session_guard is None` → 不查库、不判断，行为与引入前逐字一致。
+    session_guard = daily_budget.session_guard_from_runtime(ctx.config.runtime)
+    session_stop_used = False
+    session_summary_sent = False
     try:
         # 先把"这个会话正在跑哪一轮"记下来：界面点「停止」时按会话找到它（整轮结束前拿不到 turn_id）
         ctx.running[session_id] = turn_id
@@ -221,6 +228,25 @@ def run_turn(
                     break
                 budget_stop_used = True
                 tools_for_round = None
+            # ---- 会话级上限用完：同样只再给**一次**无工具收口的机会（与上面那条一样），
+            # 之后不再调模型 —— 否则"封顶"每轮都还要再花一次钱。
+            if session_stop_used:
+                if session_summary_sent:
+                    break
+                session_summary_sent = True
+                tools_for_round = None
+                # 只说清"为什么没有工具"，不改系统提示词（黄金哈希不受影响）
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "本会话的工具调用次数已达上限"
+                            "（runtime.max_tool_calls_per_session）。本轮**不再给你工具**："
+                            "请用已有资料如实总结（现在能确认什么、还缺什么、下一步怎么做），"
+                            "并明确告诉用户新开一个会话可以继续。不要假装调用过工具。"
+                        ),
+                    }
+                )
             reply, deltas_sent, streamed_text = call_model(
                 ctx,
                 messages,
@@ -253,7 +279,30 @@ def run_turn(
                 )
                 break
 
-            for call in reply.tool_calls:
+            for index, call in enumerate(reply.tool_calls):
+                # ---- 会话级检查点（docs/20 §5.1）：**真正执行这一次调用之前**按会话累计判一次。
+                # 超限就**不执行**（一次都不再调），转入无工具收口 —— 已生成的正文不丢。
+                if (
+                    session_guard is not None
+                    and session_guard.exceeded(ctx.db, session_id) is not None
+                ):
+                    stop_reason = daily_budget.SESSION_STOP_REASON
+                    session_stop_used = True
+                    note = (
+                        "未执行：本会话的工具调用已达上限（runtime.max_tool_calls_per_session）。"
+                    )
+                    # 没执行的调用也要有一条**如实**的 tool 回复：assistant 那批 tool_calls
+                    # 每个 id 都必须有对应结果，否则回放与下一轮请求的报文是残缺的。
+                    messages.extend(
+                        {
+                            "role": "tool",
+                            "content": note,
+                            "tool_call_id": pending.id,
+                            "name": pending.name,
+                        }
+                        for pending in reply.tool_calls[index:]
+                    )
+                    break
                 # 每执行一次工具就从本轮预算账里扣 1（子任务工具的额外消耗由 handler 自己回写）。
                 budget.spend(1)
                 result_text, tool_refs, canonical, tool_ok = execute_tool(
@@ -319,7 +368,9 @@ def run_turn(
                     }
                 )
         else:
-            stop_reason = "tool_limit"
+            # 只有"没被别的理由收口"时才算撞上本轮工具上限（会话级超限/无新证据都已明确收口）
+            if stop_reason != daily_budget.SESSION_STOP_REASON:
+                stop_reason = "tool_limit"
     except LlmError as exc:
         stop_reason = "error"
         error_message = f"{exc.kind}: {exc}"
@@ -340,6 +391,13 @@ def run_turn(
         final_text = (
             "（今日用量已达上限，本轮不再继续调用模型。已产生的记录都在上面的会话里；"
             "可以调高 config.yaml 的 runtime.daily_token_budget，或等滚动 24 小时窗口过去后再继续。）"
+        )
+    # 会话级上限同理：一个字都没说出来时给一条可读说明，且**指明出路**（新开会话）。
+    if stop_reason == daily_budget.SESSION_STOP_REASON and not final_text.strip():
+        final_text = (
+            "（本会话的工具调用次数已达上限（runtime.max_tool_calls_per_session），"
+            "本轮不再继续调用工具。已产生的记录都在上面的会话里；"
+            "要接着查请新开一个会话，或调高 config.yaml 的这个键。）"
         )
 
     # ---- A1/A2：把模型回填的覆盖状态并进台账；记账标记从**可见正文**里剥掉。
