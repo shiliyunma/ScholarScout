@@ -104,6 +104,14 @@ def main(argv: list[str] | None = None) -> int:
     toolsets = tuple(t.strip() for t in str(args.toolsets).split(",") if t.strip()) or ("research",)
     db_target = Path(args.db) if args.db else None
 
+    # 日志落盘（P0-1）：打包后用户看不到 stderr，现场只能靠 run/logs/app.log。
+    # **渠道子进程例外**：它的 stderr 已被 supervisor 重定向到 run/channels/<platform>.log，
+    # 再挂一份 app.log 会把两条日志互相污染。
+    if not args.channel:
+        from scholarscout.logging_setup import setup_logging
+
+        setup_logging()
+
     if args.version:
         print(f"ScholarScout {__version__}")
         return 0

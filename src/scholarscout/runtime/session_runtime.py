@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from scholarscout import logging_setup
 from scholarscout.config import DEFAULT_MAX_PARALLEL_SESSIONS, Config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient
@@ -494,6 +495,9 @@ class SessionRuntime:
         before_start: Callable[[], None] | None,
     ) -> None:
         """工作线程里的一轮：**异常一律收敛**，只写本会话的事件（docs/20 §6.1）。"""
+        # 日志身份（P0-1）：挂一次上下文，这一轮里所有日志自带 session_id/turn_id ——
+        # 不改任何 logger 调用点，也不影响并发（contextvars 按线程各自持有）
+        reset_log_ids = logging_setup.bind_turn(unit.session_id, handle.turn_id)
         bound = loop.bind_emitter(emit, unit.session_id)
         result: TurnResult | None = None
         try:
@@ -512,6 +516,8 @@ class SessionRuntime:
             result = self._error_result(unit, handle, exc, bound)
         finally:
             self._finish(unit, handle, result)
+            # 复原放在 _finish 之后：收尾那几行日志也要带得上身份
+            reset_log_ids()
 
     def _error_result(
         self, unit: SessionUnit, handle: TurnHandle, exc: BaseException, emit: Emitter | None

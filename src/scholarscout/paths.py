@@ -89,6 +89,16 @@ def db_path(root: Path | None = None) -> Path:
     return run_dir(root) / "state.db"
 
 
+def log_dir(root: Path | None = None) -> Path:
+    """进程日志目录 ``run/logs/``（主进程/桌面进程写这里；渠道子进程另用 ``run/channels/``）。"""
+    return run_dir(root) / "logs"
+
+
+def app_log_path(root: Path | None = None) -> Path:
+    """主进程日志文件 ``run/logs/app.log``（轮转参数见 ``logging_setup``）。"""
+    return log_dir(root) / "app.log"
+
+
 def ensure_dirs(root: Path | None = None) -> None:
     """建出 data/ 的子目录与 run/。幂等。"""
     base = root or home()

@@ -23,6 +23,7 @@ from scholarscout.desktop import window_state
 from scholarscout.desktop.bridge import Bridge
 from scholarscout.desktop.icon import apply_window_icon, set_app_user_model_id
 from scholarscout.desktop.rpc_client import RpcClient, default_command
+from scholarscout.logging_setup import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,8 @@ def launch(
     open_settings: bool = False,
 ) -> int:
     """打开窗口并阻塞到用户关闭。返回进程退出码。"""
+    # 桌面入口也调一次（幂等）：双击 exe 时即使某个上层入口漏了，这里也保证日志落盘。
+    setup_logging()
     try:
         import webview
     except ImportError:
