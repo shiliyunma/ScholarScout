@@ -33,6 +33,7 @@ import json
 from typing import Any
 
 from scholarscout.learning import mastery
+from scholarscout.state import learner_profile as profile_state
 from scholarscout.state.db import Database
 from scholarscout.state.learning import parse_cards
 
@@ -73,13 +74,10 @@ def _tags_of(raw: object) -> list[str]:
 def _card_rows(db: Database, *, now: datetime.datetime | None = None) -> list[dict[str, Any]]:
     """每张卡一行：卡片组（笔记标题）+ 它的排期状态。"""
     moment = now or datetime.datetime.now().astimezone()
-    notes = db.query("SELECT id, title, content, tags_json FROM notes WHERE kind = 'card'")
+    notes = profile_state.card_group_notes(db)
     reviews = {
-        (str(row["note_id"]), int(row["card_index"])): dict(row)
-        for row in db.query(
-            "SELECT note_id, card_index, rating, reviews, streak, lapses, interval_days,"
-            " reviewed_at, due_at FROM card_reviews"
-        )
+        (str(row["note_id"]), int(row["card_index"])): row
+        for row in profile_state.review_schedule(db)
     }
     rows: list[dict[str, Any]] = []
     for note in notes:
@@ -186,11 +184,9 @@ def build_profile(db: Database, *, now: datetime.datetime | None = None) -> dict
     cards = _card_rows(db, now=moment)
     overview = _mastery_of(cards)
 
-    routes = [dict(row) for row in db.query("SELECT topic, weeks, created_at FROM learning_routes")]
-    maps = [dict(row) for row in db.query("SELECT topic, created_at FROM topic_maps")]
-    note_rows = [
-        dict(row) for row in db.query("SELECT kind, count(*) AS n FROM notes GROUP BY kind")
-    ]
+    routes = profile_state.route_facts(db)
+    maps = profile_state.map_facts(db)
+    note_counts = profile_state.note_counts_by_kind(db)
 
     # 主题维度只取产物的 topic —— 卡片没有 topic 字段，硬凑会编
     topics: dict[str, dict[str, Any]] = {}
@@ -242,17 +238,8 @@ def build_profile(db: Database, *, now: datetime.datetime | None = None) -> dict
         )
     )
 
-    activity = db.query_one(
-        "SELECT count(*) AS reviews, count(DISTINCT substr(reviewed_at, 1, 10)) AS days"
-        " FROM card_reviews WHERE reviewed_at >= ?",
-        (since,),
-    )
-    sources = [
-        dict(row)
-        for row in db.query(
-            "SELECT source_type, count(*) AS n FROM sources GROUP BY source_type ORDER BY n DESC LIMIT 4"
-        )
-    ]
+    activity = profile_state.review_activity(db, since)
+    sources = profile_state.source_type_counts(db)
 
     weak_topics = [item["group"] for item in card_groups if item["weak"] > 0][:3]
     covered = [str(item["topic"]) for item in topics.values()]
@@ -263,7 +250,7 @@ def build_profile(db: Database, *, now: datetime.datetime | None = None) -> dict
             "topics": len(topics),
             "routes": len(routes),
             "maps": len(maps),
-            "notes": {str(row["kind"]): int(row["n"]) for row in note_rows},
+            "notes": note_counts,
             "reviews_recent": int(activity["reviews"]) if activity else 0,
             "active_days_recent": int(activity["days"]) if activity else 0,
             "window_days": ACTIVITY_WINDOW_DAYS,
