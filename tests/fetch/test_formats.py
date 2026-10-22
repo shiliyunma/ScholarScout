@@ -22,6 +22,7 @@ from scholarscout.fetch.formats import (
     epub_text,
     guess_extension,
     is_archive,
+    legacy_office_reason,
     rtf_text,
 )
 
@@ -171,6 +172,43 @@ def test_mpeg_ts_magic_needs_two_sync_packets() -> None:
         guess_extension("", "https://example.org/a.ts", content=bytes([0x47]) * 188 + b"\x00" * 188)
         == "ts"
     )
+
+
+def test_doc_suffix_is_recognized_as_legacy_office() -> None:
+    """`.doc` 不许折成 docx、更不许落到 html/bin —— 它是 OLE 二进制，读不了要如实说。
+
+    落进 html 提取器是最糟的一条：二进制被洗成一段乱码正文，还标 `ok`（用户以为抓到了）。
+    """
+    assert guess_extension("application/msword", "https://example.org/report.doc") == "doc"
+    # URL 看不出后缀时也得认出 media type
+    assert guess_extension("application/msword", "https://example.org/download") == "doc"
+    assert guess_extension("application/x-msword", "https://example.org/download") == "doc"
+    assert guess_extension("application/octet-stream", "https://example.org/report.doc") == "doc"
+    assert guess_extension("", "https://example.org/report.doc") == "doc"
+    # 原因得说清该怎么办
+    assert "需先转换为 .docx/.xlsx/.pptx" in legacy_office_reason("doc")
+
+
+def test_xls_suffix_is_not_folded_into_xlsx() -> None:
+    """`.xls` 原来是"假支持"：被改写成 xlsx 去解 zip，报"不是有效的 .xlsx"（误导）。
+
+    真因是它是老二进制格式，跟 xlsx 是两种东西 —— 判定必须留在 `xls`，让调用方给转换提示。
+    """
+    assert guess_extension("application/vnd.ms-excel", "https://example.org/grade.xls") == "xls"
+    assert guess_extension("application/vnd.ms-excel", "https://example.org/download") == "xls"
+    assert guess_extension("application/octet-stream", "https://example.org/grade.xls") == "xls"
+    # 而真正的 OOXML 仍然认成 xlsx
+    assert guess_extension("", "https://example.org/grade.xlsx") == "xlsx"
+    assert "需先转换为" in legacy_office_reason("xls")
+
+
+def test_ppt_suffix_is_recognized_as_legacy_office() -> None:
+    """`.ppt` 靠 media type 里的 `presentation` 混进了 pptx 分支 —— 同样读不了。"""
+    assert guess_extension("application/vnd.ms-powerpoint", "https://example.org/deck.ppt") == "ppt"
+    assert guess_extension("application/vnd.ms-powerpoint", "https://example.org/download") == "ppt"
+    assert guess_extension("application/octet-stream", "https://example.org/deck.ppt") == "ppt"
+    assert guess_extension("", "https://example.org/deck.pptx") == "pptx"
+    assert "需先转换为" in legacy_office_reason("ppt")
 
 
 def test_is_archive_matches_only_archives() -> None:

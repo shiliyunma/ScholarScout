@@ -662,3 +662,46 @@ def test_ts_served_as_mpeg_video_is_skipped_as_media(
     assert data["ext"] == "media"
     assert data["extract_status"] == "skipped_media"
     assert "音视频不提取正文" in data["extract_detail"]
+
+
+# --------------------------------------------------------------- 老格式不许假装能读
+
+#: OLE 复合文档（.doc/.xls/.ppt）的文件头：D0 CF 11 E0，不是 zip 的 PK。
+OLE_HEADER = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
+
+
+@pytest.mark.parametrize(
+    ("url", "content_type", "ext"),
+    [
+        ("https://files.example.com/report.doc", "application/msword", "doc"),
+        ("https://files.example.com/grade.xls", "application/vnd.ms-excel", "xls"),
+        ("https://files.example.com/deck.ppt", "application/vnd.ms-powerpoint", "ppt"),
+    ],
+)
+def test_legacy_office_is_refused_with_an_actionable_reason(
+    ctx: AppContext,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    content_type: str,
+    ext: str,
+) -> None:
+    """`.doc/.xls/.ppt` → 明确"需先转换"，**不许**走进 zip+XML 或 HTML 提取器。
+
+    原来 `.xls` 被改写成 xlsx 去解 zip（报"不是有效的 .xlsx"），`.doc/.ppt` 无后缀时更糟：
+    二进制进 HTML 提取器，洗出一段乱码正文还标 `ok` —— 用户完全看不出到底发生了什么。
+    """
+    _redirect_home(monkeypatch, tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=OLE_HEADER, headers={"content-type": content_type})
+
+    tool_ctx = _tool_ctx(ctx, handler, llm=StubLlm(reply(SUMMARY_TEXT)))
+
+    data = source_fetch(tool_ctx, url=url)["data"]
+
+    assert data["ext"] == ext, "老格式不许被折成 docx/xlsx/pptx，也不许变成 html/bin"
+    assert data["extract_status"] == "unsupported_legacy_office"
+    assert data["chars"] == 0, "读不了就别硬塞一段乱码当正文"
+    assert "老格式（.doc/.xls/.ppt）需先转换为 .docx/.xlsx/.pptx" in data["extract_detail"]
+    assert (tmp_path / data["text_path"]).read_text(encoding="utf-8") == ""

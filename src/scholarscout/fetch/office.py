@@ -15,6 +15,8 @@ import re
 import zipfile
 from xml.etree import ElementTree as ET
 
+from scholarscout.fetch.formats import LEGACY_OFFICE_SUFFIXES, legacy_office_reason
+
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _S = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
@@ -116,9 +118,13 @@ def pptx_text(content: bytes) -> tuple[bool, str, str]:
 
 
 def office_text(extension: str, content: bytes) -> tuple[bool, str, str]:
-    """按扩展名分发。不认识的扩展名如实返回失败，不猜。"""
+    """按扩展名分发。不认识/老格式就如实返回失败 + 能照做的原因，不猜。"""
+    name = extension.lower().lstrip(".")
+    if name in LEGACY_OFFICE_SUFFIXES:
+        # 老格式是 OLE 复合二进制，zip+XML 这套读不了；别让它报"不是有效的 .xlsx"那种误导
+        return False, "", legacy_office_reason(name)
     handlers = {"docx": docx_text, "xlsx": xlsx_text, "pptx": pptx_text}
-    handler = handlers.get(extension.lower().lstrip("."))
+    handler = handlers.get(name)
     if handler is None:
         return False, "", f"不支持的 Office 扩展名：{extension}"
     return handler(content)

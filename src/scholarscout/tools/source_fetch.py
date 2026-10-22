@@ -28,9 +28,11 @@ from urllib.parse import urlparse
 
 from scholarscout import paths
 from scholarscout.fetch.formats import (
+    LEGACY_OFFICE_SUFFIXES,
     OFFICE_SUFFIXES,
     TEXT_SUFFIXES,
     guess_extension,
+    legacy_office_reason,
 )
 from scholarscout.fetch.html_text import extract_html
 from scholarscout.fetch.http import FetchError
@@ -354,6 +356,14 @@ def source_fetch(
         extract_status = "ok" if (text or _ok) else "extract_failed"
 
         engine = "local-archive"
+
+    elif extension in LEGACY_OFFICE_SUFFIXES:
+        # .doc/.xls/.ppt：OLE 复合二进制，标准库读不了 —— 不猜、不洗，如实说"需先转换"
+        text, title, lang = "", "", None
+
+        extract_status, engine = "unsupported_legacy_office", "none"
+
+        extract_detail = legacy_office_reason(extension)
 
     elif extension in OFFICE_SUFFIXES:
         # .docx/.xlsx/.pptx：标准库解 zip + XML 抽文字（见 fetch/office.py）

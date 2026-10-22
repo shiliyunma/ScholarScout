@@ -37,7 +37,15 @@ PROMPT_BY_KIND = {
     "degraded": "summarize-doc",
 }
 #: 这些抽取状态说明"拿不到正文"，降级成 scanned
-NO_TEXT_STATUS = {"no_text_layer", "mineru_failed", "empty", "blocked", "too_large"}
+NO_TEXT_STATUS = {
+    "no_text_layer",
+    "mineru_failed",
+    "empty",
+    "blocked",
+    "too_large",
+    # 老格式 .doc/.xls/.ppt：标准库读不了，需用户先转换（source.fetch 会带上原因）
+    "unsupported_legacy_office",
+}
 #: 正文少于这个字符数就改用摘要字段（多半是只抓到了导航栏）
 MIN_BODY_CHARS = 200
 

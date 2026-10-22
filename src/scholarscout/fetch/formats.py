@@ -46,7 +46,33 @@ MEDIA_SUFFIXES = {
 }
 
 #: Office 三件套：走 `fetch/office.py` 的标准库抽取器（zip + XML，不引依赖）。
-OFFICE_SUFFIXES = {"docx", "xlsx", "pptx", "xls"}
+#: **只收 OOXML**：`.doc/.xls/.ppt` 是 OLE 复合二进制（不是 zip），标准库读不了，
+#: 见下面的 `LEGACY_OFFICE_SUFFIXES`。
+OFFICE_SUFFIXES = {"docx", "xlsx", "pptx"}
+
+#: Office **老格式**：`.doc/.xls/.ppt` 是 OLE 复合文档，`office.py` 那套 zip+XML 完全读不了。
+#: 原来它们被当成"支持"：`.xls` 直接写在 `OFFICE_SUFFIXES` 里（还会被改写成 `xlsx` 去读，
+#: 于是报"不是有效的 .xlsx"），`.doc/.ppt` 靠 media type 的 `msword` 混进 Office 分支
+#: （URL 没有后缀时更糟：`.doc` 落进 HTML 提取器，二进制被洗成乱码正文还标 `ok`）。
+#: 现在显式认出来并给**能照做的原因**，不再假装能抽。
+LEGACY_OFFICE_SUFFIXES = frozenset({"doc", "xls", "ppt"})
+
+#: 老格式的 Content-Type 特征（有站点从 URL 完全看不出后缀）。用"特征子串"而非精确匹配：
+#: `application/msword`、`application/x-msword` 都要认出来。
+LEGACY_OFFICE_MEDIA_MARKERS = (
+    ("msword", "doc"),
+    ("vnd.ms-excel", "xls"),
+    ("vnd.ms-powerpoint", "ppt"),
+)
+
+#: 给用户的原因：要说清"该怎么办"，不是"不支持"三个字了事。
+LEGACY_OFFICE_HINT = "老格式（.doc/.xls/.ppt）需先转换为 .docx/.xlsx/.pptx"
+
+
+def legacy_office_reason(extension: str) -> str:
+    """老格式的明确原因（`source.fetch` 写进 `extract_detail`；`office.py` 也用它报错）。"""
+    return f"不支持 .{extension.lower().lstrip('.')}：{LEGACY_OFFICE_HINT}"
+
 
 #: 电子书：走本模块的 `epub_text`（zip + XHTML）。
 EBOOK_SUFFIXES = {"epub"}
@@ -186,13 +212,20 @@ def guess_extension(
         return resolve_ambiguous_ts(lowered, content)
     if suffix in MEDIA_SUFFIXES:
         return "media"
-    if suffix in OFFICE_SUFFIXES or "officedocument" in lowered or "msword" in lowered:
+    # 老格式（.doc/.xls/.ppt）：判定为它自己，让调用方走"明确不支持"的分支 ——
+    # 别折成 docx/xlsx/pptx 去读（读不了），也别落到最后的 html/bin（二进制会被当正文）。
+    if suffix in LEGACY_OFFICE_SUFFIXES:
+        return suffix
+    for marker, legacy in LEGACY_OFFICE_MEDIA_MARKERS:
+        if marker in lowered:
+            return legacy
+    if suffix in OFFICE_SUFFIXES or "officedocument" in lowered:
         return (
             "docx"
             if (suffix == "docx" or "word" in lowered)
             else (
                 "xlsx"
-                if (suffix in {"xlsx", "xls"} or "excel" in lowered or "spreadsheet" in lowered)
+                if (suffix == "xlsx" or "excel" in lowered or "spreadsheet" in lowered)
                 else ("pptx" if (suffix == "pptx" or "presentation" in lowered) else suffix)
             )
         )
@@ -320,6 +353,9 @@ __all__ = [
     "AMBIGUOUS_SUFFIXES",
     "ARCHIVE_SUFFIXES",
     "EBOOK_SUFFIXES",
+    "LEGACY_OFFICE_HINT",
+    "LEGACY_OFFICE_MEDIA_MARKERS",
+    "LEGACY_OFFICE_SUFFIXES",
     "MAX_ARCHIVE_ENTRIES",
     "MEDIA_SUFFIXES",
     "OFFICE_SUFFIXES",
@@ -331,6 +367,7 @@ __all__ = [
     "epub_text",
     "guess_extension",
     "is_archive",
+    "legacy_office_reason",
     "resolve_ambiguous_ts",
     "rtf_text",
 ]
