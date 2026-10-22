@@ -206,6 +206,10 @@ features:
   # 按需下载（archive.download，docs/01 §3.3）：**默认关**。关着时界面「下载」按钮
   # 不动网，只回 {ok:false, reason}；开启后才真下载到 data/raw/（受 fetch.max_bytes 硬上限）。
   enable_download: false
+  # 本地知识库检索（kb.search，docs/01 §5.8）：**默认关 —— 开了才有 kb.search**。
+  # 关着时这个工具不注册（模型清单里没有它）；开启后第一次检索才建索引
+  # （data/cache/kb-fts.sqlite3：正文只进这份可删可重建的缓存，资料库 run/state.db 里没有）。
+  enable_kb: false
 
 # ===== 生成策略 =====
 generation:

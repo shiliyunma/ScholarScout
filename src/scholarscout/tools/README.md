@@ -21,8 +21,10 @@
 `tools/*` **不许 import `rpc/*`** —— 工具不知道自己被谁调。
 
 **工具清单（规范名）**：`research.search`、`source.fetch`、`source.grade`、`topic.build_map`、
-`route.plan`、`route.revise`、`note.save`、`research.delegate`。
-`__init__.py` 的 `register_tools()` 是注册总入口（显式、幂等），由 `app.build_context()` 调用。
+`route.plan`、`route.revise`、`note.save`、`research.delegate`、`py.exec`、`skill.list`、
+`skill.load`（这 11 个始终注册）；`kb.search` **只受 `features.enable_kb` 控制、默认关**
+（开着才注册，注册集变成 12 个）。`__init__.py` 的 `register_tools(enable_kb=...)` 是注册总入口
+（显式、幂等，默认值与产品默认一致＝关），由 `app.build_context()` 调用。
 
 **注册纪律**：每个工具模块导出 `SPEC`（`ToolSpec`）与 `register()`，**不在 import 时自动注册**
 （测试清空注册表后能再注册一次，行为可预期）。`source_context.py` 是**共用件不是工具**（无 `SPEC`）。

@@ -20,6 +20,8 @@
   说明"只增不改"的纪律与命名规则 —— 改库结构前先读那一份。
 - **正文（全文）不入库**：库里只放摘要与路径（`raw_path` / `text_path`），检索（FTS5）只覆盖
   `summaries` 与 `messages` 两张表。完整口径见 `docs/02-数据模型.md` §4。
+- **知识库索引在另一个文件里**：`kb_index.py` 写 `data/cache/kb-fts.sqlite3`（`kb.search` 的底座），
+  **正文只在这份可删可重建的缓存里** —— `run/state.db` 的 `documents` 只存 `text_path`，一个正文字节都没有。
 
 ## 2. 先看哪个文件
 
@@ -34,7 +36,8 @@
 6. **`learning.py`** —— 学习产物门面；实现按域拆进 `learning_topics.py` / `learning_routes.py` /
    `learning_cards.py`（外部一律从 `learning` 导入，入口名不动）。
 7. 其余：`traces.py`（轨迹/用量/来源状态）、`archive.py`（资料库只读）、`pairing.py`（飞书配对
-   与白名单）、`export_session.py` / `export_html.py`（导出）、`initdb.py`（建库入口）。
+   与白名单）、`kb_index.py`（知识库检索索引：库表 + `data/text/` → FTS5 缓存）、
+   `export_session.py` / `export_html.py`（导出）、`initdb.py`（建库入口）。
 
 ## 3. 哪些是 API（外部可依赖的契约）
 
