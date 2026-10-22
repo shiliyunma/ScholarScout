@@ -19,6 +19,7 @@ Job Object + audit hook）如实实现出来。
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +117,35 @@ def _timeout(value: float | None) -> float:
     return max(1.0, min(seconds, MAX_TIMEOUT_S))
 
 
+def _approval_event(ctx: ToolContext, *, code: str, data: dict[str, Any], reason: str) -> None:
+    """把「需要用户点头」推给界面（事件名 ``chat.needs_approval``，已进 ``NOTIFICATION_METHODS``）。
+
+    为什么单开一个事件、而不是让前端从 ``chat.tool_result`` 里反解：
+    卡片要**完整代码**、``pending`` 清单与四个选项，而工具结果事件只带 ``ok`` / ``digest`` ——
+    让前端去猜等于把契约藏在摘要里。载荷与 `chat.needs_choice` 同构（``turn_id`` + 会话由
+    ``bind_emitter`` 注入），前端按它渲染卡片、去重键是 ``turn_id|code``。
+
+    事件失败**不能连累工具回包**（界面没接上时，模型仍要如实地收到 ``needs_approval``）。
+    """
+    emit = ctx.emit
+    if emit is None:
+        return
+    with contextlib.suppress(Exception):
+        emit(
+            "chat.needs_approval",
+            {
+                "turn_id": ctx.turn_id,
+                "session_id": ctx.session_id,
+                "code": code,
+                "reason": reason,
+                "workdir": data.get("workdir", ""),
+                "pending": data.get("pending", []),
+                "risks": data.get("risks", []),
+                "options": data.get("options", []),
+            },
+        )
+
+
 def py_exec(
     ctx: ToolContext,
     code: str,
@@ -137,17 +167,15 @@ def py_exec(
     risks = [risk.as_dict() for risk in decision.risks]
 
     if decision.kind == "needs_approval":
-        return fail(
-            "needs_approval",
-            "这次执行需要用户确认：" + decision.reason,
-            data={
-                "kind": "needs_approval",
-                "risks": risks,
-                "pending": decision.pending,
-                "options": approval_options(),
-                "workdir": paths.rel_to_home(target),
-            },
-        )
+        data = {
+            "kind": "needs_approval",
+            "risks": risks,
+            "pending": decision.pending,
+            "options": approval_options(),
+            "workdir": paths.rel_to_home(target),
+        }
+        _approval_event(ctx, code=text, data=data, reason=decision.reason)
+        return fail("needs_approval", "这次执行需要用户确认：" + decision.reason, data=data)
     if decision.kind == "rejected":
         return fail(
             "py_exec_rejected",

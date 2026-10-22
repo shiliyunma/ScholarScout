@@ -23,6 +23,9 @@ EXISTING_EVENTS = ("chat.delta", "chat.tool_call", "chat.tool_result", "chat.don
 #: 抽背「不会」的流式增量：**单段增量**（与 chat.delta 的累计正文不同），前端追加显示
 PRACTICE_EVENTS = ("practice.delta",)
 
+#: py.exec 审批卡（docs/01 §4 / §3.12）：`sandbox.approve` 就是这张卡的回填入口
+APPROVAL_EVENTS = ("chat.needs_approval",)
+
 
 def _collect() -> tuple[list[dict[str, Any]], Any]:
     written: list[dict[str, Any]] = []
@@ -71,3 +74,25 @@ def test_emitter_writes_subtask_events_verbatim() -> None:
     assert written[1]["params"]["stop_reason"] == "completed"
     assert written[1]["params"]["refs"] == {}
     assert written[0]["jsonrpc"] == "2.0"
+
+
+def test_needs_approval_is_registered_as_a_notification() -> None:
+    """漏登记 → ``make_emitter`` 会写成 ``chat.chat.needs_approval``，界面永远收不到（静默降级）。"""
+    for event in APPROVAL_EVENTS:
+        assert event in NOTIFICATION_METHODS, f"{event} 没登记进 NOTIFICATION_METHODS"
+
+
+def test_emitter_writes_needs_approval_verbatim() -> None:
+    """py.exec 审批卡的最终事件名**就是** ``chat.needs_approval``，不是 ``chat.chat.needs_approval``。"""
+    written, emit = _collect()
+    emit(
+        "chat.needs_approval",
+        {"session_id": "ses_1", "turn_id": "trn_1", "code": "print(1)", "pending": ["exec:@cwd"]},
+    )
+
+    assert written[0]["method"] == "chat.needs_approval"
+    assert not written[0]["method"].startswith("chat.chat.")
+    # 载荷原样透传：界面靠 code / pending 画卡片、算去重键 turn_id|code
+    assert written[0]["params"]["code"] == "print(1)"
+    assert written[0]["params"]["pending"] == ["exec:@cwd"]
+    assert written[0]["params"]["session_id"] == "ses_1"

@@ -14,6 +14,7 @@ from scholarscout.rpc import (  # noqa: F401
     feishu,
     learning,
     research,
+    sandbox,
     session,
     settings,
 )
