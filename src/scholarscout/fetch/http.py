@@ -71,6 +71,19 @@ _RETRYABLE_STATUS = (429, 500, 502, 503, 504)
 _ERROR_BODY_CHARS = 500
 
 
+def _content_length(headers: httpx.Headers) -> int | None:
+    """``Content-Length`` → 字节数；缺失 / 不是数字 / 负数一律 ``None``（= 大小未知，不猜）。
+
+    ``None`` 与 ``0`` 必须分清：chunked 回包**没有**这个头（缺失 → 只能边读边数），
+    而显式的 ``Content-Length: 0`` 是"正文确实是空的"。把缺失当 0 会让超限预判整条失效。
+    """
+    try:
+        size = int(headers.get("content-length", ""))
+    except ValueError:
+        return None
+    return size if size >= 0 else None
+
+
 def _body_snippet(response: httpx.Response) -> str:
     """取回包正文的截断片段（读不到就回空串 —— 取证失败不能把原错误盖掉）。
 
@@ -551,6 +564,8 @@ class HttpClient:
                 if response.status_code in _RETRYABLE_STATUS:
                     last_error = self._status_error(response, url)
                 else:
+                    # 这里若抛 `too_large`（超限是**永久**错误），异常从 `else` 直接穿出循环 ——
+                    # `try` 的 `except` 接不住 `else` 里抛的异常，所以它天然不进重试。
                     return self._ok_or_raise(response, url, started, peek_media=peek_media)
             if attempt < total_attempts - 1:
                 # 退避同样被夹到剩余预算内：不让 sleep 把整次抓取拖过 deadline
@@ -575,7 +590,7 @@ class HttpClient:
     ) -> FetchResult:
         if response.status_code >= 400:
             raise self._status_error(response, url)
-        content = self._read_body(response, peek_media=peek_media)
+        content = self._read_body(response, url=url, peek_media=peek_media)
         headers = {k.lower(): v for k, v in response.headers.items()}
         media_type = response.headers.get("content-type", "")
         if content is None:
@@ -591,13 +606,8 @@ class HttpClient:
                 elapsed_ms=int((self._clock() - started) * 1000),
                 body_skipped=True,
             )
-        if len(content) > self.max_bytes:
-            raise FetchError(
-                "too_large",
-                f"响应超过上限 {self.max_bytes} 字节：{len(content)}",
-                url=url,
-                status=response.status_code,
-            )
+        if len(content) > self.max_bytes:  # 兜底：`_read_body` 已按字节边读边断，正常走不到
+            raise self._too_large(url, response.status_code, len(content))
         return FetchResult(
             url=str(response.url),
             status=response.status_code,
@@ -608,35 +618,62 @@ class HttpClient:
             elapsed_ms=int((self._clock() - started) * 1000),
         )
 
-    def _read_body(self, response: httpx.Response, *, peek_media: bool) -> bytes | None:
+    def _too_large(self, url: str, status: int | None, size: int) -> FetchError:
+        """体积超限错误。文案与改前一致（``响应超过上限 N 字节：M``），kind 仍是 ``too_large``。
+
+        ``too_large`` 是**永久**错误：同一个地址再试一次只会再超一次（真机上是白等 3 轮退避），
+        调用方（`_request_once`）不许把它放进重试循环。
+        """
+        return FetchError(
+            "too_large",
+            f"响应超过上限 {self.max_bytes} 字节：{size}",
+            url=url,
+            status=status,
+        )
+
+    def _read_body(self, response: httpx.Response, *, url: str, peek_media: bool) -> bytes | None:
         """流式读回包正文；``None`` = 判出是音视频，**body 一个字节都没留**。
 
         判定顺序（全部发生在读完之前）：
 
-        1. ``Content-Type`` 是 ``video/*`` / ``audio/*`` → 不读 body，直接关流；
-        2. 头里说不清（``application/octet-stream`` / 缺失）→ 只读前 ``MEDIA_SNIFF_BYTES``
+        1. ``Content-Type`` 是 ``video/*`` / ``audio/*`` → 不读 body，直接关流
+           （音视频不看大小：反正一个字节都不下载，报"太大"反而是误导）；
+        2. ``Content-Length`` 已经写明超过 ``max_bytes`` → **不读 body** 就拒（`too_large`）；
+        3. 头里说不清（``application/octet-stream`` / 缺失）→ 只读前 ``MEDIA_SNIFF_BYTES``
            字节看魔数（`fetch/media.py`），命中就立即关流；
-        3. 判不出来（文本 / PDF / Office / 其它二进制）→ 照旧读全，**行为与改前一致**。
+        4. 边读边累加，**一超 ``max_bytes`` 就 `close()` 并抛 `too_large`** —— 已读的字节
+           不拼进返回值（半份正文比没有更糟：下游会当完整原件落盘、还会算出假哈希）。
 
-        为什么必须在读之前判：以前是拿到整份字节后才发现是 media，一个 15MB 的 mp4
-        已经全下完了 —— 用户看到的是"音视频不提取正文"，账单上是整包流量。
+        为什么必须在读之前判：以前是拿到整份字节后才发现是 media / 才发现超限，一个 15MB 的
+        mp4 已经全下完了 —— 用户看到的是"音视频不提取正文"，账单上是整包流量。
         """
         if peek_media and is_media_type(response.headers.get("content-type", "")):
             response.close()  # ← 判在 body 之前：整份 mp4 在这一行就结束
             return None
+        declared = _content_length(response.headers)
+        if declared is not None and declared > self.max_bytes:
+            response.close()  # ← 头里已经写明超限：一个字节都不读
+            raise self._too_large(url, response.status_code, declared)
         stream = response.iter_bytes()
-        head = b""
-        if peek_media:
-            while len(head) < MEDIA_SNIFF_BYTES:
-                chunk = next(stream, b"")
-                if not chunk:
-                    break
-                head += chunk
-            if looks_like_media(head):
-                response.close()  # ← 魔数判出音视频，立即关流，剩下的不再读
-                return None
-        parts = [head] if head else []
-        parts.extend(stream)
+        # 探针窗口不得超过"可接受的大小"：max_bytes 配得比 8KB 还小时，多看一个字节都是白读。
+        sniff_window = min(MEDIA_SNIFF_BYTES, self.max_bytes)
+        sniffing = peek_media
+        parts: list[bytes] = []
+        total = 0
+        for chunk in stream:
+            total += len(chunk)
+            parts.append(chunk)
+            if sniffing:
+                # 先判音视频再判大小：探针窗口内认出来的音视频算"跳过"，不算"超限"
+                # （两条路的 body 都是 0 字节，但只有前者是正常结果）。
+                if looks_like_media(b"".join(parts)):
+                    response.close()  # ← 魔数判出音视频，立即关流，剩下的不再读
+                    return None
+                if total >= sniff_window:
+                    sniffing = False
+            if total > self.max_bytes:
+                response.close()  # ← 超限即断：剩下的不再读，已读的也不回给调用方
+                raise self._too_large(url, response.status_code, total)
         return b"".join(parts)
 
     @staticmethod
