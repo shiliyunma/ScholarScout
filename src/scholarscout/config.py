@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from scholarscout import paths
-from scholarscout.fetch.settings import FetchSettings
+from scholarscout.fetch.settings import FetchSettings, MineruSettings
 from scholarscout.providers.settings import SearchSettings
 from scholarscout.providers.thinking import normalize_level
 from scholarscout.summary.settings import SummarySettings
@@ -343,6 +343,9 @@ class Config:
         default_factory=lambda: SummarySettings.from_raw(None, home=paths.home())
     )
     fetch_cfg: FetchSettings = field(default_factory=FetchSettings)
+    #: MinerU 两条接口的体积/页数上限（``mineru:`` 段）。以前四个键**没人读**，见
+    #: `MineruSettings` 的说明。
+    mineru: MineruSettings = field(default_factory=MineruSettings)
     search_cfg: SearchSettings = field(default_factory=SearchSettings)
     ui: UiSettings = field(default_factory=UiSettings)
     library: LibraryProfile = field(default_factory=LibraryProfile)
@@ -498,6 +501,8 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
         raw=raw,
         summary_cfg=SummarySettings.from_raw(raw.get("summary"), home=paths.home()),
         fetch_cfg=fetch_cfg,
+        # mineru: 段的四个上限键以前没人读（mineru.py 只在注释里提 10MB/20 页、200MB/200 页）
+        mineru=MineruSettings.from_raw(raw.get("mineru")),
         search_cfg=search_cfg,
         ui=ui_cfg,
         library=LibraryProfile.from_raw(raw.get("library")),

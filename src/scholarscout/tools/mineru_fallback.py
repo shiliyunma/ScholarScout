@@ -42,7 +42,12 @@ def _mineru_fallback(
 
     if content:
         direct = parse_pdf_bytes(
-            http, content, filename=filename, token=token, timeout_s=poll_timeout_s
+            http,
+            content,
+            filename=filename,
+            token=token,
+            timeout_s=poll_timeout_s,
+            limits=ctx.config.mineru,
         )
         if direct.ok:
             return direct.text, "ok", "mineru", f"{direct.engine} 解析（本地直传）"

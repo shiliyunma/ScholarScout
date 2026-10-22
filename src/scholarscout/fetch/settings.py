@@ -99,3 +99,75 @@ class FetchSettings:
 
     def cache_dir(self, home: Path) -> Path:
         return home / "data" / "cache"
+
+
+#: MinerU 两条接口的官方限制（``config.example.yaml`` 的 ``mineru:`` 段，以前**没人读**）：
+#: 轻量 Agent 接口 10MB / 20 页，精准接口 200MB / 200 页。写在配置里是为了让"哪天官方调了限制"
+#: 只改一处；写死在代码里就只能等用户撞到服务端报错才知道。
+DEFAULT_MINERU_AGENT_MAX_BYTES = 10_000_000
+DEFAULT_MINERU_AGENT_MAX_PAGES = 20
+DEFAULT_MINERU_PRECISE_MAX_BYTES = 200_000_000
+DEFAULT_MINERU_PRECISE_MAX_PAGES = 200
+
+
+def _positive_int(key: str, value: object, default: int) -> int:
+    """读一个**正整数**配置。写错了直接报错 —— 静默回默认等于"用户以为改了、其实没改"。
+
+    为什么连 ``0`` 也不收：``max_pages: 0`` 会让每一份 PDF 都"超限"，看着像功能坏了；
+    真要关掉 MinerU 有 ``features.enable_mineru``，不该用限制值来表达。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} 必须是正整数（当前 {value!r}，类型 {type(value).__name__}）")
+    if value <= 0:
+        raise ValueError(f"{key} 必须大于 0（当前 {value}）")
+    return value
+
+
+@dataclass(frozen=True)
+class MineruSettings:
+    """MinerU 的体积/页数上限（与 `config.example.yaml` 的 ``mineru:`` 段一一对应）。
+
+    **四个键原来都是死的**：YAML 里写了，`load_config` 不读，`mineru.py` 里只在注释里
+    提过 10MB/20 页、200MB/200 页 —— 于是超限只能等 MinerU 服务端报错，
+    用户看到的是一句含糊的 ``failed``。现在读进来，并在提交前**提前**判掉。
+    """
+
+    agent_max_bytes: int = DEFAULT_MINERU_AGENT_MAX_BYTES
+    agent_max_pages: int = DEFAULT_MINERU_AGENT_MAX_PAGES
+    precise_max_bytes: int = DEFAULT_MINERU_PRECISE_MAX_BYTES
+    precise_max_pages: int = DEFAULT_MINERU_PRECISE_MAX_PAGES
+
+    @classmethod
+    def from_raw(cls, section: object) -> MineruSettings:
+        data = section if isinstance(section, dict) else {}
+        return cls(
+            agent_max_bytes=_positive_int(
+                "mineru.agent_max_bytes",
+                data.get("agent_max_bytes"),
+                DEFAULT_MINERU_AGENT_MAX_BYTES,
+            ),
+            agent_max_pages=_positive_int(
+                "mineru.agent_max_pages",
+                data.get("agent_max_pages"),
+                DEFAULT_MINERU_AGENT_MAX_PAGES,
+            ),
+            precise_max_bytes=_positive_int(
+                "mineru.precise_max_bytes",
+                data.get("precise_max_bytes"),
+                DEFAULT_MINERU_PRECISE_MAX_BYTES,
+            ),
+            precise_max_pages=_positive_int(
+                "mineru.precise_max_pages",
+                data.get("precise_max_pages"),
+                DEFAULT_MINERU_PRECISE_MAX_PAGES,
+            ),
+        )
+
+    def max_bytes_for(self, engine: str) -> int:
+        """这条接口的字节上限（``engine`` 只有 ``agent`` / ``precise`` 两种）。"""
+        return self.precise_max_bytes if engine == "precise" else self.agent_max_bytes
+
+    def max_pages_for(self, engine: str) -> int:
+        return self.precise_max_pages if engine == "precise" else self.agent_max_pages

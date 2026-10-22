@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from scholarscout.fetch.mineru import MineruText
+from scholarscout.fetch.settings import MineruSettings
 
 
 def _ctx(http: object, poll_timeout_s: float = 90.0) -> object:
@@ -24,6 +25,10 @@ def _ctx(http: object, poll_timeout_s: float = 90.0) -> object:
 
     class Config:
         fetch_cfg = FetchCfg()
+        # ``_mineru_fallback`` 会把 ``mineru:`` 段的四个上限键原样传给 ``parse_pdf_bytes``
+        # （agent/precise 各自的字节与页数）。替身也要有它，否则「真实 Config 有、替身没有」
+        # 这种差异会把真机错误挡住 —— 用真的 ``MineruSettings()``（默认即官方 10MB/20 页、200MB/200 页）。
+        mineru = MineruSettings()
 
     class Ctx:
         config = Config()

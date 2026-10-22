@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from scholarscout.fetch.http import FetchError, HttpClient
+from scholarscout.fetch.settings import MineruSettings
 
 AGENT_SUBMIT_URL = "https://mineru.net/api/v1/agent/parse/url"
 AGENT_FILE_SUBMIT_URL = "https://mineru.net/api/v1/agent/parse/file"
@@ -69,6 +70,44 @@ def _json_or_none(response: Any) -> dict[str, Any] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _pdf_page_count(content: bytes) -> int | None:
+    """数 PDF 页数（pymupdf，项目已有依赖）。**数不出来回 ``None``**。
+
+    为什么不数出来就当 0 页：这条路进来的字节不一定是合法 PDF（http 层可能给了个
+    错误页），数不出页数就按页数拒收，等于把"看不出来"当成"超限"。
+    """
+    try:
+        import pymupdf
+    except Exception:
+        return None
+    try:
+        document = pymupdf.open(stream=content, filetype="pdf")
+    except Exception:
+        return None
+    try:
+        return int(document.page_count)
+    finally:
+        document.close()
+
+
+def _refuse_over_limit(
+    content: bytes, *, max_bytes: int, max_pages: int, bytes_key: str, pages_key: str
+) -> None:
+    """直传前在**本地**判一次超限，超了就抛 ``FetchError("too_large")``，一个请求都不发。
+
+    为什么要本地判：这两个上限以前只写在注释里（YAML 里那四个键没人读），超限只能等
+    MinerU 服务端回一句含糊的 failed，用户看不出是"太大了"还是"服务抽风"。本地判掉既省一次
+    上传，也能把**是哪一条键超了**直接说清楚。
+    """
+    if len(content) > max_bytes:
+        raise FetchError(
+            "too_large", f"{bytes_key} 上限 {max_bytes} 字节，这份 {len(content)} 字节"
+        )
+    pages = _pdf_page_count(content)
+    if pages is not None and pages > max_pages:
+        raise FetchError("too_large", f"{pages_key} 上限 {max_pages} 页，这份 {pages} 页")
 
 
 def _submit(
@@ -220,12 +259,23 @@ def _agent_upload_submit(
     is_ocr: bool,
     language: str,
     min_interval_s: float,
+    limits: MineruSettings | None = None,
 ) -> str:
     """Agent 轻量接口的"签名上传"：申请 task_id + 预签名 URL → PUT 字节。返回 task_id。
 
     **免 Token、免公网 URL** —— 这是我们手里已经有本地字节时最该走的一条路
-    （官方限制：≤10MB、≤20 页；扫描件必须带 ``is_ocr=true``，默认是 false）。
+    （官方限制：≤10MB、≤20 页，现在由 ``mineru.agent_max_bytes`` / ``mineru.agent_max_pages``
+    决定，未配置就是这两个官方值；扫描件必须带 ``is_ocr=true``，默认是 false）。
     """
+    caps = limits if limits is not None else MineruSettings()
+    # 读配置处（1/2）：轻量接口的字节/页数上限 —— 超了在这里抛 too_large，一个请求都不发。
+    _refuse_over_limit(
+        content,
+        max_bytes=caps.agent_max_bytes,
+        max_pages=caps.agent_max_pages,
+        bytes_key="mineru.agent_max_bytes",
+        pages_key="mineru.agent_max_pages",
+    )
     response = http.post_json(
         AGENT_FILE_SUBMIT_URL,
         {"file_name": filename, "language": language, "is_ocr": bool(is_ocr)},
@@ -247,9 +297,28 @@ def _agent_upload_submit(
 
 
 def _precise_upload_submit(
-    http: HttpClient, *, content: bytes, filename: str, token: str, min_interval_s: float
+    http: HttpClient,
+    *,
+    content: bytes,
+    filename: str,
+    token: str,
+    min_interval_s: float,
+    limits: MineruSettings | None = None,
 ) -> str:
-    """精准接口的批量上传：申请 batch_id + 预签名 URL → PUT 字节。返回 batch_id。"""
+    """精准接口的批量上传：申请 batch_id + 预签名 URL → PUT 字节。返回 batch_id。
+
+    上限（官方 200MB / 200 页）现在由 ``mineru.precise_max_bytes`` / ``mineru.precise_max_pages``
+    决定，未配置就是这两个官方值。
+    """
+    caps = limits if limits is not None else MineruSettings()
+    # 读配置处（2/2）：精准接口的字节/页数上限（以前只有注释里的 200MB/200 页）。
+    _refuse_over_limit(
+        content,
+        max_bytes=caps.precise_max_bytes,
+        max_pages=caps.precise_max_pages,
+        bytes_key="mineru.precise_max_bytes",
+        pages_key="mineru.precise_max_pages",
+    )
     response = http.post_json(
         PRECISE_FILE_URLS_URL,
         {"files": [{"name": filename, "data_id": "scholarscout"}], "model_version": "vlm"},
@@ -315,6 +384,7 @@ def parse_pdf_bytes(
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     min_interval_s: float = 1.0,
+    limits: MineruSettings | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> MineruText:
     """把**本地字节**交给 MinerU（走预签名上传），返回 Markdown 正文。
@@ -323,12 +393,16 @@ def parse_pdf_bytes(
     "MinerU 得能自己下载到那个 PDF"（内网地址、需要登录、CDN 抖动都会失败）。
     而我们**手里本来就有字节**（`source.fetch` 已经下载过一次），直接传上去最稳。
 
-    Token 缺失时走 Agent 轻量接口（免登录，≤10MB/20 页）；有 Token 走精准接口（≤200MB/200 页）。
+    Token 缺失时走 Agent 轻量接口（免登录，≤10MB/20 页）；有 Token 走精准接口（≤200MB/200 页）
+    —— 这两组上限**不再写死在这里**：``mineru.agent_max_bytes`` / ``agent_max_pages`` /
+    ``precise_max_bytes`` / ``precise_max_pages``。不传 ``limits`` 就是官方的 10MB/20 页与
+    200MB/200 页（与改造前行为一致）；超限在上传前本地判掉，回 failed + 具体是哪条键。
     精准接口失败（例如 401）会自动退回 Agent —— 与 URL 那条路同一个策略。
     """
     if not content:
         return MineruText("", "failed", "agent", "文件内容为空")
     engine = "precise" if token else "agent"
+    caps = limits if limits is not None else MineruSettings()
     try:
         if token:
             try:
@@ -338,6 +412,7 @@ def parse_pdf_bytes(
                     filename=filename,
                     token=token,
                     min_interval_s=min_interval_s,
+                    limits=caps,
                 )
                 data = _poll_batch(
                     http,
@@ -347,7 +422,11 @@ def parse_pdf_bytes(
                     timeout_s=timeout_s,
                     sleep=sleep,
                 )
-            except FetchError:
+            except FetchError as exc:
+                # 本地判掉的超限**不许**靠"退回轻量接口再塞一遍"糊过去：那等于绕开用户配的上限，
+                # 而轻量接口的上限只会更小。其它失败（401 之类）照旧退回。
+                if exc.kind == "too_large":
+                    raise
                 engine = "agent"
                 task_id = _agent_upload_submit(
                     http,
@@ -356,6 +435,7 @@ def parse_pdf_bytes(
                     is_ocr=is_ocr,
                     language=language,
                     min_interval_s=min_interval_s,
+                    limits=caps,
                 )
                 data = _poll(
                     http,
@@ -374,6 +454,7 @@ def parse_pdf_bytes(
                 is_ocr=is_ocr,
                 language=language,
                 min_interval_s=min_interval_s,
+                limits=caps,
             )
             data = _poll(
                 http,
