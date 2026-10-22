@@ -11,6 +11,11 @@ dependencies = [
     # 飞书入站：官方 SDK 的 websocket 长连接（本机主动外连，不需要公网地址/回调/隧道）。
     # 审批：用户 2026-10-14 拍板"飞书改走 A"；登记在 deps-allowlist.txt 与 docs/03 §6。
     "lark-oapi>=1.7,<2",
+    # docx/xlsx 目标编辑：给 `py.exec` 的"读并改用户文档"能力兜底（改完存回原格式，
+    # 而不是转成纯文本）。纯 stdlib 只能读 OOXML 的 zip+XML，写回会破坏样式与公式。
+    # 审批：**用户 2026-10-22 批准**；登记在 deps-allowlist.txt 与 docs/03 §6。
+    "python-docx>=1.1,<2",
+    "openpyxl>=3.1,<4",
 ]
 
 [project.optional-dependencies]

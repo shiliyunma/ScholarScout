@@ -12,6 +12,11 @@ pymupdf
 # 取舍见 docs/17 §1.3 / §3.8（依赖最小化 vs 接入便捷）；只写不回读的凭据同样只进 .env。
 lark-oapi
 
+# docx / xlsx 目标编辑（`py.exec` 的"读并改用户文档"能力）：
+# **用户 2026-10-22 批准** —— 改完要存回原格式、保住样式，纯 stdlib 写 OOXML 会损坏文件。
+python-docx
+openpyxl
+
 # 构建期依赖（不打进 wheel，也不参与运行；只给 scripts/build_bundle.py 出交付包用）
 # 审批：大浩 2026-10-07 明确要求"搞一个 windows 的安装包，点开即用"
 pyinstaller
