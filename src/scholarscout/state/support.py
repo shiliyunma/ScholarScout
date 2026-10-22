@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from typing import Any
 
 from scholarscout.state.db import Database
 
@@ -57,3 +58,27 @@ def upsert_check(
             created_at,
         ),
     )
+
+
+def list_checks(db: Database, session_id: str) -> list[dict[str, Any]]:
+    """本会话的全部判定（看板证据表的原料），``source_ids`` 已解析成列表。
+
+    坏 JSON 退化为空列表而不是抛：一条判定的 ids 写坏了不该让整张看板空着 ——
+    那一行会显示"没有可解析的来源"，比整页 500 更接近事实。
+    """
+    rows = db.query(
+        "SELECT artifact_kind, artifact_id, item_id, claim, source_ids_json, evidence_level,"
+        " verdict, reason FROM support_checks WHERE session_id = ? ORDER BY artifact_kind, item_id",
+        (session_id,),
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["source_ids"] = [
+                str(entry) for entry in json.loads(str(item["source_ids_json"]) or "[]")
+            ]
+        except json.JSONDecodeError:
+            item["source_ids"] = []
+        out.append(item)
+    return out

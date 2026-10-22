@@ -19,38 +19,15 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+from scholarscout.state import research_board, support
 from scholarscout.state.db import Database
 
 
 def _years(rows: list[dict[str, Any]]) -> tuple[int | None, int | None]:
     known = [int(row["year"]) for row in rows if row.get("year")]
     return (min(known), max(known)) if known else (None, None)
-
-
-def _load_session_sources(db: Database, session_id: str) -> list[dict[str, Any]]:
-    """本会话带出来的来源 + 每个来源的"有没有正文/有没有摘要"。"""
-    rows = db.query(
-        """
-        SELECT s.id AS source_id, s.title, s.url, s.domain, s.source_type, s.year, s.tier,
-               (SELECT count(*) FROM documents d WHERE d.source_id = s.id) AS docs,
-               (SELECT count(*) FROM summaries sm WHERE sm.source_id = s.id) AS sums
-        FROM sources s JOIN source_mentions m ON m.source_id = s.id
-        WHERE m.session_id = ?
-        GROUP BY s.id
-        ORDER BY (s.year IS NULL), s.year DESC, s.id
-        """,
-        (session_id,),
-    )
-    out = []
-    for row in rows:
-        item = dict(row)
-        item["has_text"] = bool(item.pop("docs"))
-        item["has_summary"] = bool(item.pop("sums"))
-        out.append(item)
-    return out
 
 
 def _compress_years(years: list[int]) -> list[str]:
@@ -110,42 +87,18 @@ def _resolve_sources(db: Database, ids: list[str]) -> dict[str, dict[str, Any]]:
     生成产物的那一轮带出来的。只在会话内找会让一多半证据行显示"没有可解析的来源"
     （真机渲染核对时抓到：15 条弱证据行全是空的）。
     """
-    wanted = [str(item) for item in ids if item]
-    if not wanted:
-        return {}
-    placeholders = ",".join("?" for _ in wanted)
-    rows = db.query(
-        f"""
-        SELECT s.id AS source_id, s.title, s.url, s.domain, s.source_type, s.year, s.tier,
-               (SELECT count(*) FROM summaries sm WHERE sm.source_id = s.id) AS sums
-        FROM sources s WHERE s.id IN ({placeholders})
-        """,
-        tuple(wanted),
-    )
-    out: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        item = dict(row)
-        item["has_summary"] = bool(item.pop("sums"))
-        out[str(item["source_id"])] = item
-    return out
+    return research_board.sources_by_ids(db, ids)
 
 
 def _evidence_from_support_checks(
     db: Database, session_id: str, sources_by_id: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """B2 主口径：用 `support_checks`（引用核查结果）当证据表。"""
-    rows = db.query(
-        "SELECT artifact_kind, artifact_id, item_id, claim, source_ids_json, evidence_level,"
-        " verdict, reason FROM support_checks WHERE session_id = ? ORDER BY artifact_kind, item_id",
-        (session_id,),
-    )
+    rows = support.list_checks(db, session_id)
     parsed: list[tuple[dict[str, Any], list[str]]] = []
     all_ids: set[str] = set()
     for row in rows:
-        try:
-            ids = [str(item) for item in json.loads(str(row["source_ids_json"] or "[]"))]
-        except json.JSONDecodeError:
-            ids = []
+        ids = [str(item) for item in row["source_ids"]]
         parsed.append((dict(row), ids))
         all_ids.update(ids)
     # 会话内已加载的来源优先（含"有没有正文"），缺的按 id 跨会话补查
@@ -276,36 +229,11 @@ def build_board(
 
     year_now = now_year or datetime.date.today().year
     state = research_state.load_state(db, session_id) or research_state.empty_state()
-    sources = _load_session_sources(db, session_id)
+    sources = research_board.session_sources(db, session_id)
     if gaps is None:
         gaps = research_state.compute_gaps(db, session_id, state, now_year=year_now)
 
-    artifacts = {
-        "maps": [
-            dict(row)
-            for row in db.query(
-                "SELECT id, topic, created_at FROM topic_maps WHERE session_id = ?"
-                " ORDER BY created_at DESC",
-                (session_id,),
-            )
-        ],
-        "routes": [
-            dict(row)
-            for row in db.query(
-                "SELECT id, topic, level, weeks, version, created_at FROM learning_routes"
-                " WHERE session_id = ? ORDER BY created_at DESC",
-                (session_id,),
-            )
-        ],
-        "notes": [
-            dict(row)
-            for row in db.query(
-                "SELECT id, kind, title, created_at FROM notes WHERE session_id = ?"
-                " ORDER BY created_at DESC",
-                (session_id,),
-            )
-        ],
-    }
+    artifacts = research_board.session_artifacts(db, session_id)
 
     return {
         "goal": str(state.get("goal") or ""),
@@ -348,42 +276,19 @@ def build_overview(db: Database, *, limit: int = 30) -> dict[str, Any]:
     """
     from scholarscout.runtime import research_state
 
-    rows = db.query(
-        """
-        SELECT s.id AS session_id, s.title, s.updated_at
-        FROM sessions s
-        ORDER BY s.updated_at DESC
-        LIMIT ?
-        """,
-        (int(limit),),
-    )
+    rows = research_board.recent_sessions(db, limit=limit)
     sessions: list[dict[str, Any]] = []
     for row in rows:
         session_id = str(row["session_id"])
         state = research_state.load_state(db, session_id)
-        sources = _load_session_sources(db, session_id)
+        sources = research_board.session_sources(db, session_id)
         if state is None and not sources:
             continue
         questions = [
             item for item in ((state or {}).get("questions") or []) if isinstance(item, dict)
         ]
         covered = sum(1 for item in questions if str(item.get("status")) == "covered")
-        counts = {
-            "maps": db.scalar_int(
-                "SELECT count(*) FROM topic_maps WHERE session_id = ?", (session_id,)
-            ),
-            "routes": db.scalar_int(
-                "SELECT count(*) FROM learning_routes WHERE session_id = ?", (session_id,)
-            ),
-            "notes": db.scalar_int(
-                "SELECT count(*) FROM notes WHERE session_id = ? AND kind != 'card'",
-                (session_id,),
-            ),
-            "cards": db.scalar_int(
-                "SELECT count(*) FROM notes WHERE session_id = ? AND kind = 'card'",
-                (session_id,),
-            ),
-        }
+        counts = research_board.artifact_counts(db, session_id)
         sessions.append(
             {
                 "session_id": session_id,

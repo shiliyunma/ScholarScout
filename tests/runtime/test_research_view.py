@@ -15,6 +15,7 @@ import pytest
 from scholarscout.rpc.methods import AppContext, dispatch
 from scholarscout.runtime import research_state as rs
 from scholarscout.runtime import research_view
+from scholarscout.state import research_board
 from scholarscout.state.db import Database
 
 
@@ -161,7 +162,7 @@ def test_evidence_falls_back_to_ledger_with_explicit_mode(db: Database) -> None:
         {"text": "只有标题的题", "status": "open", "evidence": ["src_b"]},
         {"text": "没证据的题", "status": "open", "evidence": []},
     ]
-    sources = research_view._load_session_sources(db, "ses_view")
+    sources = research_board.session_sources(db, "ses_view")
     view = research_view.build_evidence(db, "ses_view", state=state, sources=sources)
 
     assert view["mode"] == "ledger"  # 没做过引用核查 → 明确标注降级
@@ -206,7 +207,7 @@ def test_evidence_uses_support_checks_when_present(db: Database) -> None:
         evidence_level="summary",
         verdict="supported",
     )
-    sources = research_view._load_session_sources(db, "ses_view")
+    sources = research_board.session_sources(db, "ses_view")
     view = research_view.build_evidence(db, "ses_view", state={}, sources=sources)
 
     assert view["mode"] == "support_checks"
@@ -283,7 +284,7 @@ def test_evidence_resolves_sources_outside_this_session(db: Database) -> None:
         evidence_level="title",
         verdict="supported",
     )
-    sources = research_view._load_session_sources(db, "ses_view")
+    sources = research_board.session_sources(db, "ses_view")
     view = research_view.build_evidence(db, "ses_view", state={}, sources=sources)
     row = view["rows"][0]
     assert len(row["sources"]) == 1
