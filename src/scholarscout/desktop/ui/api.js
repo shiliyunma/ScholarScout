@@ -388,6 +388,14 @@ window.scoutEvent = function (event) {
     renderChoiceCard(key, p);
     return;
   }
+  /* py.exec 审批卡：同一条理由放在这道闸之前 —— 它也不挂在"进行中气泡"上，而是落进
+     会话流；工具回包（`ok=false + kind="needs_approval"`）之后这一轮可能已经收尾，
+     别的会话推来的也要能收下。载荷带**完整代码**（工具结果事件只有摘要），
+     渲染/去重/四选项见 app.js 的「py.exec 审批卡」一节。 */
+  if (event.method === "chat.needs_approval") {
+    renderApprovalCard(key, p);
+    return;
+  }
   const slot = key ? turnSlot(key, false) : null;
   if (!slot || !slot.trace) return; // 这一轮不是本界面发起的（没有进行中气泡）→ 不动界面
 

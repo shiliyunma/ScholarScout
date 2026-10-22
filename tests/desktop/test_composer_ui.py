@@ -223,6 +223,11 @@ ALLOWED_NEW_TOKENS = frozenset(
         "--ui-settings-height",
         "--ui-settings-min-width",
         "--ui-settings-min-height",
+        # py.exec 审批卡的**代码框固定高度**：`needs_approval` 带的是整段待执行脚本，
+        # 高度必须与代码行数无关（撑开就把对话顶出屏幕、消息流高度跟着变 → 相邻栏位几何
+        # 也会动）。这个高度是新维度，--ui-* 家族里没有等价物；同理走具名白名单，
+        # 定义只许一处（见 test_approval_card.py 的"只定义一次"用例）。
+        "--ui-approval-code-height",
     }
 )
 

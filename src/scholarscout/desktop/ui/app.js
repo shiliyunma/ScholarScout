@@ -780,6 +780,326 @@ async function answerChoice(card, button, option) {
 }
 
 
+/* ------------------------------------- py.exec 审批卡（`chat.needs_approval`）
+
+   后端 `py.exec`（`tools/py_exec.py`）在"这段代码要动别的东西"时**不执行**：回
+   `ok=false + data.kind="needs_approval"`，并用 `chat.needs_approval` 推一条载荷
+   （`_approval_event`）：`{session_id, turn_id, code, reason, workdir,
+   pending:[规则键], risks:[{category,scope,detail}], options:[{value,label}]}`。
+   它带**完整代码** —— 工具结果事件只有 `ok`/`digest`，让前端从摘要里反解等于把契约
+   藏在摘要后面（后端注释里就是这么说的）。
+
+   骨架与选择卡同一套：卡片挂 `streamBox(session_id)`、每会话一张表、`turn_id|code` 去重
+   → "不串会话 / 不重插"是结构保证，不靠每处记得判。三点是这块特有的：
+
+   ① **代码框固定高、内部滚动**：待执行脚本几十行很常见。让它自然撑开 = 点一次审批就把
+      对话顶出屏幕，而且消息流高度随代码长度变（相邻栏位几何跟着动）。高度锁在
+      `--ui-approval-code-height`，超高走 `overflow:auto` 的**内层**滚动条，一行不截；
+   ② **风险标签说人话**：`pending` 是 `类别:范围` 的规则键（`write:@cwd`）。直接摆给用户
+      等于让他读内部键名 —— 这里翻成"写文件：工作目录"，并把 `risks[].detail` 里的
+      具体路径/命令**单独**标出来（`open('a.xlsx','w')`）；
+   ③ **四个选项 = 一次 RPC**：点下去调 `sandbox.approve`（`rpc/sandbox.py`），它带着
+      `approval` 重调同一个工具处理器 —— 这是用户的选择真正生效的唯一入口（模型自己
+      不许填 `approval`）。点完**立即整卡禁用**并显示已选；`deny` 还要显示"别绕"那句。
+
+   为什么不判 `sessionRunning`：选择卡点下去是发一条**新消息**（要过会话闸），这里点下去是
+   **回填一次授权**，而这张卡本来就是本轮工具调用中途出现的 —— 判闸会让它变成点不动的死卡。 */
+
+/*: 四个 approval 值 → 按钮文案。**value 是 `sandbox.approve` 的入参**，取值集合来自后端
+    `sandbox/approval.py::approval_options()`（唯一来源）；这里给的是界面文案（后端那份是
+    说明性的长句）。两边同一个集合由 `test_approval_card.py` 的跨层用例钉着。 */
+var APPROVAL_LABELS = {
+  once: "允许一次",
+  session: "本会话允许",
+  always: "永久允许",
+  deny: "拒绝",
+};
+
+/*: 渲染顺序：先最小授权、逐级放宽，**拒绝放最后**（误点代价最大的一条不摆在第一格）。 */
+var APPROVAL_ORDER = ["once", "session", "always", "deny"];
+
+/*: 点了「拒绝」要原样显示的那句话（与 `tools/py_exec.py` 被拦时的文案同一句：
+    拒绝不是"换个写法再来"的邀请）。 */
+var APPROVAL_DENY_NOTE = "已拒绝：这段代码不会执行。不要换写法重试，也不要换条路达成同一目的。";
+
+/*: `pending` 的**类别** → 人话（键就是 `sandbox/approval.py` 的 `Risk.category`）。 */
+var APPROVAL_CATEGORY_TEXT = {
+  exec: "执行代码",
+  write: "写文件",
+  delete: "删文件",
+  network: "网络访问",
+  subprocess: "起子进程",
+  native: "原生调用",
+  dynamic: "动态执行",
+  outside_path: "访问工作目录外",
+};
+
+/*: `pending` 的**范围** → 人话（`@cwd` = 这次的工作目录，`@any` = 任意路径）。 */
+var APPROVAL_SCOPE_TEXT = { "@cwd": "工作目录", "@any": "任意路径" };
+
+/** 范围 → 人话。`outside:C:/x` 保留路径本身（用户要看见动的是哪）。 */
+function approvalScopeText(scope) {
+  var value = String(scope || "").trim();
+  if (!value) return "";
+  if (Object.prototype.hasOwnProperty.call(APPROVAL_SCOPE_TEXT, value)) {
+    return APPROVAL_SCOPE_TEXT[value];
+  }
+  if (value.indexOf("outside:") === 0) return "工作目录外的 " + value.slice("outside:".length);
+  return value;
+}
+
+/** 规则键（`write:@cwd`）→ 人话标签（"写文件：工作目录"）。纯函数，node 直测。
+
+    未知类别/范围**原样露出来**（`exports/**` 比"某个目录"有用）：宁可术语多，
+    也不要把它抹成一句"有风险"。 */
+function approvalRiskLabel(key) {
+  var raw = String(key || "").trim();
+  if (!raw) return "";
+  var cut = raw.indexOf(":");
+  var category = cut < 0 ? raw : raw.slice(0, cut);
+  var scope = cut < 0 ? "" : raw.slice(cut + 1);
+  var head = Object.prototype.hasOwnProperty.call(APPROVAL_CATEGORY_TEXT, category)
+    ? APPROVAL_CATEGORY_TEXT[category]
+    : category;
+  var tail = approvalScopeText(scope);
+  return tail ? head + "：" + tail : head;
+}
+
+/** `risks` → `{规则键: 具体说明}`（`open('a.xlsx','w')` / `绝对路径 'C:/x'`）。 */
+function approvalRiskDetails(risks) {
+  var out = {};
+  (Array.isArray(risks) ? risks : []).forEach(function (item) {
+    if (!item) return;
+    var key = String(item.category || "") + ":" + String(item.scope || "");
+    var detail = String(item.detail || "").trim();
+    if (detail && !out[key]) out[key] = detail;
+  });
+  return out;
+}
+
+/** 要渲染的 approval 值：**值只取载荷里有的**（后端 `options()` 是唯一来源），顺序按
+    `APPROVAL_ORDER`；载荷里没见过的值排在后面、原样用后端 label。载荷一个都没给
+    （老后端/手工构造）→ 四条都渲染：这张卡少一个按钮就等于少一条路。 */
+function approvalOptionValues(options) {
+  var seen = {};
+  (Array.isArray(options) ? options : []).forEach(function (item) {
+    var value = String((item || {}).value || "").trim();
+    if (value) seen[value] = true;
+  });
+  var out = APPROVAL_ORDER.filter(function (value) {
+    return seen[value] === true;
+  });
+  Object.keys(seen).forEach(function (value) {
+    if (APPROVAL_ORDER.indexOf(value) < 0) out.push(value);
+  });
+  return out.length ? out : APPROVAL_ORDER.slice();
+}
+
+/** 载荷里的 `workdir` 是**相对项目根**的（`data/exports`，`paths.rel_to_home` 存库的形态），
+    而 `py.exec` 的 `workdir` 参数是**相对 `data/`**（`_resolve_workdir`）。两个基准不同：
+    原样回传会落到 `data/data/...` —— 用户批准的那个目录与实际执行的不是一个。
+    这里去掉 `data/` 前缀再发；拿不准的形态原样发（后端有自己的收窄校验，会如实报错）。 */
+function approvalWorkdirParam(workdir) {
+  var value = String(workdir || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  if (!value || value === "data") return "";
+  if (value.indexOf("data/") === 0) return value.slice("data/".length);
+  return value;
+}
+
+/** 去重键：**同一轮 + 同一段代码**（同一轮里模型改一行再问一次 = 另一张卡）。 */
+function approvalCardKey(params) {
+  var p = params || {};
+  return String(p.turn_id || "") + "|" + String(p.code || "");
+}
+
+/** 这个会话的审批卡表（键 = approvalCardKey）。与 `state.streams` 同寿命。 */
+function approvalCards(sessionId) {
+  var key = String(sessionId || "");
+  if (!state.approvals[key]) state.approvals[key] = {};
+  return state.approvals[key];
+}
+
+function approvalTitleText(params) {
+  var p = params || {};
+  var workdir = String(p.workdir || "").trim();
+  return workdir
+    ? "要在这台机器上跑一段 Python（工作目录 " + workdir + "）。放行吗？"
+    : "要在这台机器上跑一段 Python。放行吗？";
+}
+
+/** `chat.needs_approval` → 会话流里的一张审批卡（重复事件返回已存在的那张，不重插）。 */
+function renderApprovalCard(sessionId, params) {
+  var key = String(sessionId || "");
+  if (!key) return null; // 拿不到会话 = 不落任何人的流（宁可不动，也不落错）
+  var p = params || {};
+  var code = String(p.code || "");
+  if (!code.trim()) return null; // 没有代码就没有可审的东西（不出一张空卡）
+  var cardKey = approvalCardKey(p);
+  var bucket = approvalCards(key);
+  var existing = bucket[cardKey];
+  if (existing && existing.parentNode) return existing;
+
+  var wrap = document.createElement("div");
+  wrap.className = "msg msg-approval";
+  wrap.setAttribute("data-session", key);
+  wrap.setAttribute("data-turn", String(p.turn_id || ""));
+  wrap.setAttribute("data-approval-key", cardKey);
+  /* 点按钮时要拿回 code / workdir：放普通属性而不是 data-*（整段脚本可以很长，
+     塞进 DOM 属性既难读又会在 dump-dom 里刷屏）。 */
+  wrap.approvalPayload = p;
+
+  var who = document.createElement("div");
+  who.className = "who";
+  who.textContent = "ScholarScout · 执行前要你点头";
+  wrap.appendChild(who);
+
+  var body = document.createElement("div");
+  body.className = "body";
+  var title = document.createElement("p");
+  title.className = "approval-title";
+  title.textContent = approvalTitleText(p);
+  if (p.reason) title.title = String(p.reason); // 判定理由（长句）走 tooltip，不占卡片高度
+  body.appendChild(title);
+
+  var pending = Array.isArray(p.pending) ? p.pending : [];
+  var details = approvalRiskDetails(p.risks);
+  if (pending.length) {
+    var risks = document.createElement("div");
+    risks.className = "approval-risks";
+    pending.forEach(function (rawKey) {
+      var riskKey = String(rawKey || "").trim();
+      if (!riskKey) return;
+      var item = document.createElement("div");
+      item.className = "approval-risk";
+      item.setAttribute("data-risk", riskKey);
+      var label = document.createElement("span");
+      label.className = "approval-risk-label";
+      label.textContent = approvalRiskLabel(riskKey);
+      item.appendChild(label);
+      var detail = details[riskKey] || "";
+      if (detail) {
+        // 具体路径/命令单独一块（等宽）：用户真正要判断的是"动哪个文件、跑哪一句"
+        var detailNode = document.createElement("code");
+        detailNode.className = "approval-risk-detail";
+        detailNode.textContent = detail;
+        item.appendChild(detailNode);
+      }
+      risks.appendChild(item);
+    });
+    body.appendChild(risks);
+  }
+
+  /* 完整代码：固定高 + 内部滚动（`--ui-approval-code-height`）。**一行都不截** ——
+     截断等于让用户批准一段自己没看全的代码。 */
+  var codeBox = document.createElement("pre");
+  codeBox.className = "approval-code";
+  codeBox.textContent = code;
+  body.appendChild(codeBox);
+
+  var actions = document.createElement("div");
+  actions.className = "approval-actions";
+  var labelOf = {};
+  (Array.isArray(p.options) ? p.options : []).forEach(function (item) {
+    var value = String((item || {}).value || "").trim();
+    if (value) labelOf[value] = String((item || {}).label || "").trim();
+  });
+  approvalOptionValues(p.options).forEach(function (value) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "approval-option";
+    button.setAttribute("data-approval", value);
+    button.textContent = APPROVAL_LABELS[value] || labelOf[value] || value;
+    button.addEventListener("click", function () {
+      Promise.resolve(answerApproval(wrap, button, value)).catch(function (error) {
+        el("status").textContent = "审批没送出去：" + error.message;
+      });
+    });
+    actions.appendChild(button);
+  });
+  body.appendChild(actions);
+
+  /* 结果/文案行：默认隐藏（CSS 里补了 `[hidden]` 的 display:none —— 类选择器会压掉它）。
+     `deny` 那句"别绕"落在这里：它是这一轮唯一的收尾说明。 */
+  var note = document.createElement("p");
+  note.className = "approval-note";
+  note.hidden = true;
+  body.appendChild(note);
+
+  wrap.appendChild(body);
+  streamBox(key).appendChild(wrap);
+  bucket[cardKey] = wrap;
+  // 只在这个会话显示时才滚：后台会话的卡不许动用户正在看的滚动位置
+  if (key === String(state.sessionId || "")) {
+    el("messages").scrollTop = el("messages").scrollHeight;
+  }
+  return wrap;
+}
+
+/** 点某一个选项：**先同步禁卡**（连点两下也只发一次），再调 `sandbox.approve` 回填选择。 */
+async function answerApproval(card, button, value) {
+  if (!card || card.getAttribute("data-approved")) return false;
+  var sessionId = String(card.getAttribute("data-session") || "");
+  var payload = card.approvalPayload || {};
+  var code = String(payload.code || "");
+  var approval = String(value || "");
+  if (!sessionId || !code || !approval) return false;
+
+  var label = APPROVAL_LABELS[approval] || approval;
+  card.setAttribute("data-approved", approval);
+  card.classList.add("is-approved");
+  Array.prototype.slice.call(card.querySelectorAll(".approval-option")).forEach(function (node) {
+    node.disabled = true;
+    if (node === button) {
+      node.classList.add("is-chosen");
+      node.setAttribute("aria-pressed", "true");
+    }
+  });
+  var title = card.querySelector(".approval-title");
+  if (title) title.textContent = "已选：" + label;
+  var note = card.querySelector(".approval-note");
+
+  function say(text, kind) {
+    if (!note) return;
+    note.hidden = false;
+    note.textContent = text;
+    note.setAttribute("data-kind", kind || approval);
+  }
+
+  /** 送不到后端时要能重来：卡片已经禁用，不还回去就是一张点不动的死卡。 */
+  function restore(text) {
+    card.removeAttribute("data-approved");
+    card.classList.remove("is-approved");
+    Array.prototype.slice.call(card.querySelectorAll(".approval-option")).forEach(function (node) {
+      node.disabled = false;
+      node.classList.remove("is-chosen");
+      node.removeAttribute("aria-pressed");
+    });
+    say(text, "failed");
+  }
+
+  var params = { approval: approval, code: code, session_id: sessionId };
+  var workdir = approvalWorkdirParam(payload.workdir);
+  if (workdir) params.workdir = workdir;
+  try {
+    var result = await scout.call("sandbox.approve", params);
+    if (approval === "deny") {
+      say(APPROVAL_DENY_NOTE, "deny");
+    } else if (result && result.ok) {
+      say("已按「" + label + "」放行，代码已经跑完。");
+    } else {
+      say("已按「" + label + "」放行，但这轮执行报了错：" + String((result && result.error) || "原因未知"), "failed");
+    }
+    return true;
+  } catch (error) {
+    restore("这次授权没送到后端：" + error.message + "（可以再点一次）");
+    return false;
+  }
+}
+
+
 async function send(text) {
   const sessionId = state.sessionId;
   if (!sessionId) return;
@@ -1287,6 +1607,10 @@ var state = {
       卡片本身在**它自己那条流**里（切走/切回来都在），这张表只用于**去重**
       —— 同一轮同一个 query 的重复 `chat.needs_choice` 不再插第二张。 */
   choices: {},
+  /*: 每会话一张「py.exec 审批卡」表：`{ [session_id]: { [turn_id|code]: 卡片节点 } }`。
+      同样只用于**去重**（同一轮同一段代码的重复 `chat.needs_approval` 不插第二张）；
+      卡片本体在它自己那条流里，切走/切回来都在。 */
+  approvals: {},
   routes: [],
   cards: [],
   practice: null,

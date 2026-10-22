@@ -7607,3 +7607,149 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .set-row .set-field-usage {
   font-variant-numeric: tabular-nums;
 }
+
+/* ───────────────────────────── py.exec 审批卡（会话流内，`chat.needs_approval`）
+
+   `needs_approval` 带的是**整段待执行代码**，所以这张卡比选择卡多一条硬约束：
+   **代码框固定高度 + 内部滚动**。两层理由：
+
+   · 代码几十行很常见。让它自然撑开 = 点一次审批，整个对话被顶出屏幕（用户滚回来
+     还得再滚回去），这条卡片的"看清再点"就废了；
+   · 卡片在消息流里，消息流高度随代码行数变化 → 中间栏与相邻栏位的几何跟着动。
+     探针按 `BASELINE_GEOM` 钉着（左右栏 + 两条分隔条 + 中间栏），一张卡不该带走它们。
+
+   高度走**唯一新增的具名令牌** `--ui-approval-code-height`（理由见
+   `tests/desktop/test_composer_ui.py` 的 ALLOWED_NEW_TOKENS）：换高度只改这里一处。
+   `overflow:auto` 是**内层**滚动条 —— 卡片自身高度与代码行数无关，且一行都不截断
+   （截断 = 让用户批准一段自己没看全的代码，比没有框更糟）。 */
+
+:root {
+  --ui-approval-code-height: 156px;
+}
+.msg-approval .body {
+  /* `.msg .body` 是 pre-wrap（回答正文要用），卡片里的按钮/标签会因此多出空行 */
+  white-space: normal;
+  padding: 9px 11px 10px;
+}
+.approval-title {
+  margin: 0 0 7px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ui-text-secondary);
+}
+.approval-risks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 7px;
+}
+.approval-risk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+/* 人话标签（"写文件：工作目录"）：一条风险的**类别 × 范围**，用警示色但不是报错色 */
+.approval-risk-label {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--ui-yellow) 75%, var(--ui-text-primary));
+  background: color-mix(in srgb, var(--ui-yellow) 14%, transparent);
+  border: 0.0625rem solid color-mix(in srgb, var(--ui-yellow) 34%, transparent);
+}
+/* 具体路径/命令**单独一块**：用户真正要判断的是"动哪个文件、跑哪一句"，不是类别 */
+.approval-risk-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ui-text-tertiary);
+  overflow-wrap: anywhere;
+}
+.approval-code {
+  /* 固定高 + 内层滚动：这一条就是"不把对话撑高"的全部实现 */
+  height: var(--ui-approval-code-height);
+  max-height: var(--ui-approval-code-height);
+  overflow: auto;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ui-text-primary);
+  background: var(--ui-bg-input);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  /* 代码按原样换行：自动折行会让缩进错位，读起来分不清哪行属于哪个块 */
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 2;
+}
+.approval-actions {
+  display: grid;
+  /* 中间栏最窄 360 也放得下两列；宽屏四列一行 —— 不写死 px 宽度 */
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
+}
+.approval-option {
+  min-width: 0;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ui-text-primary);
+  background: var(--ui-bg-input);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.approval-option:hover:not(:disabled) {
+  background: var(--ui-control-hover-background);
+  border-color: color-mix(in srgb, var(--ui-accent) 40%, var(--ui-stroke-secondary));
+}
+/* 拒绝 = 不许执行：给一条语义色，别和三个"放行"长得一模一样（误点的代价不对称） */
+.approval-option[data-approval="deny"] {
+  color: var(--ui-red);
+  border-color: color-mix(in srgb, var(--ui-red) 38%, var(--ui-stroke-secondary));
+}
+.approval-option:disabled {
+  cursor: default;
+}
+.approval-option:focus-visible {
+  outline: 0.125rem solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  outline-offset: -2px;
+}
+/* 已选/禁用：整卡降一档，被点中的那条留住强调描边 —— "点过了，就这一次"要看得出来 */
+.msg-approval.is-approved .approval-option {
+  opacity: 0.55;
+  cursor: default;
+}
+.msg-approval.is-approved .approval-option.is-chosen {
+  opacity: 1;
+  background: color-mix(in srgb, var(--ui-accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--ui-accent) 55%, var(--ui-stroke-secondary));
+}
+.msg-approval.is-approved .approval-option[data-approval="deny"].is-chosen {
+  background: color-mix(in srgb, var(--ui-red) 10%, transparent);
+  border-color: color-mix(in srgb, var(--ui-red) 55%, var(--ui-stroke-secondary));
+}
+/* 结果行（含拒绝那句"不要换写法重试"）：默认隐藏，点完才出现——空占一行就是多一条空白 */
+.approval-note {
+  margin: 7px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ui-text-secondary);
+}
+.approval-note[data-kind="deny"] {
+  color: var(--ui-red);
+}
+/* 类选择器上的 display 会压掉 UA 给 [hidden] 的 display:none —— 必须显式补一条。
+   少了它，没点之前流里就平白多出一行（本项目在 .ui-cat-body / .ui-pane 上踩过同一条）。 */
+.approval-note[hidden] {
+  display: none;
+}
