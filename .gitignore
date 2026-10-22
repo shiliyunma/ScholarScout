@@ -38,6 +38,13 @@ ScholarScout-Portable/
 /*.docx
 /*.pdf
 
+# ===== 本地技能库的隐藏记账（不入库，但要留一份"为什么"）=====
+# `skills/` 本身入库（那 130 篇 SKILL.md 随仓库分发，`skill.list` / `skill.load` 读它）；
+# 但同目录下的点号条目是技能管理工具自己的账：`.archive` 是已归档的旧技能、
+# `.hub/index-cache/hermes-index.json` 一个文件就 49MB、`.curator_backups` 是几 MB 的旧快照。
+# 索引层（`skills/index.py`）也按同一规则跳过点号目录 —— 两边口径一致。
+skills/.*
+
 # ===== 编辑器 / 系统 =====
 .vscode/
 .idea/

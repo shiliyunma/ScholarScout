@@ -29,8 +29,9 @@ from scholarscout.providers.settings import KNOWN
 from scholarscout.runtime.registry import ToolSpec, get_spec, register, wire_name
 from scholarscout.tools import register_tools
 
-#: 本版注册的 9 个工具（`docs/01 §5` 冻结，**新增的两个工具**——`research.delegate` 与 `py.exec`——
-#: 的 schema 与边界写在 `docs/24`；08-10 那段冻结期不动 docs/01 的表格）
+#: 本版注册的 11 个工具（`docs/01 §5` 冻结，**新增的两个工具**——`research.delegate` 与 `py.exec`——
+#: 的 schema 与边界写在 `docs/24`；`skill.list` / `skill.load` 是本地技能库的渐进式披露入口，
+#: 索引不在提示词里、按需取，见 `skills/index.py`；08-10 那段冻结期不动 docs/01 的表格）
 TOOL_NAMES = (
     "note.save",
     "py.exec",
@@ -38,6 +39,8 @@ TOOL_NAMES = (
     "research.search",
     "route.plan",
     "route.revise",
+    "skill.list",
+    "skill.load",
     "source.fetch",
     "source.grade",
     "topic.build_map",
@@ -64,7 +67,7 @@ def _specs() -> list[ToolSpec]:
 
 
 def test_registered_names_are_unique_and_match_registry() -> None:
-    """注册集 == 契约里那 9 个，且不重名（重名会让「线上名 → 规范名」反查歧义）。"""
+    """注册集 == 契约里那 11 个，且不重名（重名会让「线上名 → 规范名」反查歧义）。"""
     names = register_tools()
     assert names == sorted(TOOL_NAMES), f"注册集与契约不一致：{names}"
     assert len(names) == len(set(names)), f"注册集里有重名：{names}"

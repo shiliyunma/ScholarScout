@@ -19,6 +19,7 @@ def register_tools() -> list[str]:
         research_search,
         route_plan,
         route_revise,
+        skills,
         source_fetch,
         source_grade,
         topic_map,
@@ -33,4 +34,5 @@ def register_tools() -> list[str]:
     note_save.register()
     delegate.register()
     py_exec.register()
+    skills.register()
     return registry.registered_names()

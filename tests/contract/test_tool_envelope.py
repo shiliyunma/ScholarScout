@@ -1,4 +1,5 @@
-"""契约闸 3/4：**9 个模型可见工具的回包是同一个信封**（docs/01 §5.0；第 9 个 `py.exec` 见 docs/24）。
+"""契约闸 3/4：**11 个模型可见工具的回包是同一个信封**（docs/01 §5.0；`py.exec` 见 docs/24，
+`skill.list` / `skill.load` 是渐进式披露那一对，见 `skills/index.py`）。
 
 为什么这道闸必须有：模型是照着 `refs` / `ok` / `error` 读工具结果的。
 任何一个工具改回扁平 dict，模型就看到「有内容但没有 ok」——它要么把失败当成功，
@@ -38,6 +39,7 @@ from scholarscout.tools import delegate as delegate_tool
 from scholarscout.tools import py_exec as py_exec_tool
 from scholarscout.tools import register_tools
 from scholarscout.tools import research_search as search_tool
+from scholarscout.tools import skills as skills_tool
 from scholarscout.tools import source_fetch as fetch_tool
 from scholarscout.tools.note_save import note_save
 from scholarscout.tools.route_plan import route_plan
@@ -53,7 +55,7 @@ ENVELOPE_KEYS = {"ok", "data", "error", "refs"}
 #: 唯一会在 `data.note` 里带「这一轮为什么这么搜」的工具
 NOTE_ALLOWED = {"research.search"}
 
-#: 本版注册的工具（`tools/__init__.register_tools()` 的实际注册集，9 个）
+#: 本版注册的工具（`tools/__init__.register_tools()` 的实际注册集，11 个）
 TOOL_NAMES = (
     "note.save",
     "py.exec",
@@ -61,6 +63,8 @@ TOOL_NAMES = (
     "research.search",
     "route.plan",
     "route.revise",
+    "skill.list",
+    "skill.load",
     "source.fetch",
     "source.grade",
     "topic.build_map",
@@ -83,7 +87,7 @@ class _DeadHttp:
 
 @pytest.fixture
 def tc(ctx: AppContext, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ToolContext:
-    """真实装配 + 一条真来源；落盘重定向到 tmp，注册表按真实路径注册 9 个工具。"""
+    """真实装配 + 一条真来源；落盘重定向到 tmp，注册表按真实路径注册 11 个工具。"""
     redirect_home(monkeypatch, tmp_path)
     insert_source(ctx.db)
     register_tools()
@@ -160,6 +164,16 @@ def _delegate(tc: ToolContext) -> dict[str, Any]:
     return delegate_tool.research_delegate(tc, ["教育智能体的检索增强有哪些代表工作"])
 
 
+def _skill_list(tc: ToolContext) -> dict[str, Any]:
+    """清单：tmp 家里没有 ``skills/`` → 走"空索引"那条真实分支（不是桩）。"""
+    return skills_tool.skill_list(tc)
+
+
+def _skill_load(tc: ToolContext) -> dict[str, Any]:
+    """读一篇：名字不存在 → 必须是 ``ok:false`` 回包，不是异常、也不是 500。"""
+    return skills_tool.skill_load(tc, name="no-such-skill")
+
+
 def _py_exec(tc: ToolContext) -> dict[str, Any]:
     """执行器：**不带 approval** 调一次 → 必被审批门挡回 `needs_approval`。
 
@@ -181,6 +195,8 @@ SAMPLES = {
     "note.save": _note_save,
     "research.delegate": _delegate,
     "py.exec": _py_exec,
+    "skill.list": _skill_list,
+    "skill.load": _skill_load,
 }
 
 
@@ -208,6 +224,7 @@ def test_failure_samples_really_are_failures(
         ("research.search", _search, "没有任何可用的检索来源"),
         ("source.fetch", _fetch, "404"),
         ("research.delegate", _delegate, "子任务总开关未打开"),
+        ("skill.load", _skill_load, "没有名为"),
     ):
         envelope = sample(tc, monkeypatch) if name == "research.search" else sample(tc)
         assert envelope["ok"] is False, f"{name} 的失败样本实际回了 ok:true"

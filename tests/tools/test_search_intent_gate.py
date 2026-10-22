@@ -48,9 +48,10 @@ GOLDEN_PARAMETERS_SHA256 = "11e4d85e83153695781140fbdf12acee7947331fb109ba31700a
 GOLDEN_DESCRIPTION_SHA256 = "dc67f09324a9da9de6d6a310e54a8be3224d16ea3b6423fcf8feaa4851f144a9"
 GOLDEN_WIRE_SHA256 = "98486611147a98362abecc9ac644a42a0303a3e53c6e476c236cb07967873016"
 #: ``system_prompt_hash(build_system_prompt(toolsets=["research"]))``（同 HEAD 基线）
-#: 2026-10-22 更新：`py.exec` 上线时 `prompts.py` 加了 `PY_EXEC_RULE`，这是**有意识的契约变更**
-#: （工具集 8 → 9，docs/24 §5），不是为凑绿改值；D-3 的四条路径本身一行未改。
-GOLDEN_PROMPT_HASH = "b9ac0c043bf2"
+#: 历史值：`b9ac0c043bf2`（2026-10-22 加 `PY_EXEC_RULE` 那一版，工具集 8 → 9）。
+#: 2026-10-22 再更新：**新增 `skill.list` / `skill.load`**（工具集 9 → 11）带来 `SKILL_RULE`，
+#: 这是**有意识的契约变更**，不是为凑绿改值；D-3 的四条路径本身一行未改。
+GOLDEN_PROMPT_HASH = "20b7b97e452e"
 
 GITHUB_JSON = {
     "total_count": 1,

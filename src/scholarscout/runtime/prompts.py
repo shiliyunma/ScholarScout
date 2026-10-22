@@ -124,6 +124,25 @@ PY_EXEC_RULE = """\
    代码要把"改了哪个文件、改了什么"打印出来，否则用户看不到结果。"""
 
 
+#: 本地技能库的用法（`skill.list` / `skill.load`）：**渐进式披露**。
+#: **这一段进 `build_system_prompt` → 改它即改 `system_prompt_hash`**（换哈希＝换实验臂）。
+#: 为什么只说"去哪找"、不把清单写进来：技能库有一百多篇，全量描述进提示词要几千字符，
+#: 而每轮真正用到的通常只有一篇 —— 清单必须留在工具里按需取（见 `skills/index.py` 顶注）。
+SKILL_RULE = """\
+## 什么时候翻本地技能库（`skill.list` / `skill.load`）
+
+1. **清单不在提示词里**：本地 `skills/` 有上百篇操作手册，系统只给了你这两个工具、没给目录。
+   当用户的要求像是"某个现成工作流"（做 docx 报告、xlsx 台账、写海报、配 RAG、逆向一个二进制…）
+   而你手上没有对应做法时，先 `skill.list`（`query` 用任务里的实词）找到名字，再 `skill.load` 读全那一篇。
+2. **别猜技能名**：`skill.list` 的匹配是大小写不敏感的字符匹配，一次最多回一页；
+   命中太多就用更具体的词再筛，命中为空就换词，**不要凭印象编一个名字**去调 `skill.load`。
+3. **`skill.load` 回的是操作手册**：`data.content` 是那篇 SKILL.md 全文，`data.attachments` 是
+   与它同级的 `references/`、`scripts/`、`templates/` 文件清单（**只有路径与字节数**）。
+   要真读某个附件，用 `py.exec` 按清单里的相对路径读（会要用户确认）—— 不要把清单当成内容用。
+4. **没找到就直说**：库里没有对应技能时，按已有能力做，并告诉用户"这一步没有现成技能可用"，
+   不要假装照着某篇手册做。"""
+
+
 #: 人格/风格档（D4）。**默认档是空串** —— 这样"没改过设置"的提示词与本功能上线前**逐字节相同**，
 #: 实验臂哈希不变、E3 那批数字仍然可比。改风格＝改实验臂，报告里必须写明用了哪一档。
 STYLE_PROMPTS: dict[str, str] = {
@@ -182,6 +201,8 @@ def build_system_prompt(
     parts.append(DELEGATE_RULE)
     # 沙箱规矩：py.exec 的适用面、两段式确认与"被拒就停"（同样进哈希，docs/24）
     parts.append(PY_EXEC_RULE)
+    # 技能库规矩：只说"有 skill.list / skill.load、什么时候用"，**清单不进提示词**（渐进式披露）
+    parts.append(SKILL_RULE)
     if STYLE_PROMPTS[chosen]:
         parts.append(STYLE_PROMPTS[chosen])
     active = ", ".join(toolsets or ["research"])

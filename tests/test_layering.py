@@ -31,6 +31,10 @@ RULES: dict[str, tuple[str, ...]] = {
     "grading": ("runtime", "rpc", "desktop", "tools"),
     # 资料归档与索引：读库 + 落盘，同样不碰运行时、协议、界面与工具
     "library": ("runtime", "rpc", "desktop", "tools"),
+    # 本地技能库索引：只读 skills/ 下的 SKILL.md（只读元数据），只依赖 paths；
+    # 被 tools/skills.py 与下一轮的桌面 `/` 菜单共用，所以**不许**碰运行时/协议/界面/工具/状态层
+    # （反过来依赖 tools 就会绕成环）。
+    "skills": ("runtime", "rpc", "desktop", "tools", "state"),
     # 运行时（回合循环 / 工具注册）：可以用下面的全部，不该碰协议与界面
     "runtime": ("rpc", "desktop"),
     # 工具实现：同上

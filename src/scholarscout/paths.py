@@ -85,6 +85,15 @@ def run_dir(root: Path | None = None) -> Path:
     return (root or home()) / "run"
 
 
+def skills_dir(root: Path | None = None) -> Path:
+    """本地技能库目录 ``<项目根>/skills``（``SKILL.md`` 的根）。
+
+    **不在 ``data/`` 之下**，所以不走 :func:`under_data`：它是随仓库分发的**只读**素材，
+    不是用户数据。索引层的唯一入口是 ``skills/index.get_index()``，别处不要自己拼。
+    """
+    return (root or home()) / "skills"
+
+
 def db_path(root: Path | None = None) -> Path:
     return run_dir(root) / "state.db"
 

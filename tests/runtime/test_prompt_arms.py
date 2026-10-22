@@ -27,13 +27,17 @@ GOLDEN_ON_DEMAND_HASH_V2 = "58c966149165"
 #: **历史值**（2026-10-10 加 `DELEGATE_RULE` 之后、2026-10-22 之前）：委派那一档的哈希。
 GOLDEN_AUTO_HASH_V3 = "1ab0c25756dc"
 GOLDEN_ON_DEMAND_HASH_V3 = "beaa67c49be0"
-#: 现值（2026-10-22 加入 `py.exec` 的「沙箱规矩」`PY_EXEC_RULE` 之后）。
-#: **这是有意识的契约变更，不是"改哈希凑绿"**：模型可见工具从 8 个变成 9 个（`py.exec`），
-#: 而"第一次不带 approval、被拒就停、不许换条路"属于流程纪律，必须进提示词（docs/24 §5）。
-#: 哈希随提示词内容变，正是它存在的意义 —— 于是本版的历史回答与 E3 那批数字**不可比**，
-#: 要拿新数字得按 docs/05 的口径重跑（本次**不重跑**）。
-GOLDEN_AUTO_HASH = "bd2b946b4e5d"
-GOLDEN_ON_DEMAND_HASH = "b9ac0c043bf2"
+#: **历史值**（2026-10-22 加入 `py.exec` 的「沙箱规矩」`PY_EXEC_RULE` 之后那一版）：
+#: 工具数 8 → 9 时换的哈希。现在保留成 `_V4` 是因为 **工具数又变了（9 → 11）**，见下面的现值说明。
+GOLDEN_AUTO_HASH_V4 = "bd2b946b4e5d"
+GOLDEN_ON_DEMAND_HASH_V4 = "b9ac0c043bf2"
+#: 现值（2026-10-22 加入 `SKILL_RULE` 之后）：**因为新增了 `skill.list` / `skill.load` 两个工具**。
+#: 工具本身不会改提示词，改的是"什么时候该翻本地技能库"这段**流程纪律** —— 与 `DELEGATE_RULE` /
+#: `PY_EXEC_RULE` 同一类：只写在 schema 里模型不会守（它压根不知道有上百篇手册可以翻）。
+#: 这段**刻意不列举任何技能名**：清单要按需取（渐进式披露），进提示词就等于每轮付一遍全量。
+#: 于是本版历史回答与 E3 / py.exec 那两批数字**不可比**，要新数字得按 docs/05 的口径重跑（本次不重跑）。
+GOLDEN_AUTO_HASH = "c21d781d15d5"
+GOLDEN_ON_DEMAND_HASH = "20b7b97e452e"
 
 
 def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
@@ -43,10 +47,14 @@ def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
     assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V3, (
         "加入 py.exec 沙箱规矩又换了一次哈希，旧值要留痕"
     )
+    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V4, (
+        "加入技能库规矩（skill.list / skill.load，工具数 9 → 11）又换了一次哈希，旧值要留痕"
+    )
     assert system_prompt_hash(build_system_prompt(auto_artifacts=True)) == GOLDEN_AUTO_HASH
 
 
 def test_on_demand_arm_hash_is_pinned() -> None:
+    assert GOLDEN_ON_DEMAND_HASH != GOLDEN_ON_DEMAND_HASH_V4, "默认档也加了 SKILL_RULE，旧值要留痕"
     assert system_prompt_hash(build_system_prompt()) == GOLDEN_ON_DEMAND_HASH
 
 
