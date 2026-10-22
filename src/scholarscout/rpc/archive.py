@@ -419,7 +419,7 @@ def archive_download(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
 
     sha256 = hashlib.sha256(content).hexdigest()
     is_pdf = "pdf" in media_type.lower() or fetch_url.lower().endswith(".pdf")
-    ext = guess_extension(media_type, fetch_url, is_pdf)
+    ext = guess_extension(media_type, fetch_url, is_pdf, content)
     fetched_at = now_iso()
     source_type = str(target["source_type"] or "") or guess_source_type(requested_url)
     name_title = naming.pick_title(str(target["title"] or ""))

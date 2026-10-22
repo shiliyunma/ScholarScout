@@ -607,3 +607,58 @@ def test_arxiv_body_fetch_uses_the_three_second_interval(
 
     # 第一次不必等；第二次落在同一 host（export.arxiv.org 也算 arxiv）
     assert slept == [pytest.approx(3.0)]
+
+
+# --------------------------------------------------------------- `.ts` 不许被当成视频
+
+TS_SOURCE = "export interface Paper { id: string }\nexport const answer: number = 42;\n"
+
+
+def test_ts_served_as_text_is_read_as_source(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`.ts` + `text/plain` → 按纯文本抽正文。
+
+    `.ts` 同时是 TypeScript 与 MPEG-TS 视频的后缀，判错就是**整片正文被静默丢掉**
+    （标成"音视频不抽正文"）。所以这里钉到 `source.fetch` 的输出上：类型是 ts、走纯文本读取、
+    正文落盘后能读到源码。
+    """
+    _redirect_home(monkeypatch, tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text=TS_SOURCE, headers={"content-type": "text/plain; charset=utf-8"}
+        )
+
+    tool_ctx = _tool_ctx(ctx, handler, llm=StubLlm(reply(SUMMARY_TEXT)))
+
+    result = source_fetch(tool_ctx, url="https://docs.example.com/src/worker.ts")
+    data = result["data"]
+
+    assert data["ext"] == "ts"
+    assert data["extract_status"] == "ok", "TypeScript 源码不许被当成音视频跳过"
+    assert data["extract_detail"] == "按纯文本读取"
+    assert data["chars"] == len(TS_SOURCE)
+    # 落盘后缀必须是 .ts（不能用视频的扩展名），否则后续按扩展名分派又会走错
+    assert data["raw_path"].startswith("data/raw/")
+    assert data["raw_path"].endswith(".ts")
+    assert "export const answer" in (tmp_path / data["text_path"]).read_text(encoding="utf-8")
+
+
+def test_ts_served_as_mpeg_video_is_skipped_as_media(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`.ts` + `video/mp2t` → 媒体（这条才是真的视频，照旧不抽正文）。"""
+    _redirect_home(monkeypatch, tmp_path)
+    video = bytes([0x47]) + b"\x00" * 187 + bytes([0x47]) + b"\x00" * 187
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=video, headers={"content-type": "video/mp2t"})
+
+    tool_ctx = _tool_ctx(ctx, handler)
+
+    data = source_fetch(tool_ctx, url="https://cdn.example.com/clip.ts")["data"]
+
+    assert data["ext"] == "media"
+    assert data["extract_status"] == "skipped_media"
+    assert "音视频不提取正文" in data["extract_detail"]

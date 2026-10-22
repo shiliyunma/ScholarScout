@@ -230,7 +230,7 @@ def source_fetch(
     sha256 = hashlib.sha256(content).hexdigest()
     media_type = response.media_type or ""
     is_pdf = "pdf" in media_type.lower() or fetched_url.lower().endswith(".pdf")
-    extension = guess_extension(media_type, fetched_url, is_pdf)
+    extension = guess_extension(media_type, fetched_url, is_pdf, content)
     size_bytes = len(content)
     # 大文件策略（docs/19 §8.3）：超过抽取阈值就不抽正文，只登记元数据 + 保留源地址。
     large_file = size_bytes > ctx.config.fetch_cfg.large_file_bytes

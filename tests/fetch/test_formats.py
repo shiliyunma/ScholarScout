@@ -17,6 +17,7 @@ import pytest
 
 from scholarscout.fetch.formats import (
     MAX_ARCHIVE_ENTRIES,
+    TS_PACKET_BYTES,
     archive_listing,
     epub_text,
     guess_extension,
@@ -103,6 +104,73 @@ def test_pdf_flag_beats_everything_else() -> None:
 def test_unknown_suffix_falls_through_to_media_type() -> None:
     """未知后缀不当成类型用：仍按 media type 判（否则会落一个乱扩展名）。"""
     assert guess_extension("application/pdf", "https://example.org/paper.weird", True) == "pdf"
+
+
+# --------------------------------------------------------------- `.ts` 双集合命中
+#: 一段真实 TypeScript 源码：`.ts` 同时也是 MPEG-TS 视频的后缀，两个集合都收它，
+#: 按集合先后判（MEDIA 先）会把整片源码标成"音视频不抽正文" —— 正文就被静默丢掉了。
+TS_SOURCE = b"export interface Paper { id: string }\nexport const x: number = 1;\n"
+#: MPEG-TS 的两个包：188 字节一包，每包首字节 0x47。
+TS_VIDEO = bytes([0x47]) + b"\x00" * 187 + bytes([0x47]) + b"\x00" * 187
+
+
+@pytest.mark.parametrize(
+    ("media_type", "content", "expected"),
+    [
+        # 1) 响应头说是文本 → 源码（哪怕字节看起来像视频）
+        ("text/plain", TS_SOURCE, "ts"),
+        ("text/plain; charset=utf-8", TS_SOURCE, "ts"),
+        ("application/json", TS_SOURCE, "ts"),
+        # 2) 响应头说是视频 → 媒体
+        ("video/mp2t", TS_VIDEO, "media"),
+        ("video/mp2t", TS_SOURCE, "media"),
+        ("audio/mpeg", TS_VIDEO, "media"),
+        ("application/mp2t", TS_VIDEO, "media"),
+        # 3) 没有响应头 → 看魔数；看不出是视频就归**文本**（宁可当源码，不当视频）
+        ("", TS_SOURCE, "ts"),
+        ("", None, "ts"),
+        ("", b"", "ts"),
+        ("application/octet-stream", TS_SOURCE, "ts"),
+        ("application/octet-stream", TS_VIDEO, "media"),
+    ],
+)
+def test_ts_is_decided_by_content_not_by_set_order(
+    media_type: str, content: bytes | None, expected: str
+) -> None:
+    assert guess_extension(media_type, "https://example.org/worker.ts", content=content) == expected
+
+
+def test_ts_without_content_argument_degrades_to_text() -> None:
+    """拿不到字节（老调用方只传两个参数）时归文本 —— 不许回退成"视频"。"""
+    assert guess_extension("", "https://example.org/worker.ts") == "ts"
+    assert guess_extension("application/octet-stream", "https://example.org/worker.ts") == "ts"
+
+
+def test_octet_stream_with_real_ts_magic_is_media() -> None:
+    """最不该出错的一条：站点把视频当 `application/octet-stream` 发（CDN 默认行为）。
+
+    响应头说不清、字节是真 MPEG-TS（188 字节一包、两个包首字节都是 0x47）→ 必须判 media；
+    若这里判成 `ts`，一段视频会被当源码塞进正文抽取，落库一堆二进制垃圾。
+    """
+    two_packets = bytes([0x47]) + b"\x00" * 187 + bytes([0x47]) + b"\x00" * 187
+    assert len(two_packets) == TS_PACKET_BYTES * 2
+    assert (
+        guess_extension(
+            "application/octet-stream", "https://cdn.example.com/clip.ts", content=two_packets
+        )
+        == "media"
+    )
+
+
+def test_mpeg_ts_magic_needs_two_sync_packets() -> None:
+    """魔数判定要"连看两包"：只有一个 0x47 的短内容不算视频（否则一段文本也能凑出来）。"""
+    assert (
+        guess_extension("", "https://example.org/a.ts", content=bytes([0x47]) + b"x" * 20) == "ts"
+    )
+    assert (
+        guess_extension("", "https://example.org/a.ts", content=bytes([0x47]) * 188 + b"\x00" * 188)
+        == "ts"
+    )
 
 
 def test_is_archive_matches_only_archives() -> None:
