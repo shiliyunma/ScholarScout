@@ -29,9 +29,11 @@ from scholarscout.providers.settings import KNOWN
 from scholarscout.runtime.registry import ToolSpec, get_spec, register, wire_name
 from scholarscout.tools import register_tools
 
-#: 本版注册的 8 个工具（与 docs/01 §5 的表一一对应）
+#: 本版注册的 9 个工具（`docs/01 §5` 冻结，**新增的两个工具**——`research.delegate` 与 `py.exec`——
+#: 的 schema 与边界写在 `docs/24`；08-10 那段冻结期不动 docs/01 的表格）
 TOOL_NAMES = (
     "note.save",
+    "py.exec",
     "research.delegate",
     "research.search",
     "route.plan",
@@ -62,7 +64,7 @@ def _specs() -> list[ToolSpec]:
 
 
 def test_registered_names_are_unique_and_match_registry() -> None:
-    """注册集 == 契约里那 8 个，且不重名（重名会让「线上名 → 规范名」反查歧义）。"""
+    """注册集 == 契约里那 9 个，且不重名（重名会让「线上名 → 规范名」反查歧义）。"""
     names = register_tools()
     assert names == sorted(TOOL_NAMES), f"注册集与契约不一致：{names}"
     assert len(names) == len(set(names)), f"注册集里有重名：{names}"

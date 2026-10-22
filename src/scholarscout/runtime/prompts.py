@@ -106,6 +106,24 @@ DELEGATE_RULE = """\
    看到就换主流程，**不要重试**。"""
 
 
+#: 沙箱执行的规矩（docs/24）：把 ``py.exec`` 的存在、两段式确认与边界写进提示词。
+#: **这一段进 `build_system_prompt` → 改它即改 `system_prompt_hash`**（换哈希＝换实验臂）。
+#: 为什么必须写进提示词而不只写进 schema：工具声明只说"它是什么"，
+#: 而"第一次不带 approval、被拒就停、不许换条路"是**流程纪律** —— 与委派那一段同属一类。
+PY_EXEC_RULE = """\
+## 什么时候写代码改文件（`py.exec`）
+
+1. **只在"改文件"时才用**：docx / xlsx / pdf 的逐段落、逐单元格编辑，或批量改文件名。
+   **能靠文字说清的回答不要调它** —— 它花的是用户的一次确认。
+2. **两段式，第一次不带 `approval`**：先调一次，把 `data.risks`（要动什么）交给用户看；
+   用户点完，系统会带着 `approval=...` 重新调用同一个工具。**不要自己填 `approval`** ——
+   四个选项是用户的选择，不是你的。
+3. **被拒就停**：`ok=false` 且 `error` 说被拒时，按那句话办 —— 不要换写法重试，
+   也不要换条路达成同一目的；把这个限制如实告诉用户。
+4. **边界**：只有 `data/` 下的工作目录可读写；网络、子进程、原生调用、系统目录一律被拦。
+   代码要把"改了哪个文件、改了什么"打印出来，否则用户看不到结果。"""
+
+
 #: 人格/风格档（D4）。**默认档是空串** —— 这样"没改过设置"的提示词与本功能上线前**逐字节相同**，
 #: 实验臂哈希不变、E3 那批数字仍然可比。改风格＝改实验臂，报告里必须写明用了哪一档。
 STYLE_PROMPTS: dict[str, str] = {
@@ -162,6 +180,8 @@ def build_system_prompt(
     parts.append(RESEARCH_STATE_RULE)
     # 委派规矩：告诉模型 research.delegate 的存在、适用面与额度口径（改了它就改了 system_prompt_hash）
     parts.append(DELEGATE_RULE)
+    # 沙箱规矩：py.exec 的适用面、两段式确认与"被拒就停"（同样进哈希，docs/24）
+    parts.append(PY_EXEC_RULE)
     if STYLE_PROMPTS[chosen]:
         parts.append(STYLE_PROMPTS[chosen])
     active = ", ".join(toolsets or ["research"])

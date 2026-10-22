@@ -18,9 +18,11 @@ from scholarscout.runtime.prompts import (
 )
 from scholarscout.settings_io import FIELDS, SettingsError
 
-#: 与 tests/runtime/test_prompt_arms.py 里的钉值一致（加入 research.delegate 的委派规矩后更新）
-GOLDEN_ON_DEMAND_HASH = "beaa67c49be0"
-GOLDEN_AUTO_HASH = "1ab0c25756dc"
+#: 与 tests/runtime/test_prompt_arms.py 里的钉值一致。
+#: 2026-10-22 更新：新增模型可见工具 `py.exec` 与它的 `PY_EXEC_RULE`（docs/24）——
+#: **有意识的契约变更**（工具集 8 → 9），不是为凑绿而改值；理由写在 `test_prompt_arms.py` 的钉值注释里。
+GOLDEN_ON_DEMAND_HASH = "b9ac0c043bf2"
+GOLDEN_AUTO_HASH = "bd2b946b4e5d"
 
 
 def test_style_choices_and_prompt_texts_do_not_drift() -> None:

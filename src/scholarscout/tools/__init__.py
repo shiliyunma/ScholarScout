@@ -15,6 +15,7 @@ def register_tools() -> list[str]:
     from scholarscout.tools import (
         delegate,
         note_save,
+        py_exec,
         research_search,
         route_plan,
         route_revise,
@@ -31,4 +32,5 @@ def register_tools() -> list[str]:
     route_revise.register()
     note_save.register()
     delegate.register()
+    py_exec.register()
     return registry.registered_names()

@@ -24,17 +24,25 @@ GOLDEN_ON_DEMAND_HASH_V1 = "f68b1b7abb03"
 #:   —— 是 2026-10-08 引入 `research.delegate`（docs/01 §5.18）之前的现值。
 GOLDEN_AUTO_HASH_V2 = "fa8522427ff6"
 GOLDEN_ON_DEMAND_HASH_V2 = "58c966149165"
-#: 现值（2026-10-10 加入子任务 `research.delegate` 的「委派规矩」`DELEGATE_RULE` 之后）。
-#: **注意**：§5.17 那批 E3 数字（覆盖率 100%、ungrounded 0%）是更早的 V1 跑的；
-#: 要拿新数字得按 docs/05 的口径重跑 E3（本次**不重跑**）。
-GOLDEN_AUTO_HASH = "1ab0c25756dc"
-GOLDEN_ON_DEMAND_HASH = "beaa67c49be0"
+#: **历史值**（2026-10-10 加 `DELEGATE_RULE` 之后、2026-10-22 之前）：委派那一档的哈希。
+GOLDEN_AUTO_HASH_V3 = "1ab0c25756dc"
+GOLDEN_ON_DEMAND_HASH_V3 = "beaa67c49be0"
+#: 现值（2026-10-22 加入 `py.exec` 的「沙箱规矩」`PY_EXEC_RULE` 之后）。
+#: **这是有意识的契约变更，不是"改哈希凑绿"**：模型可见工具从 8 个变成 9 个（`py.exec`），
+#: 而"第一次不带 approval、被拒就停、不许换条路"属于流程纪律，必须进提示词（docs/24 §5）。
+#: 哈希随提示词内容变，正是它存在的意义 —— 于是本版的历史回答与 E3 那批数字**不可比**，
+#: 要拿新数字得按 docs/05 的口径重跑（本次**不重跑**）。
+GOLDEN_AUTO_HASH = "bd2b946b4e5d"
+GOLDEN_ON_DEMAND_HASH = "b9ac0c043bf2"
 
 
 def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
     """对照臂必须逐字钉死，否则"自动 vs 按需"就不是单变量对照。"""
     assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V1, "提示词变过就得留痕（旧值仍在上面的常量里）"
     assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V2, "加入委派规矩又换了一次哈希，旧值要留痕"
+    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V3, (
+        "加入 py.exec 沙箱规矩又换了一次哈希，旧值要留痕"
+    )
     assert system_prompt_hash(build_system_prompt(auto_artifacts=True)) == GOLDEN_AUTO_HASH
 
 

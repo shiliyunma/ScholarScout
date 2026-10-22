@@ -1,4 +1,4 @@
-"""契约闸 3/4：**8 个模型可见工具的回包是同一个信封**（docs/01 §5.0）。
+"""契约闸 3/4：**9 个模型可见工具的回包是同一个信封**（docs/01 §5.0；第 9 个 `py.exec` 见 docs/24）。
 
 为什么这道闸必须有：模型是照着 `refs` / `ok` / `error` 读工具结果的。
 任何一个工具改回扁平 dict，模型就看到「有内容但没有 ok」——它要么把失败当成功，
@@ -35,6 +35,7 @@ from scholarscout.fetch.http import FetchError, HttpClient
 from scholarscout.rpc.methods import AppContext
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.tools import delegate as delegate_tool
+from scholarscout.tools import py_exec as py_exec_tool
 from scholarscout.tools import register_tools
 from scholarscout.tools import research_search as search_tool
 from scholarscout.tools import source_fetch as fetch_tool
@@ -52,9 +53,10 @@ ENVELOPE_KEYS = {"ok", "data", "error", "refs"}
 #: 唯一会在 `data.note` 里带「这一轮为什么这么搜」的工具
 NOTE_ALLOWED = {"research.search"}
 
-#: 本版注册的工具（`tools/__init__.register_tools()` 的实际注册集，8 个）
+#: 本版注册的工具（`tools/__init__.register_tools()` 的实际注册集，9 个）
 TOOL_NAMES = (
     "note.save",
+    "py.exec",
     "research.delegate",
     "research.search",
     "route.plan",
@@ -74,7 +76,7 @@ class _DeadHttp:
 
 @pytest.fixture
 def tc(ctx: AppContext, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ToolContext:
-    """真实装配 + 一条真来源；落盘重定向到 tmp，注册表按真实路径注册 8 个工具。"""
+    """真实装配 + 一条真来源；落盘重定向到 tmp，注册表按真实路径注册 9 个工具。"""
     redirect_home(monkeypatch, tmp_path)
     insert_source(ctx.db)
     register_tools()
@@ -151,7 +153,18 @@ def _delegate(tc: ToolContext) -> dict[str, Any]:
     return delegate_tool.research_delegate(tc, ["教育智能体的检索增强有哪些代表工作"])
 
 
-#: 现在就是绿的 7 个工具：名字 → 桩调用（每个都真实进 handler）
+def _py_exec(tc: ToolContext) -> dict[str, Any]:
+    """执行器：**不带 approval** 调一次 → 必被审批门挡回 `needs_approval`。
+
+    这道闸只验回包形状，所以走的是"还没拿到用户授权"那条真实分支 ——
+    **不在这里真的起子进程**。真跑起来的那条（`ok:true` 与 `ok:false`）在
+    `tests/tools/test_py_exec.py` 里，用工作目录里的固定小脚本 + 全桩。
+    """
+    return py_exec_tool.py_exec(tc, code='print("shape")')
+
+
+#: 现在就是绿的 8 个工具（注册表 9 个里的 8 个；`route.revise` 的样本在下面单独钉）：
+#: 名字 → 桩调用（每个都真实进 handler）
 SAMPLES = {
     "research.search": _search,
     "source.fetch": _fetch,
@@ -160,11 +173,12 @@ SAMPLES = {
     "route.plan": _route_plan,
     "note.save": _note_save,
     "research.delegate": _delegate,
+    "py.exec": _py_exec,
 }
 
 
 def test_registry_matches_the_documented_tool_set(tc: ToolContext) -> None:
-    """注册集就是这 8 个：不多不少、不重名（名字是 `docs/01 §5` 的唯一索引）。"""
+    """注册集就是这 9 个：不多不少、不重名（名字是 `docs/01 §5` + `docs/24` 的索引）。"""
     names = register_tools()
     assert names == sorted(TOOL_NAMES), f"注册集与契约不一致：{names}"
     assert len(names) == len(set(names)), f"注册集里有重名：{names}"

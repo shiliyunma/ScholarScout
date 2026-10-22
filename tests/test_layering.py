@@ -35,6 +35,9 @@ RULES: dict[str, tuple[str, ...]] = {
     "runtime": ("rpc", "desktop"),
     # 工具实现：同上
     "tools": ("rpc", "desktop"),
+    # 沙箱执行器与审批门：纯标准库 + paths，**不许**回头依赖运行时/协议/界面/工具/状态层
+    # （它被 tools/py.exec 调用；反过来依赖 tools 就会绕成环）
+    "sandbox": ("runtime", "rpc", "desktop", "tools", "state"),
     # 协议层：当然不能反过来依赖界面
     "rpc": ("desktop",),
     # 渠道层（入口，与 desktop/ 同级）：只经 rpc/ 说话，不读库、不出网、不碰运行时/工具/界面
