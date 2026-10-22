@@ -35,7 +35,7 @@ from scholarscout.fetch.formats import (
     legacy_office_reason,
 )
 from scholarscout.fetch.html_text import extract_html
-from scholarscout.fetch.http import FetchError
+from scholarscout.fetch.http import FetchError, FetchResult
 from scholarscout.fetch.throttle import interval_for_url
 from scholarscout.fetch.urls import guess_source_type, prefer_direct_file
 from scholarscout.library import naming
@@ -167,6 +167,78 @@ def _fetch_failure_reason(exc: FetchError, url: str) -> str:
     return reason
 
 
+def _source_row(url: str, media_type: str, *, title: str = "") -> dict[str, Any]:
+    """拼 `sources` 表的一行（抓取与「音视频不下载」两条路共用一份口径，免得元数据漂移）。"""
+    return {
+        "url": url,
+        "url_canonical": canonical_url(url),
+        "domain": (urlparse(url).hostname or "").lower(),
+        "title": title or url,
+        "authors_json": [],
+        "year": None,
+        "venue": None,
+        "doi": None,
+        "source_type": guess_source_type(url),
+        "meta_json": {"mime": media_type},
+    }
+
+
+def _declared_size(headers: dict[str, str]) -> int:
+    """``Content-Length`` → 字节数；缺失 / 不是数字 / 负数一律 ``0``（= 大小未知，不编数字）。"""
+    try:
+        return max(0, int(headers.get("content-length", "")))
+    except ValueError:
+        return 0
+
+
+def _media_without_body(
+    ctx: ToolContext,
+    *,
+    url: str,
+    source_id: str | None,
+    requested_url: str,
+    fetched_url: str,
+    response: FetchResult,
+) -> ToolResult:
+    """音视频：**body 一个字节都没下载**（出网层按 Content-Type / 魔数就判掉了）。
+
+    没有原件可落盘，所以只登记来源，**不写 `documents` 行**：写一行指向"0 字节原件"的文档
+    等于告诉下游「原件在这儿」，比没有更糟（下载按钮点开是空文件；两份不同的视频还会撞上
+    同一个空串哈希 → 假去重）。状态口径与"下载完才发现是音视频"那条**完全一致**
+    （`skipped_media`），调用方不用分辨走的是哪条路。
+    """
+    media_type = response.media_type or ""
+    size_bytes = _declared_size(response.headers)
+    kind = f"音视频不提取正文（{media_type or '未知类型'}）；按响应头判定，未下载正文"
+    detail = _file_detail(size_bytes, kind=kind) if size_bytes else f"{kind}，大小未知"
+    resolved_source_id, _created = upsert_source(
+        ctx.db, _source_row(url, media_type), source_id=source_id
+    )
+    return ok(
+        {
+            "doc_id": "",
+            "source_id": resolved_source_id,
+            "mime": media_type,
+            "chars": 0,
+            "lang": None,
+            "bytes": size_bytes,
+            "ext": "media",
+            "raw_path": "",
+            "text_path": "",
+            "requested_url": requested_url,
+            "fetched_url": fetched_url,
+            "used_landing_page": fetched_url == url,
+            "extract_status": "skipped_media",
+            "extract_engine": "none",
+            "extract_detail": detail,
+            "truncated": False,
+            "cached": False,
+            "summary": None,
+        },
+        refs={"source_ids": [resolved_source_id], "doc_ids": [], "summary_ids": []},
+    )
+
+
 def source_fetch(
     ctx: ToolContext,
     url: str | None = None,
@@ -197,17 +269,26 @@ def source_fetch(
         if direct is not None:
             try:
                 response = http.fetch(
-                    direct, cache=not force, min_interval_s=interval_for_url(direct, intervals)
+                    direct,
+                    cache=not force,
+                    min_interval_s=interval_for_url(direct, intervals),
+                    peek_media=True,
                 )
             except FetchError:
                 response = http.fetch(
-                    url, cache=not force, min_interval_s=interval_for_url(url, intervals)
+                    url,
+                    cache=not force,
+                    min_interval_s=interval_for_url(url, intervals),
+                    peek_media=True,
                 )
             else:
                 fetched_url = direct
         else:
             response = http.fetch(
-                url, cache=not force, min_interval_s=interval_for_url(url, intervals)
+                url,
+                cache=not force,
+                min_interval_s=interval_for_url(url, intervals),
+                peek_media=True,
             )
     except FetchError as exc:
         # **单源失败绝不终止整轮**（真机 2026-10-12 实测：一轮 6 次 source.fetch 合计 836s，
@@ -226,6 +307,17 @@ def source_fetch(
                 "status": exc.status,
             },
             refs={},
+        )
+
+    if response.body_skipped:
+        # 音视频：出网层判在 **body 之前**（`peek_media`），这里连原件都没有
+        return _media_without_body(
+            ctx,
+            url=url,
+            source_id=source_id,
+            requested_url=requested_url,
+            fetched_url=fetched_url,
+            response=response,
         )
 
     content: bytes = response.content
@@ -451,18 +543,7 @@ def source_fetch(
     text_file.write_text(text, encoding="utf-8")
 
     # ---- 入库
-    source_row: dict[str, Any] = {
-        "url": url,
-        "url_canonical": canonical_url(url),
-        "domain": (urlparse(url).hostname or "").lower(),
-        "title": title or url,
-        "authors_json": [],
-        "year": None,
-        "venue": None,
-        "doi": None,
-        "source_type": guess_source_type(url),
-        "meta_json": {"mime": media_type},
-    }
+    source_row: dict[str, Any] = _source_row(url, media_type, title=title)
     resolved_source_id, _created = upsert_source(ctx.db, source_row, source_id=source_id)
     doc_id, _doc_created = save_document(
         ctx.db,

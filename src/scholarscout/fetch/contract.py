@@ -97,6 +97,10 @@ class FetchResult:
     media_type: str = ""
     from_cache: bool = False
     elapsed_ms: int = 0
+    #: **正文没下载**（出网层在读完之前就判出音视频，见 `fetch/http.py` 的 `peek_media`）。
+    #: 这时 ``content`` 一定是空串，但"空"不等于"正文是空的"：调用方不许把空字节当原件落盘、
+    #: 也不许拿它算内容哈希（两份不同的视频会算出同一个哈希 → 假去重）。
+    body_skipped: bool = False
 
     @property
     def charset(self) -> str:

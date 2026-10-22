@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -662,6 +662,41 @@ def test_ts_served_as_mpeg_video_is_skipped_as_media(
     assert data["ext"] == "media"
     assert data["extract_status"] == "skipped_media"
     assert "音视频不提取正文" in data["extract_detail"]
+
+
+def test_video_body_is_never_downloaded(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一个 15MB 的 mp4：`Content-Type` 一判就结束 —— 不读 body、不落"0 字节原件"、不登记文档。
+
+    改前是"整包下完再发现是音视频"：用户看到的是 skipped_media，账单上是 15MB 流量，
+    盘上还多一个假原件（`documents` 里那行指向它 → 下载按钮点开是空文件）。
+    """
+    _redirect_home(monkeypatch, tmp_path)
+    payload = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 15_000_000
+    pulled: list[int] = []
+
+    class _CountingStream(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            pulled.append(len(payload))
+            yield payload
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "video/mp4", "content-length": str(len(payload))},
+            stream=_CountingStream(),
+        )
+
+    data = source_fetch(_tool_ctx(ctx, handler), url="https://cdn.example.com/lecture.mp4")["data"]
+
+    assert pulled == [], "音视频正文一个字节都不许下载"
+    assert data["ext"] == "media"
+    assert data["extract_status"] == "skipped_media"
+    assert data["bytes"] == len(payload), "大小按 Content-Length 如实登记，不编也不漏"
+    assert data["raw_path"] == "" and data["text_path"] == "", "没正文就没有原件路径"
+    assert ctx.db.scalar_int("SELECT count(*) FROM documents") == 0, "没下正文不许登记文档"
+    assert ctx.db.scalar_int("SELECT count(*) FROM sources") == 1, "来源本身仍要登记"
 
 
 # --------------------------------------------------------------- 老格式不许假装能读

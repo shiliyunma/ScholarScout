@@ -44,6 +44,7 @@ import httpx
 
 # 契约类型已拆到 `fetch/contract.py`：此处 import 即重导出（`from ...http import FetchError` 照旧）。
 from scholarscout.fetch.contract import FetchError, FetchResult
+from scholarscout.fetch.media import MEDIA_SNIFF_BYTES, is_media_type, looks_like_media
 
 __all__ = [
     "DEFAULT_ACCEPT",
@@ -71,9 +72,25 @@ _ERROR_BODY_CHARS = 500
 
 
 def _body_snippet(response: httpx.Response) -> str:
-    """取回包正文的截断片段（读不到就回空串 —— 取证失败不能把原错误盖掉）。"""
+    """取回包正文的截断片段（读不到就回空串 —— 取证失败不能把原错误盖掉）。
+
+    GET 是**流式**拿到的（`stream=True`，为的是在读完之前就能判音视频/超限），
+    所以这里只往下读 ``_ERROR_BODY_CHARS`` 个字符的字节预算就停：错误页可能很大，
+    取证不该为它再付一次整包下载；POST/PUT 那条路本来就是整包读回来的，直接取 `content`。
+    """
     try:
-        raw = response.content
+        if response.is_stream_consumed:
+            raw = response.content
+        else:
+            budget = _ERROR_BODY_CHARS * 4  # UTF-8 一个字符最多 4 字节
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_bytes():
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= budget:
+                    break
+            raw = b"".join(chunks)
     except Exception:  # 已读流 / 解码失败都只当作「没有正文」
         return ""
     return raw.decode("utf-8", errors="replace")[:_ERROR_BODY_CHARS]
@@ -304,7 +321,14 @@ class HttpClient:
         min_interval_s: float = 0.0,
         cache: bool = True,
         headers: dict[str, str] | None = None,
+        peek_media: bool = False,
     ) -> FetchResult:
+        """GET 一个地址。
+
+        ``peek_media=True``：**先判音视频再决定要不要读 body** —— 响应头是 ``video/*``/``audio/*``，
+        或头里说不清但前 8KB 魔数是音视频，就标 ``body_skipped`` 并立即关流（一个字节都不下载）。
+        ``source.fetch`` 用它跳过音视频正文；协议层的按需下载不开它（真要原件）。
+        """
         if cache:
             cached = self._read_cache(url, accept)
             if cached is not None:
@@ -317,6 +341,7 @@ class HttpClient:
             urlparse(url).netloc,
             min_interval_s,
             headers=headers,
+            peek_media=peek_media,
         )
         if cache:
             self._write_cache(url, accept, result)
@@ -465,6 +490,7 @@ class HttpClient:
         attempts: int | None = None,
         request_timeout: httpx.Timeout | None = None,
         multipart: tuple[dict[str, str], dict[str, tuple[str, bytes, str]]] | None = None,
+        peek_media: bool = False,
     ) -> FetchResult:
         self._limiter.wait(rate_key, min_interval_s)
         started = self._clock()
@@ -504,9 +530,17 @@ class HttpClient:
                         **self._timeout_kwargs(request_timeout),
                     )
                 else:
-                    response = self._client.get(
-                        url, headers=request_headers, **self._timeout_kwargs(request_timeout)
+                    # **流式**取回：body 还没落进内存，才有机会在读完之前判音视频 / 判超限。
+                    # `Client.get()` 会顺手把整包读进来（httpx 的 `stream=False` 语义），
+                    # 所以走 `build_request` + `send(stream=True)`。谁取谁负责关：
+                    # `_read_body` 的每条早断路径都 `close()`，读完的流由 httpx 释放。
+                    request = self._client.build_request(
+                        "GET",
+                        url,
+                        headers=request_headers,
+                        **self._timeout_kwargs(request_timeout),
                     )
+                    response = self._client.send(request, stream=True)
             except httpx.TimeoutException as exc:
                 last_error = FetchError("timeout", f"请求超时（{self.timeout_s}s）：{url}", url=url)
                 last_error.__cause__ = exc
@@ -517,7 +551,7 @@ class HttpClient:
                 if response.status_code in _RETRYABLE_STATUS:
                     last_error = self._status_error(response, url)
                 else:
-                    return self._ok_or_raise(response, url, started)
+                    return self._ok_or_raise(response, url, started, peek_media=peek_media)
             if attempt < total_attempts - 1:
                 # 退避同样被夹到剩余预算内：不让 sleep 把整次抓取拖过 deadline
                 delay = self._backoff_seconds(attempt, last_error)
@@ -536,10 +570,27 @@ class HttpClient:
             return min(60.0, self.backoff_base_s * (self.backoff_factor**attempt) * 2)
         return self.backoff_base_s * (self.backoff_factor**attempt)
 
-    def _ok_or_raise(self, response: httpx.Response, url: str, started: float) -> FetchResult:
+    def _ok_or_raise(
+        self, response: httpx.Response, url: str, started: float, *, peek_media: bool = False
+    ) -> FetchResult:
         if response.status_code >= 400:
             raise self._status_error(response, url)
-        content = response.content
+        content = self._read_body(response, peek_media=peek_media)
+        headers = {k.lower(): v for k, v in response.headers.items()}
+        media_type = response.headers.get("content-type", "")
+        if content is None:
+            # 音视频：判在 body 之前（`peek_media`），一个字节都没留下。
+            # `content` 留空 + `body_skipped` 标记 —— 上游要分得清「没下载」和「正文是空的」。
+            return FetchResult(
+                url=str(response.url),
+                status=response.status_code,
+                content=b"",
+                headers=headers,
+                media_type=media_type,
+                from_cache=False,
+                elapsed_ms=int((self._clock() - started) * 1000),
+                body_skipped=True,
+            )
         if len(content) > self.max_bytes:
             raise FetchError(
                 "too_large",
@@ -551,17 +602,50 @@ class HttpClient:
             url=str(response.url),
             status=response.status_code,
             content=content,
-            headers={k.lower(): v for k, v in response.headers.items()},
-            media_type=response.headers.get("content-type", ""),
+            headers=headers,
+            media_type=media_type,
             from_cache=False,
             elapsed_ms=int((self._clock() - started) * 1000),
         )
+
+    def _read_body(self, response: httpx.Response, *, peek_media: bool) -> bytes | None:
+        """流式读回包正文；``None`` = 判出是音视频，**body 一个字节都没留**。
+
+        判定顺序（全部发生在读完之前）：
+
+        1. ``Content-Type`` 是 ``video/*`` / ``audio/*`` → 不读 body，直接关流；
+        2. 头里说不清（``application/octet-stream`` / 缺失）→ 只读前 ``MEDIA_SNIFF_BYTES``
+           字节看魔数（`fetch/media.py`），命中就立即关流；
+        3. 判不出来（文本 / PDF / Office / 其它二进制）→ 照旧读全，**行为与改前一致**。
+
+        为什么必须在读之前判：以前是拿到整份字节后才发现是 media，一个 15MB 的 mp4
+        已经全下完了 —— 用户看到的是"音视频不提取正文"，账单上是整包流量。
+        """
+        if peek_media and is_media_type(response.headers.get("content-type", "")):
+            response.close()  # ← 判在 body 之前：整份 mp4 在这一行就结束
+            return None
+        stream = response.iter_bytes()
+        head = b""
+        if peek_media:
+            while len(head) < MEDIA_SNIFF_BYTES:
+                chunk = next(stream, b"")
+                if not chunk:
+                    break
+                head += chunk
+            if looks_like_media(head):
+                response.close()  # ← 魔数判出音视频，立即关流，剩下的不再读
+                return None
+        parts = [head] if head else []
+        parts.extend(stream)
+        return b"".join(parts)
 
     @staticmethod
     def _status_error(response: httpx.Response, url: str) -> FetchError:
         status = response.status_code
         # 回包正文留一份（截断）：平台把 code/msg 全放这里，丢了它上层只能报「400」
         body = _body_snippet(response)
+        # 流没读完也要放回连接池：GET 是流式取的，不关就漏连接（重试时尤其明显）。
+        response.close()
         if status in (403, 451):
             return FetchError(
                 "forbidden", f"被拒绝（{status}）：{url}", url=url, status=status, body=body
