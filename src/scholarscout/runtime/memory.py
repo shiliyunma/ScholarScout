@@ -28,6 +28,8 @@ import re
 from typing import Any
 
 from scholarscout.state import facts as state_facts
+from scholarscout.state import memory as state_memory
+from scholarscout.state import sessions as state_sessions
 from scholarscout.state.db import Database
 from scholarscout.state.migrate import now_iso
 from scholarscout.state.sessions import new_id, session_meta, set_session_meta
@@ -58,13 +60,7 @@ MERGE_HINT = "（记忆较多，只发最新的；在设置里整理或用 memor
 
 
 def list_facts(db: Database) -> list[dict[str, Any]]:
-    return [
-        dict(row)
-        for row in db.query(
-            "SELECT id, text, kind, target, source_session, created_at, updated_at FROM user_facts"
-            " ORDER BY created_at DESC"
-        )
-    ]
+    return state_facts.list_facts(db)
 
 
 def _find_similar(db: Database, text: str) -> dict[str, Any] | None:
@@ -146,8 +142,7 @@ def update_fact(
     cleaned = " ".join(str(text or "").split())
     if not cleaned:
         raise ValueError("记忆内容不能为空")
-    row = db.query_one("SELECT id FROM user_facts WHERE id = ?", (fact_id,))
-    if row is None:
+    if not state_facts.fact_exists(db, fact_id):
         raise ValueError(f"记忆不存在：{fact_id}")
     if kind is not None:
         if kind not in KINDS:
@@ -159,8 +154,7 @@ def update_fact(
 
 
 def remove_fact(db: Database, fact_id: str) -> dict[str, Any]:
-    row = db.query_one("SELECT id FROM user_facts WHERE id = ?", (fact_id,))
-    if row is None:
+    if not state_facts.fact_exists(db, fact_id):
         raise ValueError(f"记忆不存在：{fact_id}")
     state_facts.delete_fact(db, fact_id)
     return {"ok": True, "id": fact_id}
@@ -256,20 +250,11 @@ def build_transcript(db: Database, session_id: str, *, max_chars: int = 4000) ->
     只取用户消息（不取助手的长篇回答）—— 关于用户的事实几乎都在用户自己说的话里，
     而助手的回答又长又贵，塞进去只会稀释信号。
     """
-    rows = db.query(
-        "SELECT role, content FROM messages WHERE session_id = ? AND role = 'user'"
-        " ORDER BY created_at",
-        (session_id,),
-    )
-    parts = [str(row["content"])[:600] for row in rows if str(row["content"]).strip()]
-    artifacts = db.query(
-        "SELECT topic FROM learning_routes WHERE session_id = ?"
-        " UNION SELECT topic FROM topic_maps WHERE session_id = ?",
-        (session_id, session_id),
-    )
-    if artifacts:
-        topics = "、".join(str(row["topic"]) for row in artifacts)
-        parts.append(f"（这次会话产出的主题：{topics}）")
+    rows = state_sessions.user_message_texts(db, session_id)
+    parts = [text[:600] for text in rows if text.strip()]
+    topics = state_memory.session_topics(db, session_id)
+    if topics:
+        parts.append(f"（这次会话产出的主题：{'、'.join(topics)}）")
     text = "\n".join(parts)
     return text[-max_chars:] if len(text) > max_chars else text
 
@@ -348,27 +333,15 @@ def should_extract(db: Database, session_id: str, *, nudge_turns: int = 0) -> bo
       距上次抽取的用户轮数 ≥ `nudge_turns` 就再抽一次，让长会话中途出现的稳定事实
       （如"我改用 PyTorch 了"）不必等到下次会话才被记。由 `mark_extracted` 记录基准轮。
     """
-    turns = db.query_one(
-        "SELECT count(*) AS n FROM messages WHERE session_id = ? AND role = 'user'", (session_id,)
-    )
-    user_turns = int(turns["n"]) if turns is not None else 0
+    user_turns = state_sessions.count_user_messages(db, session_id)
 
     if nudge_turns > 0:
         last = int(session_meta(db, session_id).get(_EXTRACT_TURN_KEY, 0) or 0)
         return user_turns - last >= nudge_turns
 
-    already = db.query_one(
-        "SELECT count(*) AS n FROM user_facts WHERE source_session = ?", (session_id,)
-    )
-    if already is not None and int(already["n"]) > 0:
+    if state_facts.count_facts_from_session(db, session_id) > 0:
         return False
-    produced = db.query_one(
-        "SELECT (SELECT count(*) FROM learning_routes WHERE session_id = ?)"
-        " + (SELECT count(*) FROM topic_maps WHERE session_id = ?)"
-        " + (SELECT count(*) FROM notes WHERE session_id = ?) AS n",
-        (session_id, session_id, session_id),
-    )
-    produced_n = int(produced["n"]) if produced is not None else 0
+    produced_n = state_memory.count_session_artifacts(db, session_id)
     return user_turns >= 2 or produced_n > 0
 
 
@@ -377,8 +350,5 @@ def mark_extracted(db: Database, session_id: str) -> None:
 
     **无论抽没抽到新事实都要记**：不然抽到空表时，下一轮又会触发一次，白花钱。
     """
-    turns = db.query_one(
-        "SELECT count(*) AS n FROM messages WHERE session_id = ? AND role = 'user'", (session_id,)
-    )
-    current = int(turns["n"]) if turns is not None else 0
+    current = state_sessions.count_user_messages(db, session_id)
     set_session_meta(db, session_id, {_EXTRACT_TURN_KEY: current})

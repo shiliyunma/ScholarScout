@@ -283,6 +283,29 @@ def count_messages(db: Database, session_id: str) -> int:
     )
 
 
+def user_message_texts(db: Database, session_id: str) -> list[str]:
+    """这条会话里**用户说过的话**（按 ``created_at`` 正序）。
+
+    记忆抽取只要用户自己的表述：助手的长回答又长又贵，塞进去只会稀释信号。
+    与 :func:`list_messages` 的两点区别：按 ``created_at`` 排、**不过滤 ``active``**
+    —— 记忆的判据是"用户说过几轮"，不看界面当前还显示几条。
+    """
+    rows = db.query(
+        "SELECT role, content FROM messages WHERE session_id = ? AND role = 'user'"
+        " ORDER BY created_at",
+        (session_id,),
+    )
+    return [str(row["content"]) for row in rows]
+
+
+def count_user_messages(db: Database, session_id: str) -> int:
+    """用户发言条数（记忆 nudge 的触发基准；同样**不过滤 ``active``**）。"""
+    return db.scalar_int(
+        "SELECT count(*) AS n FROM messages WHERE session_id = ? AND role = 'user'",
+        (session_id,),
+    )
+
+
 def _title_from(content: str) -> str:
     """兼容旧调用点：等价于 `auto_title`。"""
     return auto_title(content)

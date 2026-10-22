@@ -1,13 +1,38 @@
-"""跨会话记忆的落库（`user_facts` 表，只读字段口径见 docs/02 §5）。
+"""跨会话记忆的落库与读取（`user_facts` 表，只读字段口径见 docs/02 §5）。
 
-本模块只做「一条记忆的一行」的增删改：入参是领域值（文本/类别/账本/时间），
-返回空或行数，不暴露 ``sqlite3.Connection``。抽取、判重、预算裁剪都在
+本模块只做「记忆行」的增删改查：入参是领域值（文本/类别/账本/时间/会话 id），
+返回行、布尔或行数，不暴露 ``sqlite3.Connection``。抽取、判重、预算裁剪都在
 ``runtime/memory.py``，它们属于领域判断，不属于状态层。
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from scholarscout.state.db import Database
+
+
+def list_facts(db: Database) -> list[dict[str, Any]]:
+    """全部记忆，**新的在前**（注入渲染与界面列表共用这一种顺序）。"""
+    return [
+        dict(row)
+        for row in db.query(
+            "SELECT id, text, kind, target, source_session, created_at, updated_at FROM user_facts"
+            " ORDER BY created_at DESC"
+        )
+    ]
+
+
+def fact_exists(db: Database, fact_id: str) -> bool:
+    """这条记忆还在不在（改/删前先判，好让调用方给出准确的「不存在」文案）。"""
+    return db.query_one("SELECT id FROM user_facts WHERE id = ?", (fact_id,)) is not None
+
+
+def count_facts_from_session(db: Database, session_id: str) -> int:
+    """这条会话已经记下几条记忆（「每会话最多抽一次」的判据）。"""
+    return db.scalar_int(
+        "SELECT count(*) AS n FROM user_facts WHERE source_session = ?", (session_id,)
+    )
 
 
 def insert_fact(
