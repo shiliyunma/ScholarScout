@@ -53,7 +53,13 @@ class TurnContext:
     cancel_event: threading.Event | None = None
 
     def tools(self, toolsets: Sequence[str] | None) -> list[registry.ToolSpec]:
-        return registry.get_tools(toolsets)
+        """这一轮可见的工具 —— **先过开关收敛**（`features.enable_kb` 关着时没有 `kb`）。
+
+        会话的 `toolsets` 来源有三处（CLI 参数、RPC `session.create` 参数、`AppContext` 默认），
+        其中 RPC 那个是前端传的。所以门控不能只做在装配处，必须在**取工具这一层**再收敛一次。
+        """
+        enabled = registry.enabled_toolsets(toolsets, enable_kb=self.config.features.enable_kb)
+        return registry.get_tools(enabled)
 
     def is_cancelled(self, turn_id: str) -> bool:
         """这一轮被取消了吗（步间检查）。

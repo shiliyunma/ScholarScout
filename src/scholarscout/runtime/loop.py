@@ -105,6 +105,15 @@ def _fit_history(history: list[dict[str, Any]], budget_chars: int) -> list[dict[
     return [*prefix, *kept, note]
 
 
+def _prompt_toolsets(toolsets: Sequence[str] | None, config: Config) -> list[str]:
+    """提示词里那行「当前可用工具集」必须与实际工具一致 —— 所以同样过开关收敛。
+
+    只在 `build_messages` / `mark_system_prompt` 用：`enable_kb` 关着时那行仍是 `research`，
+    提示词因此与旧版**逐字节相同**（黄金哈希不变，历史实验数字仍可比）。
+    """
+    return list(registry.enabled_toolsets(toolsets, enable_kb=config.features.enable_kb))
+
+
 def build_messages(
     db: Database,
     session_id: str,
@@ -114,7 +123,7 @@ def build_messages(
 ) -> list[dict[str, Any]]:
     """系统提示 + 会话历史（只取有内容的用户/助手消息）。"""
     prompt = build_system_prompt(
-        toolsets=list(toolsets or ["research"]),
+        toolsets=_prompt_toolsets(toolsets, config),
         allow_clarify=config.runtime.allow_clarify,
         auto_artifacts=config.generation.auto_artifacts,
         style=getattr(config.generation, "style", "default"),
@@ -463,7 +472,7 @@ def mark_system_prompt(
 ) -> str:
     """把当前系统提示词的哈希写进会话（改了提示词，历史就不可比）。"""
     prompt = build_system_prompt(
-        toolsets=list(toolsets or ["research"]),
+        toolsets=_prompt_toolsets(toolsets, config),
         allow_clarify=config.runtime.allow_clarify,
         auto_artifacts=config.generation.auto_artifacts,
         style=getattr(config.generation, "style", "default"),

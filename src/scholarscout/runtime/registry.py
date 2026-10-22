@@ -15,8 +15,9 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-#: 工具集白名单（docs/01 §5.0）
-TOOLSETS = ("research",)
+#: 工具集白名单（docs/01 §5.0）。`kb` **只在 `features.enable_kb` 开着时**才生效 ——
+#: 收敛逻辑只有一处：:func:`enabled_toolsets`（工具注册与提示词都从它取）。
+TOOLSETS = ("research", "kb")
 
 #: API 允许的工具名字符集（DeepSeek / OpenAI 同款校验）
 _WIRE_SAFE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -116,11 +117,32 @@ def get_spec(name: str) -> ToolSpec | None:
     return _REGISTRY.get(name) or _REGISTRY.get(canonical_name(name))
 
 
+def enabled_toolsets(requested: Sequence[str] | None = None, *, enable_kb: bool) -> tuple[str, ...]:
+    """把请求的工具集按**特性开关**收敛 —— 这是 `kb` 门控的唯一实现处。
+
+    - `enable_kb=False`：从请求里**摘掉** `kb`（会话显式要它也不行：RPC 的 `toolsets`
+      参数来自前端，不可信）；
+    - `enable_kb=True`：请求里没有 `kb` 也**补上**（开关的语义是「开了就有这个工具」，
+      而不是「开了还得再手工指定一遍」）。
+
+    为什么不留一个 `features` 参数给 `get_tools()`：那会让「开关过滤」散在注册表里，
+    调用方越多漏一次就多一条静默失效的路径。收敛成纯函数之后，
+    `app.build_context` / `loop` / `TurnContext.tools` 三处都调它，谁都不许自己判断。
+    """
+    kept = [name for name in (requested or ("research",)) if name in TOOLSETS and name != "kb"]
+    if enable_kb:
+        kept.append("kb")
+    # 全都认不出来时退回默认工具集：空工具集会让模型以为「这轮不能调工具」
+    return tuple(kept or ("research",))
+
+
 def get_tools(toolsets: Sequence[str] | None = None) -> list[ToolSpec]:
     """按工具集取工具（工具集白名单见 :data:`TOOLSETS`）。
 
-    **没有按特性开关过滤这一步**：一个开关如果开了什么都不发生，就是假功能 ——
-    曾经的 ``kb`` 工具集 + ``features.enable_kb`` 正是这样被删掉的（docs/23）。
+    **这里只按工具集筛，不看特性开关** —— 传进来的 `toolsets` 必须已经过
+    :func:`enabled_toolsets` 收敛（`enable_kb` 关着时 `kb` 不在里面）。
+    为什么这样切：注册表是纯数据结构，开关是配置，两者混在一起就会出现
+    「有人绕过开关直接 `get_tools(["kb"])`」的缝。
     """
     wanted = set(toolsets) if toolsets else {"research"}
     specs: list[ToolSpec] = []

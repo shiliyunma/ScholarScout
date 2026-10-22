@@ -143,6 +143,22 @@ SKILL_RULE = """\
    不要假装照着某篇手册做。"""
 
 
+#: 本地知识库的用法（`kb.search`，docs/01 §5.8）：**只在 `kb` 工具集开着时**才加进提示词。
+#: 为什么做成条件段而不是常驻：开关关着时模型根本调不到这个工具，一段「有个工具你不用」
+#: 的说明只会污染提示词并让 `system_prompt_hash` 白白换掉 —— 那批历史实验数字就不可比了。
+KB_RULE = """\
+## 什么时候查本地知识库（`kb.search`）
+
+1. **它查的是你自己收过的东西**：库内标题/摘要/标签 + `data/text/` 下的抽取全文。问题若在问
+   「我以前收过什么」「哪篇讲过 X」「这个数字是我哪份资料里的」，**先 `kb.search` 再考虑联网**。
+2. **它只给片段**：每条命中带 `snippet`（≤300 字，命中处用 `« »` 标出）与 `path`。要读全文用
+   `source.fetch`（同一条 `source_id`），**不要拿片段里的半句话当结论**。
+3. **空结果就是结论**：本地没有就说没有，需要新资料再用 `research.search`；不要换个词反复重查，
+   更不要假装本地有这篇。
+4. **`index_mode="like"` 表示降级**（这台机器的 SQLite 没带 FTS5）：结果没有相关度排序、
+   中文按子串命中 —— 这种时候必须用 `source.fetch` 核实原文。"""
+
+
 #: 人格/风格档（D4）。**默认档是空串** —— 这样"没改过设置"的提示词与本功能上线前**逐字节相同**，
 #: 实验臂哈希不变、E3 那批数字仍然可比。改风格＝改实验臂，报告里必须写明用了哪一档。
 STYLE_PROMPTS: dict[str, str] = {
@@ -203,6 +219,9 @@ def build_system_prompt(
     parts.append(PY_EXEC_RULE)
     # 技能库规矩：只说"有 skill.list / skill.load、什么时候用"，**清单不进提示词**（渐进式披露）
     parts.append(SKILL_RULE)
+    # 本地知识库规矩：**只在 kb 工具集开着时**加（关着时模型调不到它，加了只是污染提示词）
+    if "kb" in (toolsets or []):
+        parts.append(KB_RULE)
     if STYLE_PROMPTS[chosen]:
         parts.append(STYLE_PROMPTS[chosen])
     active = ", ".join(toolsets or ["research"])

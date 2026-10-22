@@ -245,6 +245,12 @@ class Features:
     #: 按需下载（`archive.download`，docs/01 §3.3）。**默认关**：关着时界面「下载」按钮
     #: **不动网**，只回 `{ok:false, reason}`。开启才真下载到 `data/raw/`（受 `fetch.max_bytes` 硬上限）。
     enable_download: bool = False
+    #: 本地知识库检索（`kb.search`，docs/01 §5.8）。**默认关**：关着时 `kb.search`
+    #: **根本不注册**（`tools/__init__.register_tools`），`kb` 工具集也会被
+    #: `runtime/registry.enabled_toolsets` 从会话里摘掉 —— 所以模型清单里看不到它，
+    #: 也不会出现「开关开了但什么都没发生」的假功能（那是 docs/23 记过的坑）。
+    #: 开了之后第一次检索才建索引（`state/kb_index.py`，懒建，不阻塞启动）。
+    enable_kb: bool = False
 
 
 @dataclass(frozen=True)
@@ -484,6 +490,9 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             enable_route_plan=bool(feature_section.get("enable_route_plan", True)),
             # 按需下载开关（默认关）。D3 同款坑：加了字段必须接这一行，否则 YAML 写了被静默忽略。
             enable_download=bool(feature_section.get("enable_download", False)),
+            # 本地知识库检索（`kb.search`，docs/01 §5.8）。默认关；关着时工具根本不注册。
+            # D3 同款坑：必须接这一行（`tests/test_config_runtime_keys.py` 会枚举 Features 字段）。
+            enable_kb=bool(feature_section.get("enable_kb", False)),
         ),
         data_dir=paths.data_dir(),
         db_path=paths.db_path(),

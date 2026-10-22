@@ -32,6 +32,9 @@ def config_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
             "enable_mineru": ctx.config.features.enable_mineru,
             "enable_topic_map": ctx.config.features.enable_topic_map,
             "enable_route_plan": ctx.config.features.enable_route_plan,
+            # 本地知识库检索（`kb.search`）：默认关；关着时这个工具**不在**工具清单里
+            # （docs/01 §5.8）。回给界面是为了能看出"为什么没有 kb.search"。
+            "enable_kb": ctx.config.features.enable_kb,
         },
         "paths": {
             "data_dir": str(ctx.config.data_dir),

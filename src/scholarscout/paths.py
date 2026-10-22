@@ -133,6 +133,17 @@ def raw_path_for(sha256: str, ext: str, root: Path | None = None) -> Path:
     return under_data(Path("raw") / sha256[:2] / f"{sha256}{suffix}", root)
 
 
+def kb_index_path(root: Path | None = None) -> Path:
+    """知识库检索索引：``data/cache/kb-fts.sqlite3``（`kb.search` 的底座，docs/01 §5.8）。
+
+    **为什么单独一个库、还放在 ``cache/`` 里**：索引里必然出现全文（FTS5 要存倒排与原文，
+    否则做不出 `snippet()`），而项目的硬约束是**正文不入库**（`documents` 只存 `text_path`）。
+    把它拆成独立文件之后：① 资料库本体 `run/state.db` 里一个正文字节都没有，可以逐字节验证；
+    ② 索引是**可丢弃缓存** —— 删掉照样能跑，下次检索按 `data/text/` 重建。
+    """
+    return under_data(Path("cache") / "kb-fts.sqlite3", root)
+
+
 def text_path_for(doc_id: str, root: Path | None = None) -> Path:
     """抽取出的全文纯文本：``data/text/<doc_id>.txt``。
 

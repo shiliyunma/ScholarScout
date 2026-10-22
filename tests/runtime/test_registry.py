@@ -66,21 +66,43 @@ def test_default_toolsets_is_research() -> None:
     assert names == ["research.a"]
 
 
-def test_enable_kb_switch_is_gone() -> None:
-    """守卫：``enable_kb`` 空开关已彻底删掉（docs/23，不留假功能）。
+def test_enable_kb_switch_gates_kb_search() -> None:
+    """`enable_kb` 现在是**真开关**：它决定 `kb.search` 有没有被注册（docs/01 §5.8）。
 
-    开着什么都不发生比没有这个开关更坏 —— 它让人以为"已支持知识库"。所以四件事一起钉住：
-    ① ``Features`` / ``RuntimeProfile`` 上都没有这个属性；② ``kb`` 不在工具集白名单里
-    （再注册 ``toolset="kb"`` 会当场 ``ValueError``）；③ 示例配置里不再有这行键；
-    ④ ``get_tools()`` 不再收 ``features`` 参数（死过滤没有回来的入口）。
+    这条是 docs/23 那条"空开关"缺陷的**反面守卫**。当时的教训是：开关开了什么都不发生，
+    比没有这个开关更坏。所以这里只断言**行为差异**，不断言"字段存在"：
+
+    ① 产品默认是关（`Features()` / 示例配置）→ 注册集 11 个、不含 `kb.search`；
+    ② `enable_kb=True` → 注册集 12 个、含 `kb.search`；
+    ③ 收敛点只有一个：`enabled_toolsets` —— 关着时**会话显式要 `kb` 也摘掉**，开着时没要也补上；
+    ④ `get_tools()` 仍不收 `features` 参数（开关不许散进注册表，否则绕过路径会再长出来）。
     """
-    assert getattr(Features(), "enable_kb", None) is None
-    assert getattr(RuntimeProfile(), "enable_kb", None) is None
-    assert "kb" not in registry.TOOLSETS
-    assert "enable_kb" not in CONFIG_EXAMPLE.read_text(encoding="utf-8")
+    from scholarscout.tools import register_tools
+
+    # ① 默认关：产品默认值与注册集默认值必须是同一个答案（否则契约清单会静默分叉）
+    assert Features().enable_kb is False
+    example = CONFIG_EXAMPLE.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert "\n  enable_kb: false\n" in example
+    assert "enable_kb: true" not in example
+    assert "kb" in registry.TOOLSETS
+    off = register_tools()
+    assert "kb.search" not in off
+    assert len(off) == 11
+
+    # ② 开了就真的多一个工具（不是"字段变了、行为没变"）
+    registry.clear_registry()
+    on = register_tools(enable_kb=True)
+    assert "kb.search" in on
+    assert len(on) == 12
+    assert on == sorted({*off, "kb.search"})
+
+    # ③ 收敛点：关着时显式要 kb 被摘掉，开着时不用要也会补上
+    assert registry.enabled_toolsets(["research", "kb"], enable_kb=False) == ("research",)
+    assert registry.enabled_toolsets(["research"], enable_kb=True) == ("research", "kb")
+
+    # ④ 注册表只按工具集筛，不看开关（开关的唯一实现处是 enabled_toolsets）
     assert "features" not in inspect.signature(registry.get_tools).parameters
-    with pytest.raises(ValueError, match="未知工具集"):
-        registry.register(_spec("kb.b", toolset="kb"))
+    assert getattr(RuntimeProfile(), "enable_kb", None) is None
 
 
 def test_openai_declaration_nests_parameters_under_function() -> None:

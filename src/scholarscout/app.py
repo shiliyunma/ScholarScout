@@ -14,6 +14,7 @@ from scholarscout.config import Config, load_config
 from scholarscout.fetch.http import HttpClient
 from scholarscout.providers.llm import LlmClient, LlmError, create_client
 from scholarscout.rpc.methods import AppContext
+from scholarscout.runtime import registry
 from scholarscout.state.db import Database
 from scholarscout.state.migrate import apply_migrations
 
@@ -70,11 +71,14 @@ def build_context(
             robots_exempt_hosts=cfg.fetch_cfg.robots_exempt_hosts,
         )
 
-    register_tools()
+    # 工具集在这里收敛（**唯一实现**：`runtime/registry.enabled_toolsets`）：
+    # `features.enable_kb` 关着时 `kb` 被摘掉，开着时自动补上。
+    enabled_toolsets = registry.enabled_toolsets(toolsets, enable_kb=cfg.features.enable_kb)
+    register_tools(enable_kb=cfg.features.enable_kb)
     return AppContext(
         config=cfg,
         db=db,
         llm=client,
         http=http_client,
-        toolsets=tuple(toolsets),
+        toolsets=enabled_toolsets,
     )
