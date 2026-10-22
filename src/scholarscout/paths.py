@@ -103,9 +103,9 @@ def log_dir(root: Path | None = None) -> Path:
     return run_dir(root) / "logs"
 
 
-def app_log_path(root: Path | None = None) -> Path:
-    """主进程日志文件 ``run/logs/app.log``（轮转参数见 ``logging_setup``）。"""
-    return log_dir(root) / "app.log"
+def scout_log_path(root: Path | None = None) -> Path:
+    """主进程日志文件 ``run/logs/scout.log``（轮转与密钥脱敏见 ``logging_setup``）。"""
+    return log_dir(root) / "scout.log"
 
 
 def ensure_dirs(root: Path | None = None) -> None:

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -104,6 +105,73 @@ DEFAULT_NOTIFY_PLATFORM = "feishu"
 #: 定义在 config 层：它既是 `RuntimeProfile.max_parallel_sessions` 的默认值，
 #: 也是 `runtime/session_runtime.py::DEFAULT_MAX_CONCURRENT` 的来源（只写一次，避免两处漂移）。
 DEFAULT_MAX_PARALLEL_SESSIONS = 3
+
+#: 日志落盘的三个配置键的默认值（`runtime.log_level` / `log_max_mb` / `log_backups`）。
+#: 写在这里而不是 `logging_setup`：`logging_setup` 直读 config 的这三个值，
+#: 默认值只存一份，免得"配置默认 5MB、handler 默认 10MB"两处漂移。
+DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_MAX_MB = 5.0
+DEFAULT_LOG_BACKUPS = 3
+
+#: `runtime.log_level` 允许的名字（大小写不敏感）。与标准库的级别名一致。
+LOG_LEVEL_NAMES: tuple[str, ...] = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET")
+
+
+def _log_level(value: object) -> str:
+    """`runtime.log_level` 归一：缺省 / 空串 → INFO；**认不出的名字直接报错**。
+
+    静默回落 INFO 的后果是「用户在 YAML 里把级别调到 DEBUG，日志里却永远没有 DEBUG」，
+    而这恰恰是他最需要它生效的那一次（排障）。所以非法级别在这里就炸。
+    """
+    if value is None:
+        return DEFAULT_LOG_LEVEL
+    name = str(value).strip().upper()
+    if not name:
+        return DEFAULT_LOG_LEVEL
+    if name not in LOG_LEVEL_NAMES:
+        raise ValueError(
+            f"runtime.log_level 必须是 {' / '.join(LOG_LEVEL_NAMES)} 之一（收到 {value!r}）"
+        )
+    return name
+
+
+def _log_max_mb(value: object) -> float:
+    """`runtime.log_max_mb`：**必须是正数**（单位 MB，允许小数 —— 测试里 0.02 就能触发轮转）。
+
+    与 `daily_token_budget` 那类"<= 0 当不限制"不同：日志大小没有"不限制"这个合理语义，
+    写 0 或负数只可能是笔误，静默换成默认值等于用户以为改了、其实没改。
+    """
+    if value is None:
+        return DEFAULT_LOG_MAX_MB
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"runtime.log_max_mb 必须是正数（收到 {value!r}）")
+    try:
+        number = float(str(value).strip()) if isinstance(value, str) else float(value)
+    except ValueError:
+        raise ValueError(f"runtime.log_max_mb 必须是正数（收到 {value!r}）") from None
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"runtime.log_max_mb 必须是正数（收到 {value!r}）")
+    return number
+
+
+def _log_backups(value: object) -> int:
+    """`runtime.log_backups`：**必须是正整数**。
+
+    `0` 不算"合法但无用"：`RotatingFileHandler(backupCount=0)` 的语义是"只截断、不留历史"，
+    与用户写 `log_backups: 0` 时想的"我不要历史"看似一致，实际会让每次轮转**直接丢现场** ——
+    排障要的正是那几份历史，所以这里也当非法值报错。
+    """
+    if value is None:
+        return DEFAULT_LOG_BACKUPS
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"runtime.log_backups 必须是正整数（收到 {value!r}）")
+    try:
+        number = int(float(str(value).strip())) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"runtime.log_backups 必须是正整数（收到 {value!r}）") from None
+    if number <= 0:
+        raise ValueError(f"runtime.log_backups 必须是正整数（收到 {value!r}）")
+    return number
 
 
 def _parallel_sessions(value: object) -> int:
@@ -235,6 +303,15 @@ class RuntimeProfile:
     #: 每日金额封顶：**只在配了单价（`est_cost` 非空）时才生效**；单价未配时不算金额、
     #: 这条上限也不生效（绝不按估算单价折出一个好看的数字）。默认 None = 不限制。
     daily_cost_budget: float | None = None
+    #: 日志落盘的三个键（`logging_setup.setup_logging()` 读它们；默认 5MB × 3 份备份）：
+    #: - `log_level`：落盘**同时**是控制台的级别，默认 `INFO`（`DEBUG` 才落调试细节）；
+    #: - `log_max_mb`：单文件上限（MB，可小数），默认 5；
+    #: - `log_backups`：历史份数（`scout.log.1` … `scout.log.N`），默认 3。
+    #: 三个都是**严格校验**：非法级别 / 非正数在这里就报错（见 `_log_level` 等）。
+    #: D3 同款坑：加了字段必须接 `load_config` 那一行，否则 YAML 写了静默无效。
+    log_level: str = DEFAULT_LOG_LEVEL
+    log_max_mb: float = DEFAULT_LOG_MAX_MB
+    log_backups: int = DEFAULT_LOG_BACKUPS
 
 
 @dataclass(frozen=True)
@@ -483,6 +560,12 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
                 runtime_section.get("max_tool_calls_per_session")
             ),
             daily_cost_budget=_optional_positive_float(runtime_section.get("daily_cost_budget")),
+            # 日志落盘（`logging_setup` 读这三枚）：级别 / 单文件 MB / 备份份数。
+            # **严格校验**：非法级别、非正数在这里直接 ValueError（静默回默认 = 用户以为改了其实没改）。
+            # D3 同款坑：加了字段必须接这一行，否则 YAML 写了静默失效（守卫测试会拦）。
+            log_level=_log_level(runtime_section.get("log_level")),
+            log_max_mb=_log_max_mb(runtime_section.get("log_max_mb")),
+            log_backups=_log_backups(runtime_section.get("log_backups")),
         ),
         features=Features(
             enable_mineru=bool(feature_section.get("enable_mineru", True)),

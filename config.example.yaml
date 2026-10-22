@@ -88,6 +88,18 @@ runtime:
   # null / 不写 = 不限制；`0` 与负数**也按"不限制"**归一（与 daily_token_budget 同一口径）。
   max_tool_calls_per_session: null
 
+  # ---- 日志落盘（`src/scholarscout/logging_setup.py`）----
+  # 写 `run/logs/scout.log`（目录自动建，UTF-8）。打包版双击启动没有终端，
+  # 这份文件就是唯一的故障现场：出事时把 `run/logs/` 整个拷走发过来。
+  # **严格校验**：级别名写错、大小/份数写成 0 或负数 → 启动时直接报错（不静默回默认）。
+  log_level: "INFO"               # CRITICAL / ERROR / WARNING / INFO / DEBUG / NOTSET
+  log_max_mb: 5                   # 单文件上限（MB，可写小数：0.5 = 512KB）
+  log_backups: 3                  # 历史份数：scout.log.1 ~ scout.log.3
+  # 密钥绝不入盘：`logging_setup.RedactingFilter` 两道 —— 已配置的真实值（.env 里的
+  # LLM_API_KEY / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN 等）逐个替换成 [REDACTED]，
+  # 再兜一道 `sk-[A-Za-z0-9_-]{10,}` 正则。所以**往日志里打 key 也不会泄露**，
+  # 但这不是"可以随便打密钥"的许可：能不打就不打。
+
 # ===== 摘要流水线（照 AIHOT 的"截断 + 一次调用"，见 docs/04）=====
 summary:
   prompts_dir: "prompts"

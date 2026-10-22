@@ -22,6 +22,14 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 def main() -> int:
     if str(SRC) not in sys.path:
         sys.path.insert(0, str(SRC))
+
+    # 日志落盘**必须在任何业务 import/日志之前**：本启动器是打包版与脚本调用的统一入口，
+    # 起不来的时候没有终端，`run/logs/scout.log` 是唯一的现场。setup_logging 幂等，
+    # 所以 `scholarscout.__main__.main()` 里那次调用不会写出两份。
+    from scholarscout.logging_setup import setup_logging
+
+    setup_logging()
+
     from scholarscout.__main__ import main as cli_main
 
     return cli_main()

@@ -47,6 +47,7 @@ if str(SRC) not in sys.path:
 from scholarscout.channels import feishu, feishu_ws  # noqa: E402
 from scholarscout.config import load_dotenv  # noqa: E402
 from scholarscout.fetch import feishu_send  # noqa: E402
+from scholarscout.logging_setup import setup_logging  # noqa: E402
 
 EXIT_OK = 0
 EXIT_PREREQ = 2
@@ -151,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
     # 所以必须自己把 .env 读进环境，否则 `credentials_from_env()` 永远读不到凭据，
     # 表现为"✓ lark-oapi 已安装 / ✗ 凭据未配置"而 .env 里明明有（2026-10-18 实测的坑）。
     load_dotenv()
+    # 日志落盘（**先于 run()**）：长连接一跑就是几小时，出问题时终端可能早被关掉/滚没了，
+    # `run/logs/scout.log` 是唯一现场。load_dotenv 在前，脱敏过滤器才拿得到真实密钥值。
+    setup_logging()
     return run(check_only=args.check)
 
 

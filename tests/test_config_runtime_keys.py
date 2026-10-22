@@ -63,6 +63,10 @@ NON_DEFAULT_VALUES: dict[str, object] = {
     # 会话级工具调用上限（docs/20 §5.1，评审 R-07）：**默认 None = 不限制**，
     # 与 daily_token_budget 同一归一函数（`_optional_positive_int`）。
     "max_tool_calls_per_session": 40,
+    # 日志落盘（`logging_setup` 读这三枚）：级别 / 单文件 MB / 备份份数。加字段必须接 load_config。
+    "log_level": "DEBUG",
+    "log_max_mb": 7.5,
+    "log_backups": 5,
 }
 
 

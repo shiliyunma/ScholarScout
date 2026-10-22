@@ -61,7 +61,8 @@ RULES: dict[str, tuple[str, ...]] = {
     "app": (),
     "__main__": (),
     "paths": (),
-    # 基础设施叶子：日志落盘只依赖 paths，谁都可以调它（不能反过来依赖任何上层）
+    # 基础设施叶子：日志落盘只依赖 paths 与 config（三枚 `runtime.log_*` 默认值只存一份），
+    # 谁都可以调它（不能反过来依赖任何上层）
     "logging_setup": (),
     "summary": (),
 }
