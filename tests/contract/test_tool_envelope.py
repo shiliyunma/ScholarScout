@@ -70,7 +70,7 @@ TOOL_NAMES = (
 class _DeadHttp:
     """出网桩：任何抓取都当作 404 失败 —— 用来确定性地走 `source.fetch` 的失败分支。"""
 
-    def fetch(self, url: str, *, cache: bool = True) -> Any:
+    def fetch(self, url: str, *, cache: bool = True, min_interval_s: float = 0.0) -> Any:
         raise FetchError("not_found", f"HTTP 404：{url}", url=url, status=404)
 
 

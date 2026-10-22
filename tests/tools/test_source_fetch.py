@@ -540,3 +540,70 @@ def test_one_dead_source_does_not_kill_the_turn(
         )
         == 2
     )
+
+
+# --------------------------------------------------------------- 抓正文的按 host 限速
+
+
+class _FakeClock:
+    """假时钟：``sleep`` 只把时间往前拨 —— 测试**不真的等** 1 秒 / 3 秒。"""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _throttled_ctx(ctx: AppContext, slept: list[float]) -> ToolContext:
+    """装一个注入了假时钟 / 假 sleep 的 ToolContext（限速走了多久可断言，网络仍离线）。"""
+    clock = _FakeClock()
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock.advance(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=PAGE, headers={"content-type": "text/html; charset=utf-8"})
+
+    ctx.http = HttpClient(
+        respect_robots=False, transport=httpx.MockTransport(handler), clock=clock, sleep=sleep
+    )
+    return ToolContext(db=ctx.db, config=ctx.config, http=ctx.http, llm=None, session_id="ses_t")
+
+
+def test_body_fetch_waits_the_host_min_interval(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一 host 连抓两次，第二次必须等满最小间隔 —— 限速不再只作用于检索。
+
+    用注入的假时钟 + 假 sleep 断言"等了多久"（``slept``），不真的等；
+    ``docs.example.com`` 不在 ``search.min_interval_s`` 表里 → 走 1s 默认值。
+    """
+    _redirect_home(monkeypatch, tmp_path)
+    slept: list[float] = []
+    tool_ctx = _throttled_ctx(ctx, slept)
+
+    first = source_fetch(tool_ctx, url="https://docs.example.com/one")
+    second = source_fetch(tool_ctx, url="https://docs.example.com/two")
+
+    assert first["ok"] is True and second["ok"] is True
+    assert slept == [pytest.approx(1.0)], "同一 host 的第二次抓取没等满 min_interval_s"
+
+
+def test_arxiv_body_fetch_uses_the_three_second_interval(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """arXiv 抓正文同样是 3s（表里已有的那条）—— 不是只有检索才守 3s。"""
+    _redirect_home(monkeypatch, tmp_path)
+    slept: list[float] = []
+    tool_ctx = _throttled_ctx(ctx, slept)
+
+    source_fetch(tool_ctx, url="https://arxiv.org/abs/2501.00001")
+    source_fetch(tool_ctx, url="https://arxiv.org/abs/2501.00002")
+
+    # 第一次不必等；第二次落在同一 host（export.arxiv.org 也算 arxiv）
+    assert slept == [pytest.approx(3.0)]

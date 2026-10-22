@@ -34,6 +34,7 @@ from scholarscout.fetch.formats import (
 )
 from scholarscout.fetch.html_text import extract_html
 from scholarscout.fetch.http import FetchError
+from scholarscout.fetch.throttle import interval_for_url
 from scholarscout.fetch.urls import guess_source_type, prefer_direct_file
 from scholarscout.library import naming
 from scholarscout.providers.base import canonical_url
@@ -180,6 +181,9 @@ def source_fetch(
     assert url is not None  # 上面的分支已保证
 
     http = ctx.require_http()
+    # 抓正文也按 host 限速：复用 `search.min_interval_s`（arXiv 3s），表里没有的 host 用 1s。
+    # 原来这里没传 min_interval_s → 出网层默认 0 → 同一 host 可以连发（限速只作用于检索）。
+    intervals = ctx.config.search_cfg.min_interval_s
     requested_url = url
     # 优先抓真文件（arxiv `/abs/<id>` → `/pdf/<id>`）；拿不到再回落原 URL。
     # 抓的哪一种**如实记在**返回里（requested_url / fetched_url / used_landing_page）。
@@ -190,13 +194,19 @@ def source_fetch(
         # 抓的哪一种**如实记在**返回里（requested_url / fetched_url / used_landing_page）。
         if direct is not None:
             try:
-                response = http.fetch(direct, cache=not force)
+                response = http.fetch(
+                    direct, cache=not force, min_interval_s=interval_for_url(direct, intervals)
+                )
             except FetchError:
-                response = http.fetch(url, cache=not force)
+                response = http.fetch(
+                    url, cache=not force, min_interval_s=interval_for_url(url, intervals)
+                )
             else:
                 fetched_url = direct
         else:
-            response = http.fetch(url, cache=not force)
+            response = http.fetch(
+                url, cache=not force, min_interval_s=interval_for_url(url, intervals)
+            )
     except FetchError as exc:
         # **单源失败绝不终止整轮**（真机 2026-10-12 实测：一轮 6 次 source.fetch 合计 836s，
         # 界面判\"调用失败\"整链停摆）。抓取阶段的超时 / 403 / 404 / 过大 / robots 拒绝
