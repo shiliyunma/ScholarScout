@@ -1538,6 +1538,227 @@ async function settingsAboutBlock(configPath) {
 }
 
 
+/* --------------------------------------------------- 安全与审批（py.exec 授权） */
+
+/*: 规则键的**类别**部分 → 人话。取值集合来自后端 `sandbox/approval.py::classify`
+ *  （`exec` / `write` / `delete` / `network` / `subprocess` / `native` / `outside_path` /
+ *  `dynamic`）；这里只做显示名，不参与判定。认不出的类别**原样显示**，不猜成"其它"。 */
+var SANDBOX_RULE_CATEGORIES = {
+  exec: "执行代码",
+  write: "写文件",
+  delete: "删除文件",
+  network: "联网",
+  subprocess: "起子进程",
+  native: "调原生库",
+  outside_path: "访问目录外",
+  dynamic: "动态执行",
+};
+
+
+/** 规则键的范围部分 → 人话：`@any`=任意路径，`@cwd`=工作目录，`x/**`=x 及其子目录。 */
+function sandboxScopeLabel(scope) {
+  var text = String(scope === undefined || scope === null ? "" : scope);
+  if (!text || text === "@any") return "任意路径";
+  if (text === "@cwd") return "工作目录";
+  if (text.indexOf("outside:") === 0) return "目录外：" + text.slice(8);
+  if (text.slice(-3) === "/**") return text.slice(0, -3) + " 及其子目录";
+  return text;
+}
+
+
+/** `write:out/**` → 「写文件：out 及其子目录」；`exec:@any` → 「执行代码：任意路径」。
+ *  键里冒号可能出现多次（`outside_path:outside:C:/x`），所以只按**第一个**冒号切。 */
+function sandboxRuleLabel(key) {
+  var text = String(key || "");
+  var at = text.indexOf(":");
+  var category = at < 0 ? text : text.slice(0, at);
+  var scope = at < 0 ? "" : text.slice(at + 1);
+  return (SANDBOX_RULE_CATEGORIES[category] || category || "未知规则") + "：" + sandboxScopeLabel(scope);
+}
+
+
+/** 创建时间 → 本地「YYYY-MM-DD HH:MM」。后端存的是带时区的 ISO（`…+00:00`），
+ *  直接截字符串会把 UTC 当本地时间显示 —— 用 Date 转一次；解析失败就退回原样，不编时间。 */
+function sandboxRuleTime(raw) {
+  var text = String(raw || "");
+  if (!text) return "";
+  var when = new Date(text);
+  if (Number.isNaN(when.getTime())) return text;
+  var pad = function (value) {
+    return String(value).padStart(2, "0");
+  };
+  return (
+    when.getFullYear() +
+    "-" +
+    pad(when.getMonth() + 1) +
+    "-" +
+    pad(when.getDate()) +
+    " " +
+    pad(when.getHours()) +
+    ":" +
+    pad(when.getMinutes())
+  );
+}
+
+
+/** 一行规则的副标题：永久 → 创建时间；本会话 → 「本会话有效」（没有创建时间可报）。 */
+function sandboxRuleMeta(rule) {
+  if (rule.level === "session") return "本会话有效";
+  var when = sandboxRuleTime(rule.created_at);
+  return when ? "创建于 " + when + " · 永久有效" : "永久有效";
+}
+
+
+/** 空态：说清「为什么这里是空的」以及授权是怎么进来的（一句空白会让人以为功能坏了）。 */
+function sandboxEmptyNote() {
+  return plainHint(
+    "暂无永久授权：模型每次执行代码前都会先问你；你选「永久允许」后才会出现在这里。",
+  );
+}
+
+
+function sandboxRuleRow(rule, box, note) {
+  var row = document.createElement("div");
+  row.className = "set-row";
+  row.setAttribute("data-rule-key", String(rule.key || ""));
+
+  var left = document.createElement("div");
+  var label = document.createElement("div");
+  label.className = "sandbox-rule-label";
+  label.textContent = sandboxRuleLabel(rule.key);
+  left.appendChild(label);
+  var meta = document.createElement("div");
+  meta.className = "hint sandbox-rule-meta";
+  meta.textContent = sandboxRuleMeta(rule);
+  left.appendChild(meta);
+  if (rule.downgraded) {
+    // 后端把「内容级风险」的 always 降成了 session：这条**只到本会话**，必须写在行上
+    var downgraded = document.createElement("div");
+    downgraded.className = "hint set-bad sandbox-rule-downgraded";
+    downgraded.textContent = "内容级风险，仅本会话有效，已自动降级";
+    left.appendChild(downgraded);
+  }
+  row.appendChild(left);
+
+  var actions = document.createElement("div");
+  actions.className = "set-seg";
+  var button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.textContent = "撤销";
+  button.title = "撤销后，下一次同类操作会重新问你";
+  button.addEventListener("click", function () {
+    revokeSandboxRule(rule, row, button, box, note);
+  });
+  actions.appendChild(button);
+  row.appendChild(actions);
+  return row;
+}
+
+
+/** 撤销一条：**成功才移除这一行**；失败/后端说没撤掉就把错误说出来、行原样留着。 */
+async function revokeSandboxRule(rule, row, button, box, note) {
+  button.disabled = true; // 连点两下也只发一次（后端删的是同一条键）
+  note.textContent = "正在撤销：" + rule.key + "…";
+  note.className = "hint sandbox-rules-note";
+  var result;
+  try {
+    result = await scout.call("sandbox.rules.revoke", { key: rule.key });
+  } catch (error) {
+    button.disabled = false; // 失败了要还能再点
+    note.textContent = "撤销失败：" + error.message + "（" + rule.key + " 仍然有效）";
+    note.className = "hint set-bad sandbox-rules-note";
+    return;
+  }
+  if (!result || result.removed !== true) {
+    button.disabled = false;
+    note.textContent = "没有撤销：" + rule.key + "（后端说这条本来就不在，刷新后核对）";
+    note.className = "hint set-bad sandbox-rules-note";
+    return;
+  }
+  if (row.parentNode === box) box.removeChild(row);
+  note.textContent = "已撤销：" + rule.key;
+  note.className = "hint set-ok sandbox-rules-note";
+  if (!box.querySelector("[data-rule-key]")) {
+    // 撤掉最后一条：回到空态，不然留下一个空框看着像没加载
+    box.appendChild(sandboxEmptyNote());
+  }
+}
+
+
+/** 「安全与审批」：列出**持久**授权（含被降级的），每条可撤销。
+ *
+ *  为什么不新开一个设置分类：五分类是既有导航（`SETTINGS_CATEGORIES`），多一格就动了几何基线；
+ *  而这条内容是"模型能做什么"的边界，与「生成策略」「用量与预算」同属一组 —— 放「模型与生成」末尾。
+ *  `session` 级规则单独一组「本会话临时授权」：它随进程消失，与磁盘上的永久授权不是一回事。
+ */
+async function renderSandboxRules(body) {
+  var group = document.createElement("div");
+  group.className = "set-group";
+  var head = document.createElement("h4");
+  head.textContent = "安全与审批";
+  group.appendChild(head);
+  group.appendChild(
+    plainHint(
+      "模型执行代码（py.exec）前会先问你一次；这里列的是你已经永久放行的操作类别 × 路径范围。" +
+        "撤掉之后，下一次同类操作会重新弹审批卡。",
+    ),
+  );
+  var listBox = document.createElement("div");
+  listBox.className = "sandbox-rules";
+  group.appendChild(listBox);
+  var note = document.createElement("p");
+  note.className = "hint sandbox-rules-note";
+  group.appendChild(note);
+
+  var listing;
+  try {
+    listing = await scout.call("sandbox.rules.list", {});
+  } catch (error) {
+    listBox.appendChild(plainHint("读不到授权列表：" + error.message));
+    body.appendChild(group);
+    return;
+  }
+  var rules = (listing && listing.rules) || [];
+  var persistent = rules.filter(function (rule) {
+    return rule && rule.level !== "session";
+  });
+  var session = rules.filter(function (rule) {
+    return rule && rule.level === "session";
+  });
+
+  if (persistent.length) {
+    persistent.forEach(function (rule) {
+      listBox.appendChild(sandboxRuleRow(rule, listBox, note));
+    });
+  } else {
+    listBox.appendChild(sandboxEmptyNote());
+  }
+  body.appendChild(group);
+
+  if (session.length) {
+    var sessionGroup = document.createElement("div");
+    sessionGroup.className = "set-group";
+    var sessionHead = document.createElement("h4");
+    sessionHead.textContent = "本会话临时授权";
+    sessionGroup.appendChild(sessionHead);
+    sessionGroup.appendChild(
+      plainHint("这些授权只在本会话有效，关掉应用就没了（不落盘）。"),
+    );
+    var sessionBox = document.createElement("div");
+    sessionBox.className = "sandbox-rules";
+    var sessionNote = document.createElement("p");
+    sessionNote.className = "hint sandbox-rules-note";
+    session.forEach(function (rule) {
+      sessionBox.appendChild(sandboxRuleRow(rule, sessionBox, sessionNote));
+    });
+    sessionGroup.appendChild(sessionBox);
+    sessionGroup.appendChild(sessionNote);
+    body.appendChild(sessionGroup);
+  }
+}
+
+
 async function openSettings() {
   var payload = await scout.call("settings.get", {});
   var values = payload.values || {};
@@ -1587,6 +1808,10 @@ async function openSettings() {
      用量来自 `chat.status.global_budget`，**不在这里自己算** —— 界面算一份、后端算一份，
      两边迟早会给出不同的数。 */
   await renderBudgetUsage();
+
+  /* 「安全与审批」放「模型与生成」末尾：它回答的是"模型能做什么"（exec / 写文件 / 联网），
+     与生成策略、用量预算同一组语义；分类数保持 5 个（几何基线不动）。 */
+  await renderSandboxRules(panels.model);
 
   renderAppearance(panels.appearance);
 

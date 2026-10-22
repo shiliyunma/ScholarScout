@@ -7753,3 +7753,14 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .approval-note[hidden] {
   display: none;
 }
+
+/* ------------------------------------------------- 设置页 · 安全与审批（py.exec 授权） */
+/* 只补纵向间距与行内小字：行的两栏栅格沿用 `.set-row`、撤销钮沿用 `.set-seg button`，
+   不新造一套组件 —— 面板几何（920×620 / 内容栏内部滚动）因此一点不动。 */
+.sandbox-rules { display: flex; flex-direction: column; gap: 6px; }
+/* 行左侧可能有两三行（人话标签 / 时间 / 降级提示），按钮对齐到第一行 */
+.sandbox-rules .set-row { align-items: start; }
+.sandbox-rule-meta,
+.sandbox-rule-downgraded { font-size: 11.5px; }
+/* 撤销钮贴在行尾（左对齐时它悬在中间，看着像另一列的输入框） */
+.sandbox-rules .set-seg { justify-content: flex-end; }
