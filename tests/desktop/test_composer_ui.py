@@ -228,12 +228,17 @@ ALLOWED_NEW_TOKENS = frozenset(
         # 也会动）。这个高度是新维度，--ui-* 家族里没有等价物；同理走具名白名单，
         # 定义只许一处（见 test_approval_card.py 的"只定义一次"用例）。
         "--ui-approval-code-height",
+        # 输入框 `/` 技能菜单的**高度上限**：菜单最多显示 8 条是需求本身，但高度必须与
+        # **条数无关**（超出只在菜单内部滚）—— 否则打个 `/` 就把它上方的消息流顶走、
+        # 相邻栏位几何跟着动。这个维度在 --ui-* 家族里没有等价物，于是照旧走具名白名单；
+        # 理由与实测见 run/ui_slash_probe.py（第 ⑤ 项：最多 8 条 + scrollHeight > clientHeight）。
+        "--ui-slash-menu-max-height",
     }
 )
 
 
 def test_new_style_block_declares_no_new_tokens() -> None:
-    """新增样式块只允许设置面板那四个几何令牌，其余新令牌仍然 0 个。"""
+    """新增样式块只许用 ALLOWED_NEW_TOKENS 里那几个具名令牌，其余新令牌仍然 0 个。"""
     declared = []
     for sel, body in new_rules():
         for name in re.findall(r"(--[a-z0-9-]+)\s*:", body):

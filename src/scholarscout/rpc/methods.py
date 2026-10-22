@@ -17,6 +17,7 @@ from scholarscout.rpc import (  # noqa: F401
     sandbox,
     session,
     settings,
+    skills,
 )
 from scholarscout.rpc.registry import (
     AppContext,

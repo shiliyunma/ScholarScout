@@ -1459,6 +1459,244 @@ function askArtifact(kind) {
 }
 
 
+/* ── 输入框 `/` 技能菜单（渐进式披露：先看名字，选中才载正文）
+
+   用户原话：「添加 `/` 命令，可以引用根目录中 skills 下面的 skill，要求扫描读取，
+   并支持字符匹配，以及渐进式披露」。
+
+   四个刻意的取舍：
+
+   ① **触发只在行首或空格后**（`SLASH_TRIGGER`）：`/` 也是路径分隔符（`a/b`、网址里的 `//`），
+      任何位置都弹菜单会让人写不了路径。多打一个 `/` 也不重复弹 —— 正则要求 `/` 前是
+      行首或空白，`/a/b` 里第二个斜杠前面是 `a`，于是菜单自己就关了。
+   ② **过滤交给 `skill.list({query})`，前端不自己筛**：字符匹配的排序（连续命中越长越靠前）
+      是后端 `skills/index.search` 的定义，前端另写一份必然与服务端漂移 —— 菜单里排第一的
+      和模型 `skill.list` 拿到的不一样，就没人知道该信哪个。
+   ③ **每键一枪 RPC 太贵**（130 篇索引 + 扫盘缓存判断）：150ms 防抖，连打只发最后一枪；
+      回包按 `seq` 认领，早到的旧回包直接丢掉（否则会看到"打完了又跳回上一个词的结果"）。
+   ④ **RPC 挂了不回退**：菜单里如实写"技能列表加载失败：…"，输入框照常能发消息 ——
+      技能是锦上添花，不许把"发消息"这条主路径一起拖死。
+*/
+var SLASH_DEBOUNCE_MS = 150;
+/*: 菜单最多显示 8 条（再多就该重新打两个字，而不是一直滚；高度见 --ui-slash-menu-max-height） */
+var SLASH_MAX_ITEMS = 8;
+/*: 行首或空白之后的 `/`，后面跟一串非空白、非斜杠的过滤词 */
+var SLASH_TRIGGER = /(^|\s)\/([^\s\/]*)$/;
+
+var _slash = { open: false, query: "", items: [], active: 0, error: "", pending: false, timer: null, seq: 0 };
+
+
+/** 描述只取**第一行**：菜单里一行装不下就省略号，正文另说（没人靠菜单读操作手册）。 */
+function slashFirstLine(text) {
+  var value = text === undefined || text === null ? "" : String(text);
+  return value.split("\n")[0].trim();
+}
+
+
+function slashRender() {
+  var menu = el("slash-menu");
+  if (!menu) return;
+  if (!_slash.open) {
+    menu.hidden = true;
+    menu.innerHTML = "";
+    return;
+  }
+  menu.innerHTML = "";
+  if (_slash.error || _slash.pending || !_slash.items.length) {
+    var line = document.createElement("p");
+    line.className = "composer-slash-empty" + (_slash.error ? " is-bad" : "");
+    line.textContent = _slash.error
+      ? _slash.error
+      : (_slash.pending ? "正在读取技能库…" : "没找到匹配的技能");
+    menu.appendChild(line);
+    menu.hidden = false;
+    return;
+  }
+  _slash.items.forEach(function (item, index) {
+    var row = document.createElement("button");
+    row.type = "button"; // 在 form 里：默认 type=submit 会顺手把消息发出去
+    row.className = "composer-slash-item" + (index === _slash.active ? " is-active" : "");
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", index === _slash.active ? "true" : "false");
+    row.setAttribute("data-skill", item.name);
+    var name = document.createElement("span");
+    name.className = "composer-slash-name";
+    // 只显名字：正文 / 附件清单一个字节都不往前端铺（渐进式披露）
+    name.textContent = item.name;
+    var desc = document.createElement("span");
+    desc.className = "composer-slash-desc";
+    // 只取描述第一行，超长由 CSS 的省略号收尾（整段描述挂在 title 上，要看全文就悬停）
+    desc.textContent = slashFirstLine(item.description);
+    desc.title = item.description || item.name;
+    row.appendChild(name);
+    row.appendChild(desc);
+    // 拦下 mousedown：不然点菜单项会先让文本域失焦，菜单跟着关掉，click 就落空了
+    row.addEventListener("mousedown", function (event) {
+      event.preventDefault();
+    });
+    row.addEventListener("click", function () {
+      slashPick(index);
+    });
+    menu.appendChild(row);
+  });
+  menu.hidden = false;
+}
+
+
+function slashClose() {
+  if (_slash.timer) {
+    window.clearTimeout(_slash.timer);
+    _slash.timer = null;
+  }
+  _slash.seq += 1; // 让还在路上的回包作废（关掉之后不该再弹回来）
+  _slash.open = false;
+  _slash.items = [];
+  _slash.error = "";
+  _slash.pending = false;
+  _slash.active = 0;
+  slashRender();
+}
+
+
+async function slashFetch(query) {
+  var seq = ++_slash.seq;
+  try {
+    var data = await scout.call("skill.list", { query: query, limit: SLASH_MAX_ITEMS });
+    if (seq !== _slash.seq) return; // 用户又敲了键：只认最后一枪
+    // 回包是**工具信封**（`{ok, data, refs}`，docs/01 §3.13）：清单在 `data.skills`。
+    // 少这一层 `.data` 不会报错、只会让菜单永远显示"没找到匹配的技能"（静默空菜单）
+    _slash.items = (data && data.data && data.data.skills) || [];
+    _slash.error = "";
+  } catch (error) {
+    if (seq !== _slash.seq) return;
+    _slash.items = [];
+    // 报错**不关菜单、不拦发送**：如实写在菜单里，输入框照旧能发消息
+    _slash.error = "技能列表加载失败：" + error.message;
+  }
+  _slash.pending = false;
+  _slash.active = 0;
+  slashRender();
+}
+
+
+/** 150ms 内连打只发最后一枪（防抖），排队期间菜单先说明"正在读"，别像是没反应。 */
+function slashSchedule() {
+  if (_slash.timer) window.clearTimeout(_slash.timer);
+  if (!_slash.items.length && !_slash.error) {
+    _slash.pending = true;
+    slashRender();
+  }
+  var query = _slash.query;
+  _slash.timer = window.setTimeout(function () {
+    _slash.timer = null;
+    slashFetch(query);
+  }, SLASH_DEBOUNCE_MS);
+}
+
+
+function slashOnInput() {
+  var node = el("input");
+  if (!node) return;
+  var caret = typeof node.selectionStart === "number" ? node.selectionStart : node.value.length;
+  var matched = SLASH_TRIGGER.exec(node.value.slice(0, caret));
+  if (!matched) {
+    // 行首/空格后的 `/` 才算触发：再打一个 `/`、打了个空格、删掉斜杠都会关掉菜单
+    if (_slash.open) slashClose();
+    return;
+  }
+  _slash.open = true;
+  _slash.query = matched[2];
+  slashSchedule();
+}
+
+
+function slashMove(step) {
+  if (!_slash.items.length) return;
+  var total = _slash.items.length;
+  _slash.active = (_slash.active + step + total) % total;
+  slashRender();
+  var menu = el("slash-menu");
+  var row = menu ? menu.querySelector(".composer-slash-item.is-active") : null;
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+}
+
+
+/** 选中的技能在输入框里的**引用占位**：只留名字，正文由模型自己 `skill.load` 决定读不读。 */
+function slashInsertPlaceholder(name) {
+  var node = el("input");
+  if (!node) return;
+  var placeholder = "[技能：" + name + "] ";
+  var value = node.value;
+  var caret = typeof node.selectionStart === "number" ? node.selectionStart : value.length;
+  var head = value.slice(0, caret);
+  var matched = SLASH_TRIGGER.exec(head);
+  // 把触发用的 `/pd` 换成占位：否则发出去的是 "/pd[技能：pdf]" 这种半截文本
+  var before = matched ? head.slice(0, head.length - matched[0].length) + matched[1] : head;
+  var tail = value.slice(caret);
+  node.value = before + placeholder + tail;
+  var pos = (before + placeholder).length;
+  if (node.setSelectionRange) node.setSelectionRange(pos, pos);
+  if (node.focus) node.focus();
+}
+
+
+function slashPick(index) {
+  var item = _slash.items[index];
+  if (!item || !item.name) return;
+  var name = String(item.name);
+  slashClose();
+  // 先落占位（不等 RPC）：网络慢的时候这一下也必须有反应
+  slashInsertPlaceholder(name);
+  scout
+    .call("skill.load", { name: name })
+    .then(function (data) {
+      // 与 list 同一个信封形状：`chars` 在 `data.data` 里（docs/01 §3.13）
+      var chars = Number(data && data.data && data.data.chars);
+      if (!isFinite(chars)) chars = 0;
+      // 会话流里的一行轻提示：不落库、不调模型、不占对话轮次（正文一个字都不铺进输入框）
+      notice("已引用技能：" + name + "（正文 " + chars + " 字，需要时模型会自己读全文）", state.sessionId);
+    })
+    .catch(function (error) {
+      notice("技能正文读取失败：" + name + "：" + error.message, state.sessionId);
+    });
+}
+
+
+/** 菜单开着时先吃这几个键；返回 false 表示"这一下还给输入框"（如空列表时的 Enter 照常发送）。 */
+function slashKeydown(event) {
+  if (!_slash.open) return false;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    slashClose();
+    return true;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    slashMove(event.key === "ArrowDown" ? 1 : -1);
+    return true;
+  }
+  if (event.key === "Enter" && !event.shiftKey && !_slash.error && _slash.items.length) {
+    event.preventDefault();
+    slashPick(_slash.active);
+    return true;
+  }
+  return false;
+}
+
+
+function wireSlashMenu() {
+  var node = el("input");
+  if (!node) return;
+  node.addEventListener("input", slashOnInput);
+  node.addEventListener("blur", function () {
+    // 点菜单项时 mousedown 已被拦下（焦点不动），所以这里只会因为"真的移到别处"触发
+    window.setTimeout(function () {
+      if (document.activeElement !== node) slashClose();
+    }, 120);
+  });
+}
+
+
 function wire() {
   el("quickbar").addEventListener("click", function (event) {
     var target = event.target.closest("button[data-ask]");
@@ -1552,11 +1790,17 @@ function wire() {
   });
 
   el("input").addEventListener("keydown", function (event) {
+    // **`/` 菜单先吃键**（↑↓ 高亮 / Enter 选中 / Esc 关）。少了这一句，菜单开着时按
+    // Enter 会**既选中技能又把消息发出去** —— 两条路都认 Enter，谁先执行谁赢
+    if (slashKeydown(event)) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       el("composer").dispatchEvent(new Event("submit"));
     }
   });
+  // `/` 技能菜单的输入监听（触发判定 + 防抖 + 回包装填）挂在这里，与上面那个
+  // keydown 是**两个**监听：顺序由注册顺序决定，键盘那半必须排在"发送"之前
+  wireSlashMenu();
 
   el("btn-new").addEventListener("click", function () {
     newSession();

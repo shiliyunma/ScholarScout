@@ -72,6 +72,11 @@
              id 一个没改名：#input / #btn-send / #btn-stop 都还在原位。 -->
         <div class="composer-input">
           <textarea id="input" rows="3" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
+          <!-- `/` 技能菜单：行首或空格后打 `/` 弹出，绝对定位在输入框**上方**（bottom:100%），
+               不占文档流、不遮正文。每项只有 name + 描述第一行 —— 正文等选中后由模型
+               自己 `skill.load`（渐进式披露：先看名，别把 130 篇正文铺进输入框）。 -->
+          <div class="composer-slash" id="slash-menu" role="listbox"
+               aria-label="本地技能（输入 / 可过滤）" hidden></div>
           <!-- 保存确认（"已保存：…（下一轮生效）"）：绝对定位在框内左下，不吃点击、不占流。 -->
           <p class="composer-note" id="composer-note" role="status" hidden></p>
           <!-- 模型 / 思考深度 / 发送 **同一行、靠右**（Hermes 风）：三个控件都在
