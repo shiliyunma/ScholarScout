@@ -160,12 +160,17 @@ class RpcClient:
         self._pending: dict[int, queue.Queue[Any]] = {}
         #: 响应比信箱先到的极少数情况（测试里预置响应、或后端快得离谱）——按 id 暂存待取
         self._orphans: dict[int, dict[str, Any]] = {}
+        #: 读线程是否已经读到"输出结束"。**必须锁存**：EOF 只发生一次，若只在那一刻
+        #: 投递给"当时已登记"的信箱，晚一步登记的调用就会白等到超时，把"后端已退出"
+        #: 报成"等待后端响应超时"（真机上这窗口随机器负载放大）。
+        self._eof = threading.Event()
 
     # ------------------------------------------------------------- 生命周期
 
     def start(self) -> None:
         if self._proc is not None:
             return
+        self._eof.clear()  # 新进程有新的输出流，上一轮的"输出结束"不适用
         try:
             if self._spawn is not None:
                 self._proc = self._spawn(self.command)
@@ -231,6 +236,7 @@ class RpcClient:
 
     def _route_eof(self) -> None:
         with self._lock:
+            self._eof.set()
             boxes = list(self._pending.values())
         for box in boxes:
             box.put(_EOF)
@@ -263,6 +269,12 @@ class RpcClient:
                 raise RpcCallError(f"写入后端失败：{exc}") from exc
             self._pending[request_id] = box
             orphan = self._orphans.pop(request_id, None)
+            # 与 `_route_eof` 同一把锁：要么它在登记之后锁存/投递，要么这里已看见锁存。
+            eof_seen = self._eof.is_set()
+        if eof_seen:
+            with self._lock:
+                self._pending.pop(request_id, None)
+            raise RpcCallError("后端进程已退出（输出结束）")
         if orphan is not None:
             with self._lock:
                 self._pending.pop(request_id, None)
@@ -279,7 +291,7 @@ class RpcClient:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RpcCallError(f"等待后端响应超时（{timeout:.0f} 秒）")
+                raise RpcCallError(f"等待后端响应超时（{timeout:g} 秒）")
             try:
                 message = box.get(timeout=min(remaining, 0.25))
             except queue.Empty:

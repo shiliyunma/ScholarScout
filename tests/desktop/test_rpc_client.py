@@ -6,6 +6,7 @@ import io
 import json
 import queue
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -155,8 +156,10 @@ def test_unknown_error_code_never_leaks_out_of_the_shell() -> None:
 def test_timeout_raises_with_clear_message() -> None:
     proc = FakeProcess()
     client = _client(proc)
-    with pytest.raises(RpcCallError, match="超时"):
+    with pytest.raises(RpcCallError, match="超时") as exc:
         client.call("system.health", timeout=0.2)
+    # 文案里的秒数必须是**这次调用传的值**，不是构造时的 5.0、也不是任何硬编码。
+    assert "（0.2 秒）" in str(exc.value)
 
 
 def test_eof_raises() -> None:
@@ -164,7 +167,26 @@ def test_eof_raises() -> None:
     client = _client(proc)
     proc.stdout.eof()
     with pytest.raises(RpcCallError, match="已退出"):
-        client.call("system.health", timeout=2.0)
+        client.call("system.health", timeout=0.3)
+
+
+def test_eof_before_call_is_registered_never_lands_on_timeout() -> None:
+    """读线程先读完 EOF、调用方才登记信箱：必须报"已退出"，不能白等到超时。
+
+    真机上这个顺序完全可能发生（后端在读线程里先读到输出结束，前端那一刻才发出调用）。
+    早期实现只在 EOF 那一刻给"当时已登记"的信箱投递，晚一步登记的调用就拿不到任何东西，
+    只能靠超时兜底 —— 于是"后端已经退出了"被报成"等待后端响应超时（2 秒）"，
+    机器一忙（线程调度被挤）就会偶发红。
+    """
+    proc = FakeProcess()
+    client = _client(proc)
+    proc.stdout.eof()
+    # 等读线程真的把"输出结束"锁存完 —— 于是这次调用一定发生在 EOF 分派之后（顺序固定，不靠 sleep）
+    assert client._eof.wait(5.0), "读线程应已把『输出结束』锁存下来"
+    started = time.monotonic()
+    with pytest.raises(RpcCallError, match="已退出"):
+        client.call("system.health", timeout=5.0)
+    assert time.monotonic() - started < 2.0, "发现'已退出'不该靠等满 5 秒超时"
 
 
 def test_call_before_start_is_rejected() -> None:
