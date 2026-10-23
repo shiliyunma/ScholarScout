@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from scholarscout.runtime import research_state
+from scholarscout.state import sessions
 from scholarscout.state.db import Database
 
 #: 存在研究台账里的键
@@ -49,12 +50,13 @@ def _summarized_count(state: dict[str, Any]) -> int:
 def pending_span(
     db: Database, session_id: str, *, state: dict[str, Any] | None = None
 ) -> list[dict[str, str]]:
-    """还没被提要覆盖的那部分消息（用户/助手，且有内容）。"""
+    """还没被提要覆盖的那部分消息（用户/助手，且有内容）。
+
+    「哪些算一条要压的消息」是本模块的口径（跳过 `tool`/`system`、跳过空正文），
+    读行与排序在 `state/sessions.py::message_rows`。
+    """
     current = state if state is not None else (research_state.load_state(db, session_id) or {})
-    rows = db.query(
-        "SELECT id, role, content FROM messages WHERE session_id = ? ORDER BY idx",
-        (session_id,),
-    )
+    rows = sessions.message_rows(db, session_id)
     usable = [
         {"id": str(row["id"]), "role": str(row["role"]), "content": str(row["content"])}
         for row in rows

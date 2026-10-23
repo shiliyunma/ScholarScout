@@ -283,6 +283,25 @@ def count_messages(db: Database, session_id: str) -> int:
     )
 
 
+def message_rows(db: Database, session_id: str) -> list[dict[str, Any]]:
+    """这条会话的消息行（只有 ``id`` / ``role`` / ``content``），按 ``idx`` 正序。
+
+    与 :func:`list_messages` 的三点区别，都是**压缩**要的：
+    - 只要三列（提要是按角色和正文算的，工具轨迹/用量不参与）；
+    - **不分页**：压缩要按"第几条"数已覆盖到哪，翻页会丢掉计数基准；
+    - **不过滤 ``active``**：被界面折叠的消息仍在序号里，滤掉会让 ``covered``
+      与真实条数错位，下一轮就会重压或漏压。
+
+    哪些消息算"值得压"（用户/助手、且正文非空）是压缩的口径，留在
+    ``runtime/compaction.py``。
+    """
+    rows = db.query(
+        "SELECT id, role, content FROM messages WHERE session_id = ? ORDER BY idx",
+        (session_id,),
+    )
+    return [dict(row) for row in rows]
+
+
 def user_message_texts(db: Database, session_id: str) -> list[str]:
     """这条会话里**用户说过的话**（按 ``created_at`` 正序）。
 
