@@ -1,6 +1,6 @@
 """会话级工具调用上限（`runtime.max_tool_calls_per_session`，docs/20 §5.1 / 评审 R-07）。
 
-**全桩**：不真调模型、不真出网（模型是脚本化的假客户端）。守五条：
+**全桩**：不真调模型、不真出网（模型是脚本化的假客户端）。守八条：
 
 1. **默认不限**：没配这个键时守卫为 `None`（不查库、不判断），轮次行为与引入前逐字一致；
 2. **超限当场停手**：配 `2` → 第 3 次工具调用**不执行**，`stop_reason="session_tool_limit"`，
@@ -10,7 +10,14 @@
 4. **`chat.status` 可见**：`session_tool_budget` 与 `global_budget` 并列；未配置 `enabled=False`、
    配了且未超/已超各回各的真实值；
 5. **重启后计数仍在**：换一个**新的 `Database` 连接 + 新的 `SessionRuntime`**（内存里零计数）
-   仍然数得到这个会话的历史用量 —— 因为计数来自 `tool_traces`，不是内存计数器。
+   仍然数得到这个会话的历史用量 —— 因为计数来自 `tool_traces`，不是内存计数器；
+6. **上限 3 → 第 4 次被拒**，且拒绝文案里写着**真实数字**（`上限 3 次`、`已用 3 次`）——
+   只说"超限了"等于让用户去翻配置文件；
+7. **跨轮累计**：两轮共 3 次之后，第 4 次（第二轮里）当场被拒 —— 计数不随轮次清零；
+8. **会话重建才归零**：旧会话到顶被拒，新会话的 `used` 从 0 开始、照常跑得动；
+   外加两条横向口径：`null` 时 `count_tool_calls` **一次都不被调用**（零开销，可断言）、
+   配置里的非法值（`0` / 负数 / `bool` / 非数字串 / 空串）一律**归一为不限**（与
+   `daily_token_budget` 同一归一函数，不另定一套、也不在启动时炸）。
 
 第 5 条是这条能力与"本轮预算"（`TurnBudget`）最本质的区别：它必须**跨轮、跨进程**成立，
 否则"一个下午烧穿额度"的问题一点没解决。
@@ -23,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from scholarscout.config import RuntimeProfile
+from scholarscout.config import RuntimeProfile, load_config
 from scholarscout.rpc.registry import AppContext
 from scholarscout.runtime import budget as daily_budget
 from scholarscout.runtime import registry
@@ -82,15 +89,20 @@ def _new_session(ctx: AppContext, title: str = "会话 A") -> str:
 
 
 def _always_tool_then_summary(summary: str, *, per_round: int = 1) -> Any:
-    """只要还给了工具就再调一次，tools=None 时给出总结正文（并记录每次调用的 tools）。"""
+    """只要还给了工具就再调一次，tools=None 时给出总结正文。
+
+    与 `StubLlm` 一样记录每次调用的 `messages` / `tools`（`calls`），另外单独记 `tools_seen`：
+    断言"收口那一次确实没给工具"只需后者，断言"被拦下的调用也有一条如实 tool 回复"要前者。
+    """
 
     class _Scripted:
         def __init__(self) -> None:
             self.tools_seen: list[bool] = []
+            self.calls: list[dict[str, Any]] = []
             self._seq = 0
 
         def chat(self, messages: list[dict[str, Any]], *, tools: Any = None) -> Any:
-            del messages
+            self.calls.append({"messages": list(messages), "tools": tools})
             self.tools_seen.append(tools is not None)
             if tools is None:
                 return reply(summary)
@@ -338,3 +350,212 @@ def test_the_count_survives_a_restart_because_it_is_read_from_the_ledger(
     finally:
         second.shutdown()
         restarted.close()
+
+
+# ------------------------------------------------------------------ 6. 上限 3 → 第 4 次被拒（文案带数字）
+
+
+def test_the_fourth_call_is_refused_with_a_readable_number_in_the_note(ctx: AppContext) -> None:
+    """配 `3` → 前 3 次真执行，**第 4 次不执行**，拒绝文案里带真实数字。
+
+    这一条钉两件事：① 第 4 次到底跑没跑（`executed` 只到 3，不是 4）；
+    ② 用户看到的话里有 `上限 3 次` / `已用 3 次` —— 光说"超限了"没法判断要不要新开会话。
+
+    刻意把**本轮**预算放宽到 10：否则 3 次工具就撞上 `max_tool_calls_per_turn`，
+    收口理由会变成 `tool_limit`，这条用例就测不到会话级那一道闸了。
+    """
+
+    _with_runtime(ctx, max_tool_calls_per_turn=10, max_tool_calls_per_session=3)
+    executed: list[str] = []
+    _register_echo(executed)
+    llm = _always_tool_then_summary("已到会话上限，用已有资料的总结", per_round=1)
+    ctx.llm = llm
+    session_id = _new_session(ctx)
+    runtime = SessionRuntime(ctx, max_concurrent=2, thread_prefix="probe-sessionlimit-fourth")
+    try:
+        accepted = runtime.submit_turn(
+            session_id=session_id, text="连续追问", toolsets=["research"], emit=None
+        )
+        assert accepted["ok"] is True, accepted
+        result = runtime.wait(str(accepted["turn_id"]), timeout=10)
+
+        assert result is not None
+        assert result.stop_reason == daily_budget.SESSION_STOP_REASON
+        # 真的只有 3 次；第 4 次停在"执行之前"
+        assert executed == ["x", "x", "x"]
+        assert traces.count_tool_calls(ctx.db, session_id=session_id) == 3
+        assert result.text == "已到会话上限，用已有资料的总结"
+        assert llm.calls[-1]["tools"] is None
+
+        # 第 4 次那条 tool 回复必须如实、且带数字（上限 3 / 已用 3）
+        blocked = [
+            item
+            for item in llm.calls[-1]["messages"]
+            if isinstance(item, dict) and item.get("tool_call_id") == "call_4_0"
+        ]
+        assert len(blocked) == 1, "第 4 次调用也要有一条如实的 tool 回复"
+        note = str(blocked[0]["content"])
+        assert "未执行" in note
+        assert "上限 3 次" in note
+        assert "已用 3 次" in note
+    finally:
+        runtime.shutdown()
+
+
+# ------------------------------------------------------------------ 7. 跨轮累计（不清零）
+
+
+def test_two_turns_share_one_counter_so_the_fourth_call_is_refused(
+    ctx: AppContext,
+) -> None:
+    """第一轮 2 次 + 第二轮 1 次 = 3 次；第二轮里的**第 4 次**当场被拒 —— 计数跨轮不清零。
+
+    这正是这条闸与 `TurnBudget`（每轮重新发一份）最本质的区别：会话是一本账。
+    """
+
+    _with_runtime(ctx, max_tool_calls_per_turn=10, max_tool_calls_per_session=3)
+    executed: list[str] = []
+    _register_echo(executed)
+    llm = StubLlm(
+        reply("", tool_calls=[tool_call(ECHO_TOOL, '{"query":"a"}', call_id="call_a")]),
+        reply("", tool_calls=[tool_call(ECHO_TOOL, '{"query":"b"}', call_id="call_b")]),
+        reply("第一轮的总结"),
+    )
+    ctx.llm = llm
+    session_id = _new_session(ctx)
+    runtime = SessionRuntime(ctx, max_concurrent=2, thread_prefix="probe-sessionlimit-cumulative")
+    try:
+        first = runtime.submit_turn(
+            session_id=session_id, text="第一问", toolsets=["research"], emit=None
+        )
+        assert first["ok"] is True, first
+        first_result = runtime.wait(str(first["turn_id"]), timeout=10)
+        assert first_result is not None and first_result.stop_reason == "completed"
+        assert executed == ["a", "b"]
+
+        # 第二轮：再调一次（第 3 次，允许），随后那一次（第 4 次）必须被拒
+        llm.replies.extend(
+            [
+                reply("", tool_calls=[tool_call(ECHO_TOOL, '{"query":"c"}', call_id="call_c")]),
+                reply("", tool_calls=[tool_call(ECHO_TOOL, '{"query":"d"}', call_id="call_d")]),
+                reply("第二轮用已有资料收口"),
+            ]
+        )
+        second = runtime.submit_turn(
+            session_id=session_id, text="第二问", toolsets=["research"], emit=None
+        )
+        assert second["ok"] is True, second
+        second_result = runtime.wait(str(second["turn_id"]), timeout=10)
+
+        assert second_result is not None
+        assert second_result.stop_reason == daily_budget.SESSION_STOP_REASON
+        assert executed == ["a", "b", "c"], "第 4 次（call_d）不该被执行"
+        assert traces.count_tool_calls(ctx.db, session_id=session_id) == 3
+        assert second_result.text == "第二轮用已有资料收口"
+        # 收口后还有一次"跨会话记忆"的小调用，所以不能在 `calls[-1]` 上找 —— 跨全部调用查更稳
+        blocked = [
+            item
+            for call in llm.calls
+            for item in call["messages"]
+            if isinstance(item, dict) and item.get("tool_call_id") == "call_d"
+        ]
+        assert blocked, "被拦下的调用必须有一条如实的 tool 回复"
+        assert all("未执行" in str(item["content"]) for item in blocked)
+        assert "已用 3 次" in str(blocked[0]["content"])
+    finally:
+        runtime.shutdown()
+
+
+# ------------------------------------------------------------------ 8. 会话重建才归零
+
+
+def test_a_new_session_starts_from_zero_while_the_old_one_stays_refused(
+    ctx: AppContext,
+) -> None:
+    """旧会话到顶（拒新轮），**新建的会话从 0 开始**且照常跑得动 —— 这是唯一的"重置"途径。"""
+
+    _with_runtime(ctx, max_tool_calls_per_turn=10, max_tool_calls_per_session=3)
+    executed: list[str] = []
+    _register_echo(executed)
+    ctx.llm = StubLlm(
+        reply("", tool_calls=[tool_call(ECHO_TOOL, '{"query":"n1"}', call_id="call_n1")]),
+        reply("新会话的总结"),
+    )
+    spent = _new_session(ctx, "旧会话")
+    _seed_traces(ctx.db, spent, 3)
+    fresh = _new_session(ctx, "新会话")
+    runtime = SessionRuntime(ctx, max_concurrent=2, thread_prefix="probe-sessionlimit-rebuild")
+    try:
+        rejected = runtime.submit_turn(
+            session_id=spent, text="旧会话再问", toolsets=["research"], emit=None
+        )
+        assert rejected["ok"] is False
+        assert rejected["reason"] == daily_budget.SESSION_REJECT_REASON
+
+        # 新会话：另一本账，从 0 起
+        status = runtime.status(fresh)["session_tool_budget"]
+        assert (status["used"], status["limit"], status["exceeded"]) == (0, 3, False)
+
+        accepted = runtime.submit_turn(
+            session_id=fresh, text="新会话第一问", toolsets=["research"], emit=None
+        )
+        assert accepted["ok"] is True, accepted
+        result = runtime.wait(str(accepted["turn_id"]), timeout=10)
+        assert result is not None and result.stop_reason == "completed"
+        assert executed == ["n1"]
+        assert traces.count_tool_calls(ctx.db, session_id=fresh) == 1
+        # 旧会话那本账没有被新会话的调用污染
+        assert traces.count_tool_calls(ctx.db, session_id=spent) == 3
+    finally:
+        runtime.shutdown()
+
+
+# ------------------------------------------------------------------ 9. null = 零开销（不计数）
+
+
+def test_no_limit_means_the_counter_is_never_consulted(
+    ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没配上限时**一次也不查库计数**：把 `count_tool_calls` 换成炸弹，整轮照跑。
+
+    这是"`null` 零开销"的可断言形态 —— 不是靠读代码相信它没查，而是让查了就炸。
+    """
+    _register_echo()
+    ctx.llm = _always_tool_then_summary("没有上限的总结", per_round=1)
+    session_id = _new_session(ctx)
+    runtime = SessionRuntime(ctx, max_concurrent=2, thread_prefix="probe-sessionlimit-free")
+    try:
+        assert daily_budget.session_guard_from_runtime(ctx.config.runtime) is None
+
+        def _boom(*_args: Any, **_kwargs: Any) -> int:
+            raise AssertionError("未配上限时不该查库计数（null 必须零开销）")
+
+        monkeypatch.setattr(traces, "count_tool_calls", _boom)
+        accepted = runtime.submit_turn(
+            session_id=session_id, text="随便问问", toolsets=["research"], emit=None
+        )
+        assert accepted["ok"] is True, accepted
+        result = runtime.wait(str(accepted["turn_id"]), timeout=10)
+        assert result is not None and result.stop_reason == "completed"
+    finally:
+        runtime.shutdown()
+
+
+# ------------------------------------------------------------------ 10. 配置非法值
+
+
+@pytest.mark.parametrize("raw", ["0", "-3", "true", "false", "'abc'", "''", "null"])
+def test_illegal_limit_values_are_normalised_to_unlimited(tmp_path: Any, raw: str) -> None:
+    """非法值（`0` / 负数 / `bool` / 非数字串 / 空串）一律**归一为不限**，不炸启动。
+
+    与 `daily_token_budget` **同一个归一函数**（`config._optional_positive_int`）：
+    `0` 的直觉是"先关掉这条闸"，把它读成"上限 0、一律拒绝"会让用户以为程序坏了；
+    `bool` 被 `int()` 读成 1 更是荒唐的上限。守卫因此是 `None`（不计数、不判断）。
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(f"runtime:\n  max_tool_calls_per_session: {raw}\n", encoding="utf-8")
+
+    config = load_config(path, load_env=False)
+
+    assert config.runtime.max_tool_calls_per_session is None
+    assert daily_budget.session_guard_from_runtime(config.runtime) is None

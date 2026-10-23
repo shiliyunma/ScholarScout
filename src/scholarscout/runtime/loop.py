@@ -289,16 +289,22 @@ def run_turn(
                 break
 
             for index, call in enumerate(reply.tool_calls):
-                # ---- 会话级检查点（docs/20 §5.1）：**真正执行这一次调用之前**按会话累计判一次。
+                # 会话级检查点（docs/20 §5.1）：**真正执行这一次调用之前**按会话累计判一次。
                 # 超限就**不执行**（一次都不再调），转入无工具收口 —— 已生成的正文不丢。
-                if (
-                    session_guard is not None
-                    and session_guard.exceeded(ctx.db, session_id) is not None
-                ):
+                session_spent = (
+                    session_guard.exceeded(ctx.db, session_id)
+                    if session_guard is not None
+                    else None
+                )
+                if session_spent is not None:
                     stop_reason = daily_budget.SESSION_STOP_REASON
                     session_stop_used = True
+                    # 文案必须带上**具体数字**：用户据"上限几次、已用几次"判断要不要新开会话，
+                    # 只说一句"超限了"等于让他去翻配置文件。
                     note = (
-                        "未执行：本会话的工具调用已达上限（runtime.max_tool_calls_per_session）。"
+                        f"未执行：本会话工具调用已达上限 {session_spent['limit']} 次"
+                        f"（已用 {session_spent['used']} 次，"
+                        "runtime.max_tool_calls_per_session）。"
                     )
                     # 没执行的调用也要有一条**如实**的 tool 回复：assistant 那批 tool_calls
                     # 每个 id 都必须有对应结果，否则回放与下一轮请求的报文是残缺的。
