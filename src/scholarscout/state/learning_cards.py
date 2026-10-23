@@ -498,6 +498,24 @@ def notes_for_source(db: Database, source_id: str, *, limit: int = 50) -> list[d
     return hits
 
 
+def review_log_rows(db: Database, note_id: str, card_index: int) -> list[dict[str, Any]]:
+    """这张卡的复习日志行（`rating` / `reviewed_at`），按写入顺序（``id``）升序。
+
+    原文从 `runtime/practice.py::review_history` 照搬。为什么另有一条而不是直接复用
+    `card_attempts`：那条多回 `response` / `correct` 两列，而抽背卡求助只数档位与最近一次时间；
+    这里刻意只回两列，跟 `replay_card` 重放用的是**同一条**查询（重放只信日志，见那条的 docstring）。
+
+    **业务边界留在 practice 层**：「一次都没复习过」时那句中文、`good/fuzzy/bad` 怎么数、
+    `reviewed_at` 截前 10 位（日期）都还在 `review_history`；这里只回原始行，空库回空列表。
+    """
+    rows = db.query(
+        "SELECT rating, reviewed_at FROM card_review_log"
+        " WHERE note_id = ? AND card_index = ? ORDER BY id",
+        (note_id, card_index),
+    )
+    return [dict(row) for row in rows]
+
+
 def replay_card(db: Database, note_id: str, card_index: int) -> dict[str, Any]:
     """从追加式日志**重放**这张卡的排期（③）。
 
@@ -507,11 +525,7 @@ def replay_card(db: Database, note_id: str, card_index: int) -> dict[str, Any]:
 
     `logged` 只数日志条数：迁移之前的老数据没有日志，logged < reviews 是如实暴露，不是错。
     """
-    rows = db.query(
-        "SELECT rating, reviewed_at FROM card_review_log"
-        " WHERE note_id = ? AND card_index = ? ORDER BY id",
-        (note_id, card_index),
-    )
+    rows = review_log_rows(db, note_id, card_index)
     ease: float | None = None
     interval_days: float | None = None
     streak, lapses = 0, 0

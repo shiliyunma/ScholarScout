@@ -1,8 +1,10 @@
-"""候选来源的五条查询（`tools/source_context.py` 的三级取法 + `tools/source_grade.py` 的两条）。
+"""候选来源的六条查询（`tools/source_context.py` 的三级取法 + `tools/source_grade.py` 的两条
++ `runtime/practice.py` 的一条）。
 
-这五处 SQL 原本长在工具层（`tools/source_context.py` 3 处、`tools/source_grade.py` 3 处，其中按 id
-那一条两处原文相同，共用 `source_by_id`），这一轮只是**位置**搬进 state：列清单、过滤条件、
-`GROUP BY`、`ORDER BY`、`LIMIT` 一个字没动。业务边界仍留在工具层：URL 规范化由调用方先算好再传
+前五处原本长在工具层（`tools/source_context.py` 3 处、`tools/source_grade.py` 3 处，其中按 id
+那一条两处原文相同，共用 `source_by_id`）；第六条原本长在 `runtime/practice.py` 的
+`gather_sources`（抽背卡求助时喂给模型的「本会话已入库资料 + 最新摘要」），本轮一并搬进 state。
+每一次都只是**位置**搬进来：列清单、过滤条件、`GROUP BY`、`ORDER BY`、`LIMIT` 一个字没动。业务边界仍留在工具层：URL 规范化由调用方先算好再传
 `url_canonical`，`max(1, min(limit, 100))` 的夹取也不在这里做。
 
 两条口径容易写歪，放在这里是为了能用空库/多行直接试：
@@ -75,5 +77,28 @@ def ungated_sources(db: Database, *, limit: int) -> list[dict[str, Any]]:
         ORDER BY last_seen_at DESC LIMIT ?
         """,
         (limit,),
+    )
+    return [dict(row) for row in rows]
+
+
+def session_sources_with_summary(
+    db: Database, *, session_id: str, limit: int
+) -> list[dict[str, Any]]:
+    """本会话带出来的来源 + 每条来源**最新一条**摘要文本（抽背卡求助时喂给模型）。
+
+    原文从 `runtime/practice.py::gather_sources` 照搬，列清单、关联子查询、`ORDER BY`
+    的「tier 未判的排最后」（`s.tier IS NULL` 在 SQLite 里是 0/1）、`LIMIT` 一个字没动。
+
+    **业务边界留在 practice 层**：`session_id` 为空时直接回空列表（不查库）、
+    `MAX_SOURCES=5` 的默认值、摘要换行压平与 `MAX_SUMMARY_CHARS=220` 截断、标题 `[:80]` 截断
+    与「没标题就用 URL」的兜底，全在 `gather_sources`；这里只回原始行。
+    """
+    rows = db.query(
+        "SELECT s.id AS source_id, s.title, s.url,"
+        " (SELECT summary_short FROM summaries WHERE source_id = s.id"
+        "  ORDER BY created_at DESC LIMIT 1) AS summary_short"
+        " FROM source_mentions m JOIN sources s ON s.id = m.source_id"
+        " WHERE m.session_id = ? ORDER BY s.tier IS NULL, s.tier LIMIT ?",
+        (session_id, limit),
     )
     return [dict(row) for row in rows]

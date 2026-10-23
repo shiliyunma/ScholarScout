@@ -15,7 +15,7 @@ from collections.abc import Callable
 from typing import Any
 
 from scholarscout.providers.llm import LlmError
-from scholarscout.state import learning
+from scholarscout.state import learning, learning_cards, source_context
 from scholarscout.state.db import Database
 
 #: 送进提示词的资料条数上限 —— 够模型指认，又不会把上下文撑爆（每轮工具结果都在计费）。
@@ -27,12 +27,11 @@ def review_history(db: Database, note_id: str, card_index: int) -> str:
     """这张卡的复习记录（③ 要求"结合学习记录"）。
 
     只用**追加式日志**（card_review_log）：它是事实；汇总行是派生值，两者不一致时以日志为准。
+
+    查询在 `state/learning_cards.review_log_rows`（state 是唯一碰 SQL 的地方）：
+    「一次都没复习过」时那句话、档位怎么数、日期截几位这些**业务口径仍在这里**。
     """
-    rows = db.query(
-        "SELECT rating, reviewed_at FROM card_review_log"
-        " WHERE note_id = ? AND card_index = ? ORDER BY id",
-        (note_id, card_index),
-    )
+    rows = learning_cards.review_log_rows(db, note_id, card_index)
     if not rows:
         return "（这张卡还没有复习记录）"
     counts: dict[str, int] = {}
@@ -56,14 +55,7 @@ def gather_sources(
     """
     if not session_id:
         return []
-    rows = db.query(
-        "SELECT s.id AS source_id, s.title, s.url,"
-        " (SELECT summary_short FROM summaries WHERE source_id = s.id"
-        "  ORDER BY created_at DESC LIMIT 1) AS summary_short"
-        " FROM source_mentions m JOIN sources s ON s.id = m.source_id"
-        " WHERE m.session_id = ? ORDER BY s.tier IS NULL, s.tier LIMIT ?",
-        (session_id, limit),
-    )
+    rows = source_context.session_sources_with_summary(db, session_id=session_id, limit=limit)
     out: list[dict[str, str]] = []
     for row in rows:
         summary = str(row["summary_short"] or "").strip().replace("\n", " ")

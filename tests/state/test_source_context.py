@@ -180,3 +180,88 @@ def test_ungated_sources_respects_limit(db: Database) -> None:
 
     # 夹取不在这里做：state 照传（limit=0 就是 0 条），`max(1, …)` 留在工具层
     assert source_context.ungated_sources(db, limit=0) == []
+
+
+# ------------------------------------------- 会话来源 + 最新摘要（runtime/practice）
+
+
+def _mention(db: Database, source_id: str, *, session_id: str = "ses_1") -> None:
+    db.execute(
+        "INSERT INTO source_mentions (source_id, session_id, created_at) VALUES (?,?,?)",
+        (source_id, session_id, T0),
+    )
+
+
+def _summary(db: Database, summary_id: str, source_id: str, *, created_at: str = T0) -> None:
+    doc_id = f"doc_{summary_id}"
+    db.execute(
+        "INSERT INTO documents (id, source_id, title, sha256, extract_status, fetched_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (doc_id, source_id, f"资料 {doc_id}", f"sha-{summary_id}", "ok", T0),
+    )
+    db.execute(
+        "INSERT INTO summaries (id, doc_id, source_id, kind, title_zh, summary_short,"
+        " prompt_version, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            summary_id,
+            doc_id,
+            source_id,
+            "paper",
+            f"标题 {summary_id}",
+            f"摘要 {summary_id}",
+            "pv1",
+            created_at,
+        ),
+    )
+
+
+def test_session_sources_empty_db_is_empty_list(db: Database) -> None:
+    assert source_context.session_sources_with_summary(db, session_id="ses_1", limit=5) == []
+
+
+def test_session_sources_returns_named_columns_and_latest_summary(db: Database) -> None:
+    """列清单是回包形状；摘要取**最新**一条（同一来源两条摘要只带回一条）。"""
+    _source(db, "src_a")
+    _mention(db, "src_a")
+    _summary(db, "sum_old", "src_a", created_at="2026-10-01T00:00:00+08:00")
+    _summary(db, "sum_new", "src_a", created_at="2026-10-09T00:00:00+08:00")
+
+    rows = source_context.session_sources_with_summary(db, session_id="ses_1", limit=5)
+    assert len(rows) == 1, "同一来源只出一行（JOIN 的是提及表，不是摘要表）"
+    assert list(rows[0]) == ["source_id", "title", "url", "summary_short"]
+    assert rows[0]["source_id"] == "src_a"
+    assert rows[0]["summary_short"] == "摘要 sum_new"
+
+
+def test_session_sources_without_summary_is_none(db: Database) -> None:
+    """没有摘要的来源照样回行，`summary_short` 是 None —— 交给 practice 层去压成空串。"""
+    _source(db, "src_a")
+    _mention(db, "src_a")
+    rows = source_context.session_sources_with_summary(db, session_id="ses_1", limit=5)
+    assert rows[0]["summary_short"] is None
+
+
+def test_session_sources_tier_null_last_and_other_sessions_out(db: Database) -> None:
+    """已判权的按 tier 升序在前，`tier IS NULL` 排最后；只回点名那一会话。"""
+    _source(db, "src_t3")
+    _source(db, "src_t1")
+    _source(db, "src_untiered")
+    _source(db, "src_other_session")
+    db.execute("UPDATE sources SET tier = 3 WHERE id = 'src_t3'")
+    db.execute("UPDATE sources SET tier = 1 WHERE id = 'src_t1'")
+    for source_id in ("src_t3", "src_t1", "src_untiered"):
+        _mention(db, source_id)
+    _mention(db, "src_other_session", session_id="ses_2")
+
+    rows = source_context.session_sources_with_summary(db, session_id="ses_1", limit=10)
+    assert [row["source_id"] for row in rows] == ["src_t1", "src_t3", "src_untiered"]
+
+
+def test_session_sources_respects_limit(db: Database) -> None:
+    """`LIMIT` 照传：`MAX_SOURCES=5` 的默认值留在 practice 层，这里 limit=1 就只回 1 条。"""
+    _source(db, "src_1")
+    _source(db, "src_2")
+    _mention(db, "src_1")
+    _mention(db, "src_2")
+
+    assert len(source_context.session_sources_with_summary(db, session_id="ses_1", limit=1)) == 1

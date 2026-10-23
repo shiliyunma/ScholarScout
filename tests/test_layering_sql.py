@@ -41,9 +41,12 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: 键 = 相对 `src/scholarscout/` 的路径，值 = 该文件里 SQL 调用点的处数。
 #: 修掉一处 SQL，就把那个数字减一；减到 0 删掉整条（自检会拦僵尸条目）。
 #: **新增 SQL 不许往这里加数字**：先把查询搬进 `state/`，再来把数字改小。
-#: 现值：2026-10-23 实测 **15 处 / 9 个模块**（`runtime/compaction.py` 的 1 处下沉到
+#: 现值：2026-10-23 实测 **13 处 / 8 个模块**（`runtime/practice.py` 的 2 处下沉到
+#: `state/learning_cards.py` 的 `review_log_rows` 与 `state/source_context.py` 的
+#: `session_sources_with_summary`，该条整条删除）。
+#: 上一轮快照：2026-10-23 为 15 处 / 9 个模块（`runtime/compaction.py` 的 1 处下沉到
 #: `state/sessions.py` 的 `message_rows`，该条整条删除）。
-#: 上一轮快照：2026-10-23 为 16 处 / 10 个模块（`library/index.py` 的 2 处下沉到
+#: 更早快照：2026-10-23 为 16 处 / 10 个模块（`library/index.py` 的 2 处下沉到
 #: `state/library_index.py` 的 `documents_with_sources` / `source_mentions`，该条整条删除）。
 #: 更早快照：2026-10-23 为 18 处 / 11 个模块（`tools/source_grade.py` 的 3 处已下沉到
 #: `state/source_context.py` 的 `ungated_sources` / `source_by_url_canonical`，按 id 那一条与
@@ -63,7 +66,6 @@ ALLOWED: dict[str, int] = {
     "rpc/channel_file.py": 2,
     "rpc/session.py": 2,
     "runtime/budget.py": 1,
-    "runtime/practice.py": 2,
     "runtime/research_state.py": 1,
     "tools/source_fetch.py": 3,
 }
