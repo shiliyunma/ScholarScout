@@ -213,6 +213,42 @@ def _optional_positive_int(value: object) -> int | None:
     return number if number > 0 else None
 
 
+def _strict_optional_limit_int(value: object, *, key: str) -> int | None:
+    """``key`` 专供的「可选上限」：**`null` / 缺省 / 空串 / `0` = 不限，其余写错就报错**。
+
+    为什么不直接用 :func:`_optional_positive_int`（`daily_token_budget` 的归一函数）：
+    那个函数把**任何**非法值都折成 ``None``（= 不限制）。对每日 token 封顶这一套已经发布的
+    语义，那是刻意的（YAML 里写 ``0`` 的直觉是"先关掉"）。但对**会话级工具上限**，静默归一
+    的后果是**一个 typo 关掉安全阀**：``max_tool_calls_per_session: 'abc'`` 或 ``-3`` 会让
+    这条闸变成无上限，而用户以为自己配了一个上限、界面上也看不出区别。
+
+    所以这里**复用**同一个归一函数做合法值这一支（``null`` / 空串 / ``0`` / 正整数 的判断
+    只有一份，不另写一套），只在"归一出 ``None``"时**再分一次岔**：
+    只有 ``None`` / 空白串 / 数值 ``0`` 才算"用户要的 不限"，其余（``bool``、负数、
+    非数字串、别的类型）当场报错，且错误里带键名。``bool`` 必须特判：``True`` 是 ``int``
+    的子类，不拦就会被 ``int()`` 读成 ``1`` —— 一个荒唐的上限（同 `fetch/settings.py::_positive_int`）。
+    """
+    if isinstance(value, bool):
+        raise ValueError(
+            f"{key} 必须是正整数、0 或 null（0 / null = 不限制；收到 {value!r}，"
+            "bool 不是上限 —— 要关掉这条闸请写 0 或 null）"
+        )
+    try:
+        limit = _optional_positive_int(value)
+    except (TypeError, ValueError):
+        # 例如 YAML 的 `.nan` / `.inf`：归一函数里 int() 会炸，这里补上键名再报
+        limit = None
+    if limit is not None:
+        return limit
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, (int, float)) and value == 0:
+        return None
+    raise ValueError(f"{key} 必须是正整数、0 或 null（0 / null = 不限制；收到 {value!r}）")
+
+
 def _optional_positive_float(value: object) -> float | None:
     """同上，用于金额上限（配了单价才有意义，见 `runtime/budget.py`）。"""
     if isinstance(value, bool) or value is None:
@@ -294,8 +330,11 @@ class RuntimeProfile:
     daily_token_budget: int | None = None
     #: **会话级**工具调用上限（docs/20 §5.1，评审 R-07）：一个会话**累计**能调多少次工具
     #: （跨轮累计，取自 `tool_traces` 的行数，落库口径所以重启后仍然准）。
-    #: **默认 None = 不限制**（与 `daily_token_budget` 同一归一函数 `_optional_positive_int`：
-    #: 非数字 / `<= 0` / `bool` 一律当"不限制"）。超限后：正在跑的这一轮在**下一次工具调用前**
+    #: **默认 None = 不限制**；`null` / 缺省 / 空串 / `0` 都算"不限制"，但**写错就报错**
+    #: （`bool` / 负数 / 非数字串 → `ValueError`，错误信息带这个键名）—— 见
+    #: `_strict_optional_limit_int`。它与 `daily_token_budget` 的归一函数**共用合法值判断**，
+    #: 只在"非法值"这一支**分歧**：那边静默归一成"不限"，这里报错。理由：一个 typo
+    #: （`'abc'` / `-3`）在那边等于**把安全阀悄悄关掉**，用户看不出区别。超限后：正在跑的这一轮在**下一次工具调用前**
     #: 收口（只再给一次无工具总结，`stop_reason="session_tool_limit"`，已生成正文不丢），
     #: 该会话后续的新轮次直接拒绝（`session_tool_limit_exceeded`）。
     #: 与每日封顶的区别：它**不随时间回血** —— 算的是会话，不是自然日。
@@ -554,10 +593,12 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             # 每日封顶（docs/20 §5.1）：**默认无上限**；`<= 0` / bool / 非数字一律归一成 None。
             # `0` 读成"不限制"而不是"上限 0"（见 `_optional_positive_int` 的理由）。
             daily_token_budget=_optional_positive_int(runtime_section.get("daily_token_budget")),
-            # 会话级工具调用上限（docs/20 §5.1）：**默认无上限**，与上一行同一归一函数。
-            # D3 同款坑：加了字段必须接这一行，否则 YAML 里写它会被静默忽略。
-            max_tool_calls_per_session=_optional_positive_int(
-                runtime_section.get("max_tool_calls_per_session")
+            # 会话级工具调用上限（docs/20 §5.1）：**默认无上限**；`null` / 空串 / `0` = 不限，
+            # 但 `bool` / 负数 / 非数字串**报错**（`_strict_optional_limit_int`，带键名）——
+            # 静默归一成一个 typo 就把安全阀关掉了。D3 同款坑：加了字段必须接这一行。
+            max_tool_calls_per_session=_strict_optional_limit_int(
+                runtime_section.get("max_tool_calls_per_session"),
+                key="runtime.max_tool_calls_per_session",
             ),
             daily_cost_budget=_optional_positive_float(runtime_section.get("daily_cost_budget")),
             # 日志落盘（`logging_setup` 读这三枚）：级别 / 单文件 MB / 备份份数。

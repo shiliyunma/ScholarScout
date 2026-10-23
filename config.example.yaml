@@ -85,7 +85,9 @@ runtime:
   # `stop_reason="session_tool_limit"`（已生成正文不丢）；② 该会话后续的新轮次直接拒绝
   # （`session_tool_limit_exceeded`），提示用户新开会话 —— 这条闸**不随时间回血**。
   # 当前用量在 `chat.status` 的 `session_tool_budget` 键里（未配置时 enabled=false）。
-  # null / 不写 = 不限制；`0` 与负数**也按"不限制"**归一（与 daily_token_budget 同一口径）。
+  # null / 不写 = 不限制；`0` 与空串**也按"不限制"**（与 daily_token_budget 共用合法值判断）。
+  # **写错就报错**：`true`/`false`（bool）、负数、`'abc'` 这类非数字串会在启动时 ValueError，
+  # 错误里带 `runtime.max_tool_calls_per_session` —— 不静默变成"无上限"（一个 typo 关掉安全阀）。
   max_tool_calls_per_session: null
 
   # ---- 日志落盘（`src/scholarscout/logging_setup.py`）----

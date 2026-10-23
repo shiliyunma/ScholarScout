@@ -276,8 +276,10 @@ class SessionToolGuard:
 def session_guard_from_runtime(runtime_cfg: object) -> SessionToolGuard | None:
     """从 ``config.runtime`` 造会话级守卫；**没配（或 <= 0 / bool / 非数字）时回 ``None``**。
 
-    归一化走本模块的 :func:`_positive_int` —— 与 ``daily_token_budget`` **同一口径**：
-    ``None`` / 非数字 / ``<= 0`` / ``bool`` 一律当"不限制"，不另定一套。
+    归一化走本模块的 :func:`_positive_int`（``None`` / 非数字 / ``<= 0`` / ``bool`` → ``None``）：
+    这是给**程序内覆盖**留的宽容路径。配置文件那条路更严：``load_config`` 用
+    ``config._strict_optional_limit_int`` 校验，``bool`` / 负数 / 非数字串在启动时就报错
+    （静默归一成一个 typo 等于关掉安全阀）。到这里的值已经只可能是正整数或 ``None``。
     """
     limit = _positive_int(getattr(runtime_cfg, "max_tool_calls_per_session", None))
     return None if limit is None else SessionToolGuard(limit=limit)

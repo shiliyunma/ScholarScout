@@ -16,8 +16,9 @@
 7. **跨轮累计**：两轮共 3 次之后，第 4 次（第二轮里）当场被拒 —— 计数不随轮次清零；
 8. **会话重建才归零**：旧会话到顶被拒，新会话的 `used` 从 0 开始、照常跑得动；
    外加两条横向口径：`null` 时 `count_tool_calls` **一次都不被调用**（零开销，可断言）、
-   配置里的非法值（`0` / 负数 / `bool` / 非数字串 / 空串）一律**归一为不限**（与
-   `daily_token_budget` 同一归一函数，不另定一套、也不在启动时炸）。
+   配置里 `null` / `''` / `0` 一律**归一为不限**（与 `daily_token_budget` 共用合法值判断），
+   而 `bool` / 负数 / 非数字串**启动即报错**（错误带键名）—— 后者是**有意识的语义收窄**：
+   静默归一等于"一个 typo 把安全阀关掉"，用户看不出来（详见第 10 节）。
 
 第 5 条是这条能力与"本轮预算"（`TurnBudget`）最本质的区别：它必须**跨轮、跨进程**成立，
 否则"一个下午烧穿额度"的问题一点没解决。
@@ -541,17 +542,21 @@ def test_no_limit_means_the_counter_is_never_consulted(
         runtime.shutdown()
 
 
-# ------------------------------------------------------------------ 10. 配置非法值
+# ------------------------------------ 10. 配置值：`null`/`''`/`0` 不限，写错报错（语义收窄）
+#
+# **有意识的语义收窄**（2026-10-23）：这个键原来沿用 `daily_token_budget` 的
+# `_optional_positive_int`，把**任何**非法值都折成"不限"。后果是
+# `max_tool_calls_per_session: 'abc'` 或 `-3` 会**静默变成无上限** —— 一个 typo 关掉安全阀，
+# 而用户看不出区别。现在：`null` / 缺省 / `''` / `0` 仍是"不限"（已发布语义，不动），
+# 但 `bool` / 负数 / 非数字串**启动即报错**且错误里带键名。`daily_token_budget` 的
+# 归一行为**一个字都没改**（它被 `test_settings_io` / `test_notify_and_budget` 多条钉住）。
 
 
-@pytest.mark.parametrize("raw", ["0", "-3", "true", "false", "'abc'", "''", "null"])
-def test_illegal_limit_values_are_normalised_to_unlimited(tmp_path: Any, raw: str) -> None:
-    """非法值（`0` / 负数 / `bool` / 非数字串 / 空串）一律**归一为不限**，不炸启动。
-
-    与 `daily_token_budget` **同一个归一函数**（`config._optional_positive_int`）：
-    `0` 的直觉是"先关掉这条闸"，把它读成"上限 0、一律拒绝"会让用户以为程序坏了；
-    `bool` 被 `int()` 读成 1 更是荒唐的上限。守卫因此是 `None`（不计数、不判断）。
-    """
+@pytest.mark.parametrize("raw", ["null", "''", "0"])
+def test_unlimited_values_stay_unlimited_and_never_count(
+    ctx: AppContext, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """`null` / `''` / `0` → 不限：守卫为 `None`，**一次计数都不发生**（把计数换成炸弹）。"""
     path = tmp_path / "config.yaml"
     path.write_text(f"runtime:\n  max_tool_calls_per_session: {raw}\n", encoding="utf-8")
 
@@ -559,3 +564,64 @@ def test_illegal_limit_values_are_normalised_to_unlimited(tmp_path: Any, raw: st
 
     assert config.runtime.max_tool_calls_per_session is None
     assert daily_budget.session_guard_from_runtime(config.runtime) is None
+
+    def _boom(*_args: Any, **_kwargs: Any) -> int:
+        raise AssertionError(f"{raw} 表示不限时不该查库计数")
+
+    monkeypatch.setattr(traces, "count_tool_calls", _boom)
+    snap = daily_budget.session_tool_snapshot(config.runtime, ctx.db, session_id="不存在的会话")
+    assert snap["enabled"] is False
+    assert (snap["limit"], snap["used"], snap["exceeded"]) == (None, None, False)
+
+
+@pytest.mark.parametrize("raw", ["true", "false", "-3", "'abc'"])
+def test_illegal_limit_values_raise_with_the_key_name(tmp_path: Any, raw: str) -> None:
+    """`bool` / 负数 / 非数字串 → **启动就报错**，错误信息里带键名。
+
+    这里刻意不复用 `daily_token_budget` 的"静默归一"：`True` 是 `int` 的子类（不特判会变 1），
+    而 `-3` / `'abc'` 归一成"不限"等于**把这条闸关掉**——用户以为配了上限，其实没有。
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(f"runtime:\n  max_tool_calls_per_session: {raw}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"runtime\.max_tool_calls_per_session"):
+        load_config(path, load_env=False)
+
+
+def test_a_yaml_limit_of_three_is_in_effect_and_the_fourth_call_is_refused(
+    ctx: AppContext, tmp_path: Any
+) -> None:
+    """`3` 从 **YAML** 读进来就生效：前 3 次真执行，第 4 次被拒（收口 `session_tool_limit`）。
+
+    与第 6 条的区别：那条用 `replace(...)` 直接改配置对象，证明的是运行期；这条走
+    `load_config` → `RuntimeProfile` 的整条链路，证明"用户写在 config.yaml 里的 3 真的是 3"。
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "runtime:\n  max_tool_calls_per_session: 3\n  max_tool_calls_per_turn: 10\n",
+        encoding="utf-8",
+    )
+    loaded = load_config(path, load_env=False)
+    assert loaded.runtime.max_tool_calls_per_session == 3
+    ctx.config = replace(ctx.config, runtime=loaded.runtime)
+
+    executed: list[str] = []
+    _register_echo(executed)
+    llm = _always_tool_then_summary("YAML 上限 3 的收口", per_round=1)
+    ctx.llm = llm
+    session_id = _new_session(ctx)
+    runtime = SessionRuntime(ctx, max_concurrent=2, thread_prefix="probe-sessionlimit-yaml")
+    try:
+        accepted = runtime.submit_turn(
+            session_id=session_id, text="连续追问", toolsets=["research"], emit=None
+        )
+        assert accepted["ok"] is True, accepted
+        result = runtime.wait(str(accepted["turn_id"]), timeout=10)
+
+        assert result is not None
+        assert result.stop_reason == daily_budget.SESSION_STOP_REASON
+        assert executed == ["x", "x", "x"], "第 4 次不该被执行"
+        assert traces.count_tool_calls(ctx.db, session_id=session_id) == 3
+        assert result.text == "YAML 上限 3 的收口"
+    finally:
+        runtime.shutdown()
