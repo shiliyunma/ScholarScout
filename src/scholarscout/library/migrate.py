@@ -17,6 +17,12 @@
 旧目录清理：把 ``data/raw`` / ``data/text`` 下**未被库引用的**历史文件移进 ``_orphan/``
 （隔离而非删除 —— 那些文件已无元数据，编不出人类可读的名字，删了就是数据丢失），
 随后**自底向上删掉空掉的旧目录**（``<类型>/<年-月>/``、``<2位>/``、老命名遗留的顶层文件所在目录）。
+
+两条读查询（全库资料行 + 提及行）**直接用 `state/library_index.py` 的那两个函数**，不再抄第二份：
+索引重建（`library/index.py`）要的列与迁移要的列本来就是同一批（``raw_path`` / ``text_path`` /
+``sha256`` / ``fetched_at`` / 来源侧标题与 ``meta_json``），排序口径也一样
+（``fetched_at DESC, rowid DESC`` / ``rowid`` 升序）—— 抄一份出去，两处就有机会悄悄分叉，
+而那正是"索引与迁移重建结果逐字节一致"（docs/19 §2）最怕的事。
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from typing import Any
 
 from scholarscout import paths
 from scholarscout.library import naming
+from scholarscout.state import library_index as state_library_index
 from scholarscout.state.archive import set_document_paths
 from scholarscout.state.db import Database
 
@@ -44,20 +51,6 @@ CLEANED_SUBDIRS: tuple[str, ...] = ("raw", "text")
 _SHA_PREFIX_RE = re.compile(r"^[0-9a-fA-F]{2}$")
 _MONTH_BUCKET_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 _OLD_TYPE_DIRS = frozenset(paths.DOC_TYPE_BY_SOURCE.values()) | {"other"}
-
-_RECORDS = """
-    SELECT d.id AS doc_id, d.title AS doc_title, d.sha256,
-           d.raw_path, d.text_path, d.fetched_at,
-           s.id AS source_id, s.title AS source_title, s.url, s.domain,
-           s.source_type, s.meta_json
-    FROM documents d JOIN sources s ON s.id = d.source_id
-    ORDER BY d.fetched_at DESC, d.rowid DESC
-"""
-
-#: 每个来源**最早**被哪次会话带出来（按写入顺序）—— 与 ``state/archive.py`` 的分组口径同一套。
-_EARLIEST_MENTIONS = """
-    SELECT source_id, session_id FROM source_mentions ORDER BY rowid
-"""
 
 
 @dataclass(frozen=True)
@@ -138,9 +131,14 @@ def _meta_of(raw: Any) -> dict[str, Any]:
 
 
 def earliest_sessions(db: Database) -> dict[str, str]:
-    """``{source_id: 最早那次会话的 id}`` —— 目录取它（一份资料可能被多次调研带出）。"""
+    """``{source_id: 最早那次会话的 id}`` —— 目录取它（一份资料可能被多次调研带出）。
+
+    「最早」是**写入顺序**（``source_mentions.rowid`` 升序），不是 ``created_at`` —— 与
+    `state/archive.py::list_documents` 的分组口径、`library/index.py` 的会话列同一套。
+    ``setdefault`` 就是「第一次见到的那条赢」，所以这里只依赖查询给的次序，不自己排序。
+    """
     result: dict[str, str] = {}
-    for row in db.query(_EARLIEST_MENTIONS):
+    for row in state_library_index.source_mentions(db):
         result.setdefault(str(row["source_id"]), str(row["session_id"]))
     return result
 
@@ -175,7 +173,7 @@ def plan_moves(
     session_dirs = naming.session_dir_map(db)
     earliest = earliest_sessions(db)
     moves: list[Move] = []
-    for row in db.query(_RECORDS):
+    for row in state_library_index.documents_with_sources(db):
         old_raw = str(row["raw_path"] or "")
         old_text = str(row["text_path"] or "")
         sha256 = str(row["sha256"])

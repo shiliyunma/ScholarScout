@@ -205,3 +205,58 @@ def test_cleanup_only_scans_old_layout_shapes(db: Database, tmp_path: Path) -> N
     assert stray.is_file(), "新布局会话目录里的文件不归本次清理管"
     assert not old_orphan.exists()
     assert (tmp_path / "data" / "raw" / migrate.ORPHAN_DIR / old_orphan.name).is_file()
+
+
+def test_target_session_dir_is_the_earliest_mention(db: Database, tmp_path: Path) -> None:
+    """同一来源被两次调研带出 → 目录取**最早那次**会话（写入顺序，不是时间先后）。
+
+    这条口径现在由 `state/library_index.source_mentions` 提供（:func:`earliest_sessions` 只做
+    ``setdefault``）：第二次提及故意把 ``created_at`` 写得更早，若谁把排序改成时间序，
+    文件名就会落到「调研二」下半区 —— 而那会让整库资料被迫再搬一遍。
+    """
+    _seed(db)
+    db.execute(
+        "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?,?,?,?)",
+        ("ses_m2", "调研二", T0, T0),
+    )
+    db.execute(
+        "INSERT INTO source_mentions (source_id, session_id, created_at) VALUES (?,?,?)",
+        ("src_a", "ses_m2", "2026-10-01T00:00:00+08:00"),
+    )
+
+    report = migrate.run_migration(db, root=tmp_path, dry_run=True)
+
+    new_raw = report.moves[0].new_raw
+    assert new_raw == NEW_RAW, "目录必须落在最早那次会话（调研一）"
+    assert "调研二" not in new_raw
+
+
+def test_plan_order_follows_index_row_order_for_fetched_at_ties(
+    db: Database, tmp_path: Path
+) -> None:
+    """同一 ``fetched_at`` 的两条：**后写入的排前面**（``rowid DESC`` 兜底）。
+
+    迁移的计划顺序就是索引的行顺序 —— 两处共用 `state/library_index.documents_with_sources`。
+    少了 ``rowid`` 兜底，SQLite 对相同排序键的次序不作保证：两次 ``--dry-run`` 的报告会不一样，
+    ``report.moves`` 也没法逐条比对。
+    """
+    _seed(db)  # doc_old1（先写入）
+    db.execute(
+        "INSERT INTO documents (id, source_id, title, sha256, chars, raw_path, text_path,"
+        " extract_status, fetched_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            "doc_second",
+            "src_a",
+            "第二份",
+            "b" * 64,
+            10,
+            "data/raw/aa/" + "b" * 64 + ".html",
+            "data/text/doc_second.txt",
+            "ok",
+            T0,
+        ),
+    )
+
+    moves = migrate.plan_moves(db, root=tmp_path)
+
+    assert [move.doc_id for move in moves] == ["doc_second", "doc_old1"]

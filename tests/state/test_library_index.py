@@ -58,14 +58,14 @@ def _document(db: Database, doc_id: str, source_id: str, *, fetched_at: str = T0
     return doc_id
 
 
-def _mention(db: Database, source_id: str, session_id: str) -> None:
+def _mention(db: Database, source_id: str, session_id: str, *, created_at: str = T0) -> None:
     db.execute(
         "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?,?,?,?)",
         (session_id, session_id, T0, T0),
     )
     db.execute(
         "INSERT INTO source_mentions (source_id, session_id, created_at) VALUES (?,?,?)",
-        (source_id, session_id, T0),
+        (source_id, session_id, created_at),
     )
 
 
@@ -123,3 +123,47 @@ def test_source_mentions_keeps_write_order_and_does_not_aggregate(db: Database) 
         ("src_a", "ses_l"),
         ("src_a", "ses_z"),
     ]
+
+
+def test_documents_with_sources_column_list_is_exact(db: Database) -> None:
+    """列清单逐字钉住 —— `library/migrate.py` 与 `library/index.py` **共用这一条**。
+
+    迁移靠 ``raw_path`` / ``text_path`` / ``sha256`` / ``fetched_at`` / ``meta_json`` 决定搬去哪儿，
+    索引靠同一批列 + 来源侧标题渲染；少一列就是一个 ``KeyError``，多一列是没人读的死重量。
+    列顺序也钉：``SELECT d.*`` 这类写法一换，键序就变了。
+    """
+    _source(db, "src_a")
+    _document(db, "doc_a", "src_a")
+
+    row = library_index.documents_with_sources(db)[0]
+
+    assert list(row) == [
+        "doc_id",
+        "doc_title",
+        "sha256",
+        "raw_path",
+        "text_path",
+        "fetched_at",
+        "source_id",
+        "source_title",
+        "url",
+        "domain",
+        "source_type",
+        "meta_json",
+    ]
+
+
+def test_source_mentions_orders_by_write_order_not_created_at(db: Database) -> None:
+    """先写但 ``created_at`` 更晚的那条仍排在最前 —— 排序键是 ``rowid``。
+
+    迁移用它取「每个来源最早那次会话」（`library/migrate.py::earliest_sessions` 的 ``setdefault``，
+    第一条赢）。要是有人把排序改成 ``created_at``，目录名就会落到另一次会话上，文件得整体再搬一遍 ——
+    而 `created_at` 是**抓到资料那一刻**，与「谁先把这份资料带进库」本来就不是一回事。
+    """
+    _source(db, "src_a")
+    _mention(db, "src_a", "ses_written_first", created_at="2026-10-09T00:00:00+08:00")
+    _mention(db, "src_a", "ses_written_last", created_at="2026-10-01T00:00:00+08:00")
+
+    rows = library_index.source_mentions(db)
+
+    assert [row["session_id"] for row in rows] == ["ses_written_first", "ses_written_last"]
