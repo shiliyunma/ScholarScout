@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from scholarscout.state.db import Database
+from scholarscout.state.tier_rules import enabled_rules
 
 #: tier 语义（写进论文第 3 章）
 TIER_LABELS: dict[int, str] = {
@@ -78,15 +79,12 @@ class TierVerdict:
 
 
 def load_rules(db: Database) -> list[TierRule]:
-    """按匹配优先级读规则；同类型内按 tier 升序（更权威的先命中）。"""
-    rows = db.query(
-        """
-        SELECT id, match_type, pattern, tier, weight, note
-        FROM source_tier_rules
-        WHERE enabled = 1
-        ORDER BY id
-        """
-    )
+    """按匹配优先级读规则；同类型内按 tier 升序（更权威的先命中）。
+
+    SQL 在 ``state/tier_rules.py::enabled_rules``（只回原始行，``WHERE enabled = 1`` /
+    ``ORDER BY id`` 照旧）；**命中优先级的排序与行 → 规则的字段转换留在这里**：那是判权口径，
+    不是存储顺序。
+    """
     rules = [
         TierRule(
             id=int(row["id"]),
@@ -96,7 +94,7 @@ def load_rules(db: Database) -> list[TierRule]:
             weight=float(row["weight"] or 1.0),
             note=str(row["note"]) if row["note"] is not None else None,
         )
-        for row in rows
+        for row in enabled_rules(db)
     ]
     order = {name: index for index, name in enumerate(MATCH_PRIORITY)}
     return sorted(rules, key=lambda rule: (order.get(rule.match_type, 99), rule.tier, rule.id))
