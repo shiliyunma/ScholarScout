@@ -1,7 +1,9 @@
-"""候选来源的三条查询（``tools/source_context.py`` 的三级取法：按 id / 按主题判权 / 最近入库）。
+"""候选来源的五条查询（`tools/source_context.py` 的三级取法 + `tools/source_grade.py` 的两条）。
 
-这三处 SQL 原本长在 ``tools/source_context.py`` 里（白名单 ``tools/source_context.py: 3``），
-这一轮只是**位置**搬进 state：列清单、过滤条件、`GROUP BY`、`ORDER BY`、`LIMIT` 一个字没动。
+这五处 SQL 原本长在工具层（`tools/source_context.py` 3 处、`tools/source_grade.py` 3 处，其中按 id
+那一条两处原文相同，共用 `source_by_id`），这一轮只是**位置**搬进 state：列清单、过滤条件、
+`GROUP BY`、`ORDER BY`、`LIMIT` 一个字没动。业务边界仍留在工具层：URL 规范化由调用方先算好再传
+`url_canonical`，`max(1, min(limit, 100))` 的夹取也不在这里做。
 
 两条口径容易写歪，放在这里是为了能用空库/多行直接试：
 
@@ -48,4 +50,30 @@ def graded_sources_for_topic(
 def recent_sources(db: Database, *, limit: int) -> list[dict[str, Any]]:
     """最近入库的来源（按 ``last_seen_at`` 倒序）。"""
     rows = db.query("SELECT * FROM sources ORDER BY last_seen_at DESC LIMIT ?", (limit,))
+    return [dict(row) for row in rows]
+
+
+def source_by_url_canonical(db: Database, url_canonical: str) -> dict[str, Any] | None:
+    """按**规范化后**的 URL 取一条来源（不存在回 ``None``）。
+
+    规范化（`providers.base.canonical_url`）由调用方先做：state 只认库里存的那一列，
+    不在这里猜「用户这次给的 URL 该不该去掉 utm 参数」。
+    """
+    row = db.query_one("SELECT * FROM sources WHERE url_canonical = ?", (url_canonical,))
+    return dict(row) if row is not None else None
+
+
+def ungated_sources(db: Database, *, limit: int) -> list[dict[str, Any]]:
+    """还没判过权的来源（``tier IS NULL``），按 ``last_seen_at`` 倒序取 ``limit`` 条。
+
+    ``limit`` 的上下夹取（``max(1, min(limit, 100))``）留在工具层：那是「顺手判多少条」的
+    业务口径，不是这条查询的形状。
+    """
+    rows = db.query(
+        """
+        SELECT * FROM sources WHERE tier IS NULL
+        ORDER BY last_seen_at DESC LIMIT ?
+        """,
+        (limit,),
+    )
     return [dict(row) for row in rows]

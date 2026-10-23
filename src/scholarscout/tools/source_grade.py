@@ -20,6 +20,11 @@ from scholarscout.state.ingest import (
     latest_summary_for_source,
     save_grade,
 )
+from scholarscout.state.source_context import (
+    source_by_id,
+    source_by_url_canonical,
+    ungated_sources,
+)
 from scholarscout.summary.prompts import PromptPack
 from scholarscout.tools.envelope import ToolResult, ok
 
@@ -66,35 +71,26 @@ def _load_sources(
 
     ids = [str(value) for value in (params.get("source_ids") or [])]
     for source_id in ids:
-        row = ctx.db.query_one("SELECT * FROM sources WHERE id = ?", (source_id,))
+        row = source_by_id(ctx.db, source_id)
         if row is None:
             skipped.append({"source_id": source_id, "reason": "not_found"})
         else:
-            found.append(dict(row))
+            found.append(row)
 
     urls = [str(value) for value in (params.get("urls") or [])]
     if urls:
         from scholarscout.providers.base import canonical_url
 
         for url in urls:
-            row = ctx.db.query_one(
-                "SELECT * FROM sources WHERE url_canonical = ?", (canonical_url(url),)
-            )
+            row = source_by_url_canonical(ctx.db, canonical_url(url))
             if row is None:
                 skipped.append({"url": url, "reason": "not_found"})
             else:
-                found.append(dict(row))
+                found.append(row)
 
     if not found and not skipped:
         limit = int(params.get("limit") or UNGATED_BATCH)
-        rows = ctx.db.query(
-            """
-            SELECT * FROM sources WHERE tier IS NULL
-            ORDER BY last_seen_at DESC LIMIT ?
-            """,
-            (max(1, min(limit, 100)),),
-        )
-        found.extend(dict(row) for row in rows)
+        found.extend(ungated_sources(ctx.db, limit=max(1, min(limit, 100))))
 
     return found, skipped
 

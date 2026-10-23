@@ -1,6 +1,7 @@
-"""`state/source_context.py`：候选来源的三条查询（按 id / 按主题判权 / 最近入库）。
+"""`state/source_context.py`：候选来源的五条查询（按 id / 按 URL / 按主题判权 / 最近入库 / 未判权批次）。
 
-这三条 SQL 原本写在 `tools/source_context.py` 里（白名单 `tools/source_context.py: 3`）。
+前三条原本写在 `tools/source_context.py` 里（白名单 `tools/source_context.py: 3`），后两条原来在
+`tools/source_grade.py`（白名单 `tools/source_grade.py: 3`）。
 下沉时最容易走样的是**口径**，不是列：
 
 - 判权那一路必须只留 `verdict IN (?, ?)` 里点名的那两档（`核心`/`相关`），且**按最近一次判权**
@@ -129,3 +130,53 @@ def test_recent_sources_ordered_by_last_seen_desc_and_limit(db: Database) -> Non
 
     rows = source_context.recent_sources(db, limit=2)
     assert [row["id"] for row in rows] == ["src_new", "src_mid"]
+
+
+def test_source_by_url_canonical_empty_db_returns_none(db: Database) -> None:
+    assert source_context.source_by_url_canonical(db, "https://none.test/a.pdf") is None
+
+
+def test_source_by_url_canonical_matches_stored_column_only(db: Database) -> None:
+    """state 只认库里那一列：不做规范化，带 `?utm=` 的原文查不到就是查不到。"""
+    _source(db, "src_a")
+    row = source_context.source_by_url_canonical(db, "https://src_a.test/a.pdf")
+    assert row is not None
+    assert row["id"] == "src_a"
+    assert (
+        source_context.source_by_url_canonical(db, "https://src_a.test/a.pdf?utm_source=x") is None
+    )
+
+
+def test_source_by_url_canonical_picks_the_named_row_among_several(db: Database) -> None:
+    _source(db, "src_a")
+    _source(db, "src_b")
+    _source(db, "src_c")
+    row = source_context.source_by_url_canonical(db, "https://src_b.test/a.pdf")
+    assert row is not None and row["id"] == "src_b"
+
+
+def test_ungated_sources_empty_db_is_empty_list(db: Database) -> None:
+    assert source_context.ungated_sources(db, limit=20) == []
+
+
+def test_ungated_sources_keeps_only_null_tier_in_last_seen_order(db: Database) -> None:
+    """`tier IS NULL` 才进批：已判权的（哪怕是空串 tier）不再重复判。"""
+    _source(db, "src_new_ungated", last_seen="2026-10-09T00:00:00+08:00")
+    _source(db, "src_old_ungated", last_seen="2025-01-01T00:00:00+08:00")
+    _source(db, "src_graded", last_seen="2026-10-10T00:00:00+08:00")
+    db.execute("UPDATE sources SET tier = 1 WHERE id = 'src_graded'")
+
+    rows = source_context.ungated_sources(db, limit=20)
+    assert [row["id"] for row in rows] == ["src_new_ungated", "src_old_ungated"]
+
+
+def test_ungated_sources_respects_limit(db: Database) -> None:
+    _source(db, "src_1", last_seen="2026-10-01T00:00:00+08:00")
+    _source(db, "src_2", last_seen="2026-10-02T00:00:00+08:00")
+    _source(db, "src_3", last_seen="2026-10-03T00:00:00+08:00")
+
+    rows = source_context.ungated_sources(db, limit=2)
+    assert [row["id"] for row in rows] == ["src_3", "src_2"]
+
+    # 夹取不在这里做：state 照传（limit=0 就是 0 条），`max(1, …)` 留在工具层
+    assert source_context.ungated_sources(db, limit=0) == []
