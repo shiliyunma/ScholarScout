@@ -20,6 +20,7 @@ from typing import Any
 
 from scholarscout import paths
 from scholarscout.state.db import Database
+from scholarscout.state.sessions import session_titles
 
 #: arXiv 新式编号 ``YYMM.NNNNN``（月份必须 01–12，所以 ``9946.2026`` 这类 DOI 片段不会被误判）。
 _ARXIV_ID_RE = re.compile(r"(?<!\d)(\d{2})(0[1-9]|1[0-2])\.\d{4,5}(?!\d)")
@@ -155,10 +156,11 @@ def session_dir_names(rows: Iterable[tuple[str, str | None]]) -> dict[str, str]:
 
 
 def session_dir_map(db: Database) -> dict[str, str]:
-    """全库会话 → 目录名（同名加短 id）。``source.fetch`` 与迁移脚本共用同一份口径。"""
-    return session_dir_names(
-        (str(row["id"]), row["title"]) for row in db.query("SELECT id, title FROM sessions")
-    )
+    """全库会话 → 目录名（同名加短 id）。``source.fetch`` 与迁移脚本共用同一份口径。
+
+    读库交给 ``state.sessions.session_titles``；「标题怎么变目录名、同名怎么办」留在本层。
+    """
+    return session_dir_names((str(row["id"]), row["title"]) for row in session_titles(db))
 
 
 def session_dir_for(db: Database, session_id: str | None) -> str:

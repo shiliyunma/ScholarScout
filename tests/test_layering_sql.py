@@ -41,9 +41,11 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: 键 = 相对 `src/scholarscout/` 的路径，值 = 该文件里 SQL 调用点的处数。
 #: 修掉一处 SQL，就把那个数字减一；减到 0 删掉整条（自检会拦僵尸条目）。
 #: **新增 SQL 不许往这里加数字**：先把查询搬进 `state/`，再来把数字改小。
-#: 现值：2026-10-23 实测 **12 处 / 7 个模块**（`grading/tiers.py` 的 1 处下沉到
+#: 现值：2026-10-23 实测 **11 处 / 6 个模块**（`library/naming.py` 的 1 处下沉到
+#: `state/sessions.py` 的 `session_titles`，该条整条删除）。
+#: 上一轮快照：2026-10-23 为 12 处 / 7 个模块（`grading/tiers.py` 的 1 处下沉到
 #: `state/tier_rules.py` 的 `enabled_rules`，该条整条删除）。
-#: 上一轮快照：2026-10-23 为 13 处 / 8 个模块（`runtime/practice.py` 的 2 处下沉到
+#: 更早快照：2026-10-23 为 13 处 / 8 个模块（`runtime/practice.py` 的 2 处下沉到
 #: `state/learning_cards.py` 的 `review_log_rows` 与 `state/source_context.py` 的
 #: `session_sources_with_summary`，该条整条删除）。
 #: 更早快照：2026-10-23 为 15 处 / 9 个模块（`runtime/compaction.py` 的 1 处下沉到
@@ -63,7 +65,6 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: 2026-10-21 为 56 处 / 18 个模块；评审清单记的 69 处是更早的粗计数，差别见 `docs/23` 那一行。
 ALLOWED: dict[str, int] = {
     "library/migrate.py": 2,
-    "library/naming.py": 1,
     "rpc/channel_file.py": 2,
     "rpc/session.py": 2,
     "runtime/budget.py": 1,

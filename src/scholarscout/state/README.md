@@ -53,7 +53,8 @@
   `get_session(db, session_id)` / `get_session_by_key(db, session_key)` / `ensure_session(...)` /
   `list_sessions(db, *, limit, offset)` / `append_message(...)` / `list_messages(db, session_id,
   *, limit, before_idx)` / `count_messages(db, session_id)` / `rename_session(...)` /
-  `set_title_if_unnamed(...)` / `retitle_if_unnamed(...)` / `set_pinned(...)` / `delete_session(...)`
+  `set_title_if_unnamed(...)` / `retitle_if_unnamed(...)` / `set_pinned(...)` / `delete_session(...)` /
+  `session_titles(db)`（资料布局算会话目录名要的两列）
 - `ingest.py`：`upsert_source(...)` / `save_document(...)` / `save_summary(...)` /
   `record_mention(...)` / `latest_summary(db, doc_id)` / `latest_summary_for_source(...)` /
   `document_for_source(...)` / `save_grade(...)` / `apply_tier_to_source(...)` /

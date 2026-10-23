@@ -192,6 +192,23 @@ def list_sessions(db: Database, *, limit: int = 50, offset: int = 0) -> list[dic
     return [dict(r) for r in rows]
 
 
+def session_titles(db: Database) -> list[dict[str, Any]]:
+    """全库会话的 ``id`` 与 ``title`` 两列（算「会话目录名」用）。
+
+    三点与 :func:`list_sessions` 不同，都是**资料布局**要的：
+
+    - 只要两列（目录名只由标题决定，消息数/时间/置顶都不参与）；
+    - **不分页、不排序**：``ORDER BY`` 刻意没有 —— 调用方的输出必须与顺序无关
+      （同名会话的每一个都带短 id），排了反而让人以为顺序有意义；
+    - ``title`` 可能是 ``None``（还没命名），这里**不兜底成空串**：
+      「取不到落 ``unknown``」是 ``library/naming.py`` 的口径。
+
+    标题怎么变目录名（slug、同名追加短会话 id）留在 ``library/naming.py``。
+    """
+    rows = db.query("SELECT id, title FROM sessions")
+    return [dict(row) for row in rows]
+
+
 def touch_session(db: Database, session_id: str) -> None:
     db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now_iso(), session_id))
 

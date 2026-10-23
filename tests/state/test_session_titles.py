@@ -6,7 +6,9 @@
 
 1. 占位标题（"新调研"等）**也算未命名**，首条消息要能把老会话救回来；
 2. 用户手动改过的名字**不能被覆盖**；
-3. 只有第一条用户消息能命名，之后的对话不会把标题改来改去。
+3. 只有第一条用户消息能命名，之后的对话不会把标题改来改去；
+4. 算会话目录名要读的那两列由 `session_titles` 提供：只回 `id`/`title`、**不兜底成空串**、
+   **不排序**（顺序无意义是调用方的前提）。
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from scholarscout.state.sessions import (
     get_session,
     rename_session,
     retitle_if_unnamed,
+    session_titles,
 )
 
 
@@ -99,3 +102,31 @@ def test_rename_empty_title_is_rejected(db: Database) -> None:
     session_id = create_session(db, source="cli")
     with pytest.raises(ValueError, match="标题不能为空"):
         rename_session(db, session_id, "   ")
+
+
+def test_session_titles_empty_db_returns_empty_list(db: Database) -> None:
+    """没有会话时回 `[]`（不是 `None`，也不编一行）。"""
+    assert session_titles(db) == []
+
+
+def test_session_titles_returns_only_id_and_title(db: Database) -> None:
+    """列清单就是回包形状：只 `id`/`title`；未命名回 `None`，**不兜底成空串**。"""
+    named = create_session(db, title="教育智能体", source="cli")
+    unnamed = create_session(db, source="desktop")
+
+    rows = session_titles(db)
+
+    assert all(list(row) == ["id", "title"] for row in rows)
+    titles = {row["id"]: row["title"] for row in rows}
+    assert titles == {named: "教育智能体", unnamed: None}
+
+
+def test_session_titles_keeps_colliding_titles_as_separate_rows(db: Database) -> None:
+    """同名会话是**两行**（不做 GROUP BY）：去重与追加短 id 是 library 层的事。"""
+    first = create_session(db, title="同一个名字", source="cli")
+    second = create_session(db, title="同一个名字", source="desktop")
+
+    rows = session_titles(db)
+
+    assert sorted(row["id"] for row in rows) == sorted([first, second])
+    assert [row["title"] for row in rows] == ["同一个名字", "同一个名字"]

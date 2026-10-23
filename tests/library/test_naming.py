@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from scholarscout.library import naming
+from scholarscout.state.db import Database
+from scholarscout.state.sessions import create_session
 
 
 def test_arxiv_number_gives_year_month() -> None:
@@ -94,3 +96,18 @@ def test_session_dir_names_order_independent_for_collisions() -> None:
     forward = naming.session_dir_names([("ses_ab12", "同名"), ("ses_cd34", "同名")])
     reverse = naming.session_dir_names([("ses_cd34", "同名"), ("ses_ab12", "同名")])
     assert forward == reverse
+
+
+def test_session_dir_map_reads_sessions_from_the_db(db: Database) -> None:
+    """搬走 SQL 之后接线仍然通：目录名由库里**真实会话**算，同名都带短 id，未命名落 unknown。"""
+    first = create_session(db, title="教育智能体", source="cli")
+    second = create_session(db, title="教育智能体", source="desktop")
+    unnamed = create_session(db, source="cli")
+
+    got = naming.session_dir_map(db)
+
+    assert got == {
+        first: f"教育智能体--{naming.session_short_id(first)}",
+        second: f"教育智能体--{naming.session_short_id(second)}",
+        unnamed: "unknown",
+    }
