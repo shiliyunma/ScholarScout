@@ -29,6 +29,7 @@ from typing import Any
 
 from scholarscout.state.db import Database
 from scholarscout.state.migrate import now_iso
+from scholarscout.state.research_board import session_sources
 from scholarscout.state.sessions import research_payload, save_research_payload
 
 #: 判重阈值（与诊断脚本口径一致）
@@ -174,24 +175,15 @@ def compute_gaps(
 
     只做**能从库里确定性判定**的缺口（不猜）：
     未覆盖的子问题 / 只有标题没有摘要 / 缺近年资料 / 缺可上手资料 / 只搜到没看正文 / 来源过度集中。
+
+    取数走 ``state/research_board.py::session_sources``（研究看板用的**同一条**查询：本会话带出来的
+    来源 + 每条来源「有没有正文/有没有摘要」）。这一层只做判定 —— 哪些算缺口、文案怎么写、阈值
+    （近年、0.8 集中度）全在下面，一行 SQL 都不留。
     """
     import datetime
 
     year_now = now_year or datetime.date.today().year
-    rows = [
-        dict(row)
-        for row in db.query(
-            """
-            SELECT s.id, s.title, s.source_type, s.domain, s.year,
-                   (SELECT count(*) FROM documents d WHERE d.source_id = s.id) AS docs,
-                   (SELECT count(*) FROM summaries sm WHERE sm.source_id = s.id) AS sums
-            FROM sources s JOIN source_mentions m ON m.source_id = s.id
-            WHERE m.session_id = ?
-            GROUP BY s.id
-            """,
-            (session_id,),
-        )
-    ]
+    rows = session_sources(db, session_id)
     gaps: list[dict[str, str]] = []
 
     open_questions = [
@@ -209,7 +201,7 @@ def compute_gaps(
             }
         )
 
-    weak = [row for row in rows if not row["sums"]]
+    weak = [row for row in rows if not row["has_summary"]]
     if weak:
         gaps.append(
             {
@@ -240,7 +232,7 @@ def compute_gaps(
                     "suggest": "换 GitHub / 官方文档 / 教程方向搜一轮，用它们补'怎么动手'",
                 }
             )
-        unfetched = [row for row in rows if not row["docs"]]
+        unfetched = [row for row in rows if not row["has_text"]]
         if unfetched:
             gaps.append(
                 {

@@ -1,12 +1,17 @@
-"""分层门禁（第二条）：**非 `state/` 不许碰 SQL**。
+"""分层门禁（第二条）：**全仓 `state/` 之外零 SQL**。
 
 `docs/03` §2 写着「`state/*` 是唯一碰 SQL 的地方」，但 `tests/test_layering.py` 只钉 import
 方向 —— 它看不见「代码里直接写 SQL」。这条规则因此长期没有闸：评审发现时已经长到 69 处
-（见 `docs/23` 的缺陷行）。没有闸的规则等于没有规则，所以这里补一道**递减白名单**：
+（见 `docs/23` 的缺陷行）。没有闸的规则等于没有规则，所以这里补一道闸，口径是**现状即断言**：
 
-- 现状**逐文件计次**冻结在下面的 `ALLOWED` 里：同一个文件里**再添一处**也会红，不只是新文件；
-- 只许减不许增：修掉一处就把对应数字减一，数字归零就删掉整个条目；
-- 修完之后白名单条目还在 = 僵尸条目 → `test_whitelist_entry_is_alive` 当场拦下。
+- `state/` 之外**一处 SQL 都不许有**：起点 2026-10-21 是 56 处 / 18 个模块，2026-10-23 清零到
+  **0 处 / 0 个模块**（逐轮「谁、几处、去向」全记在 `docs/23`）；
+- 下面的 `ALLOWED` **必须是空的** —— 它不是「还能放几处」的配额，而是历史遗留的递减白名单：
+  数字归零就删条目，条目全删就是这个空字典。断言是「实际 == 白名单」，白名单为空即「必须 0 处」，
+  所以**再添一处当场红**；想加数字之前先问「为什么这条查询搬不进 `state/`」；
+- `test_new_cross_layer_sql_is_caught_immediately` 是**证伪用例**：它真的造一个越层 SQL 文件
+  跑同一套判据，确认这道闸会当场报出它 —— 防的是「判据悄悄坏掉（`SQL_METHODS` 被改窄、
+  `state/` 跳过条件写宽、AST 遍历改成只看模块顶层）而闸还一片绿灯」这种假绿。
 
 **扫描口径**（改判据前先想清楚，它决定这道闸能拦什么）：
 
@@ -24,6 +29,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,60 +42,17 @@ SQL_METHODS = frozenset({"execute", "executemany", "executescript", "query", "qu
 #: 库句柄的变量名（取表达式最后一段：`ctx.db` → `db`）。
 DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 
-#: **递减白名单：只许减不许增。**
+#: **空字典 = 现状即断言：全仓 `state/` 之外零 SQL。**
 #:
-#: 键 = 相对 `src/scholarscout/` 的路径，值 = 该文件里 SQL 调用点的处数。
-#: 修掉一处 SQL，就把那个数字减一；减到 0 删掉整条（自检会拦僵尸条目）。
-#: **新增 SQL 不许往这里加数字**：先把查询搬进 `state/`，再来把数字改小。
-#: 现值：2026-10-23 实测 **1 处 / 1 个模块**（`runtime/budget.py` 的 1 处：`usage_since` 的
-#: `SELECT coalesce(sum(prompt_tokens),0) …, count(est_cost) AS priced_calls
-#: FROM usage_records WHERE julianday(created_at) >= julianday(?)` **分建**
-#: `state/usage.py::usage_window_totals` —— 同文件的 `session_usage_totals` 按 `session_id = ?`
-#: 过滤，那是「一个会话的累计」；这条是**跨会话的滚动时间窗**，`WHERE` 语义不同，而且
-#: `sum(est_cost)` 不兜底、多一列 `priced_calls`、没有 `cached_tokens` 两列。合成一条就要在 SQL 里
-#: 写 `(? IS NULL OR session_id = ?)`，把「空会话 id 算什么」变成隐式约定，所以不将就复用）。
-#: 上一轮快照：2026-10-23 为 2 处 / 2 个模块（`tools/source_fetch.py` 的 3 处逐处定去向：
-#: ① `_document_row` 的 `SELECT * FROM documents WHERE source_id = ? AND sha256 = ?`
-#: **分建** `state/ingest.py::document_by_source_sha` —— 同文件既有的 `save_document` 只 `SELECT id`
-#: 判在不在（写路径），`document_for_source` 取的是「最新一份」不认内容字节；
-#: ② `SELECT url FROM sources WHERE id = ?` **复用** `state/source_context.py::source_by_id`；
-#: ③ `SELECT id, title, source_type, meta_json FROM sources WHERE url_canonical = ?`
-#: **复用** `source_by_url_canonical`；②③ 与既有那两条**同一句 `WHERE`**，只是投影更宽
-#: （`SELECT *` 是子集关系的超集，多取的列没人读），所以不抄第二份。该条整条删除）。
-#: 上一轮快照：2026-10-23 为 5 处 / 3 个模块（`rpc/session.py` 的 2 处——`session.usage` 的会话累计
-#: 与按用途拆分——都下沉到 `state/usage.py` 的 `session_usage_totals` / `session_usage_by_purpose`，
-#: 该条整条删除）。
-#: 更早快照：2026-10-23 为 7 处 / 4 个模块（`rpc/channel_file.py` 的 2 处：`_session_id` 直接
-#: **复用** `state/sessions.py::get_session_by_key`（同一句 `WHERE session_key = ?`），`_document_target`
-#: 下沉到 `state/library_index.py::documents_with_source_titles`；该条整条删除）。
-#: 更早快照：2026-10-23 为 9 处 / 5 个模块（`library/migrate.py` 的 2 处下沉到
-#: `state/library_index.py` 的 `documents_with_sources` / `source_mentions` —— 那两条查询与
-#: `library/index.py` 用的是**同一份**，直接复用而不是抄第二份，该条整条删除）。
-#: 更早快照：2026-10-23 为 11 处 / 6 个模块（`library/naming.py` 的 1 处下沉到
-#: `state/sessions.py` 的 `session_titles`，该条整条删除）。
-#: 更早快照：2026-10-23 为 12 处 / 7 个模块（`grading/tiers.py` 的 1 处下沉到
-#: `state/tier_rules.py` 的 `enabled_rules`，该条整条删除）。
-#: 更早快照：2026-10-23 为 13 处 / 8 个模块（`runtime/practice.py` 的 2 处下沉到
-#: `state/learning_cards.py` 的 `review_log_rows` 与 `state/source_context.py` 的
-#: `session_sources_with_summary`，该条整条删除）。
-#: 更早快照：2026-10-23 为 15 处 / 9 个模块（`runtime/compaction.py` 的 1 处下沉到
-#: `state/sessions.py` 的 `message_rows`，该条整条删除）。
-#: 更早快照：2026-10-23 为 16 处 / 10 个模块（`library/index.py` 的 2 处下沉到
-#: `state/library_index.py` 的 `documents_with_sources` / `source_mentions`，该条整条删除）。
-#: 更早快照：2026-10-23 为 18 处 / 11 个模块（`tools/source_grade.py` 的 3 处已下沉到
-#: `state/source_context.py` 的 `ungated_sources` / `source_by_url_canonical`，按 id 那一条与
-#: `tools/source_context.py` 共用 `source_by_id`，该条整条删除）；
-#: 21 处 / 12 个模块（`tools/source_context.py` 的 3 处下沉到
-#: `state/source_context.py` 的 `source_by_id` / `graded_sources_for_topic` / `recent_sources`，
-#: 该条整条删除）；28 处 / 14 个模块（`grading/support.py` 的 5 处下沉到
-#: `state/support.py`）；2026-10-22 为 33 处 / 15 个模块（`runtime/research_view.py` 的 7 处下沉到
-#: `state/research_board.py` / `state/support.py`；`runtime/learner_profile.py` 的 7 处更早已下沉到
-#: `state/learner_profile.py`；`runtime/memory.py` 的 9 处下沉到 `state/facts.py` /
-#: `state/sessions.py` / `state/memory.py`）；再往前为 40 处 / 16 个模块；47 处 / 17 个模块；
-#: 2026-10-21 为 56 处 / 18 个模块；评审清单记的 69 处是更早的粗计数，差别见 `docs/23` 那一行。
-ALLOWED: dict[str, int] = {
-    "runtime/research_state.py": 1,
-}
+#: 它曾经是「递减白名单」：键 = 相对 `src/scholarscout/` 的路径，值 = 该文件还没搬走的 SQL 处数，
+#: 断言是「实际 == 白名单」（多了红、少了也红 —— 少了说明修好了却没改数字）。2026-10-21 起点是
+#: **56 处 / 18 个模块**，此后逐轮一处一处搬进 `state/`，**2026-10-23 清零到 0 处 / 0 个模块**，
+#: 于是最后一条条目也删掉、留下这个空字典（谁、几处、搬到哪个仓储函数，逐轮记在 `docs/23`）。
+#:
+#: 空字典不是「暂时没东西可填」，它就是这条规则本身：`_actual()` 回来的每一处都会被判红。
+#: 所以**不要再往里加数字** —— 遇到「这条查询能不能留在 `state/` 之外」时，先答「为什么搬不进
+#: `state/` 的仓储函数」，答不出来就搬。
+ALLOWED: dict[str, int] = {}
 
 
 def _receiver_name(func: ast.expr) -> str:
@@ -127,20 +90,29 @@ def _actual() -> dict[str, int]:
     return found
 
 
-def test_no_sql_outside_state() -> None:
-    """实际命中必须**逐文件等于**白名单：多一处红，少一处也红（忘了改数字）。"""
-    actual = _actual()
+def _mismatches(actual: dict[str, int], allowed: dict[str, int]) -> list[str]:
+    """判据本体：实际 vs 白名单，逐文件比。返回空列表 = 过关。
+
+    单独抽出来是为了让**证伪用例**能拿同一份判据去判一个故意违规的目录 —— 判据只有一份，
+    证伪用例证明的就是这一份没坏。
+    """
     problems: list[str] = []
 
-    for rel in sorted(set(actual) | set(ALLOWED)):
+    for rel in sorted(set(actual) | set(allowed)):
         now = actual.get(rel, 0)
-        frozen = ALLOWED.get(rel, 0)
+        frozen = allowed.get(rel, 0)
         if now > frozen:
             problems.append(f"{rel}：白名单 {frozen} 处 → 实际 {now} 处（多了 {now - frozen} 处）")
         elif now < frozen:
             problems.append(
                 f"{rel}：白名单 {frozen} 处 → 实际 {now} 处（少了 {frozen - now} 处，修好了就把数字改小）"
             )
+    return problems
+
+
+def test_no_sql_outside_state() -> None:
+    """实际命中必须**逐文件等于**白名单：多一处红，少一处也红（忘了改数字）。"""
+    problems = _mismatches(_actual(), ALLOWED)
 
     assert not problems, (
         "非 state/ 的 SQL 和白名单对不上：\n  "
@@ -149,6 +121,42 @@ def test_no_sql_outside_state() -> None:
         "然后把白名单里对应数字改小 —— 白名单**只许减不许增**。"
         "若确实要在 state/ 之外写 SQL，先想清楚为什么 state/ 放不下，再改数字并在 docs/23 记一条。"
     )
+
+
+def test_new_cross_layer_sql_is_caught_immediately(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """**证伪用例**：这道闸对越层 SQL 真的会红，而不是「碰巧绿」。
+
+    闸的判据全是结构性条件（`SQL_METHODS` 的集合、`state/` 跳过条件、AST 遍历范围），把它们改窄一点
+    —— 比如从 `SQL_METHODS` 里拿掉 `query`，或者跳过多一层目录 —— 真实仓库在清零之后依然一片绿，
+    而这道闸已经看不懂新写的 SQL 了。这种**假绿**只能靠「造一个必然违规的输入、看判据是否判红」来防。
+
+    做法：`monkeypatch` 把扫描根 `SRC` 指向 `tmp_path`（同一套 `_actual()` 与 `_mismatches()`，
+    不复制判据），在里头造 `runtime/bad.py`，正文是 `ctx.db.query("SELECT 1")` —— 与
+    `runtime/research_state.py` 搬走之前**一模一样**的越层写法；再放一个 `state/good.py` 写同样的
+    调用，它必须被跳过（否则「`state/` 是唯一允许碰 SQL 的地方」这半条规则也一起坏了）。
+    """
+    (tmp_path / "runtime").mkdir()
+    (tmp_path / "state").mkdir()
+    (tmp_path / "runtime" / "bad.py").write_text(
+        'def gaps(ctx):\n    return ctx.db.query("SELECT 1")\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "state" / "good.py").write_text(
+        'def rows(db):\n    return db.query("SELECT 1")\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path)
+
+    actual = _actual()
+    assert actual == {"runtime/bad.py": 1}, f"闸没认出越层 SQL（只能报 {actual!r}）"
+
+    # 判据必须对它判红；空 `ALLOWED` 下「多了一处」就是红 —— 这正是真实新增一处越层 SQL 时的输出。
+    problems = _mismatches(actual, ALLOWED)
+    assert problems, "越层 SQL 摆在眼前，判据却判绿 —— 这道闸已经失去判别能力"
+    assert "runtime/bad.py" in problems[0]
+    assert "多了 1 处" in problems[0]
 
 
 @pytest.mark.parametrize("rel", sorted(ALLOWED))

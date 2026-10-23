@@ -168,6 +168,27 @@ def test_session_sources_reports_has_text_and_has_summary(db: Database) -> None:
     assert "sums" not in rows["src_doc"]
 
 
+def test_session_sources_separates_text_without_summary(db: Database) -> None:
+    """有正文没摘要与「只有标题」必须分开：缺口层靠这两列判「弱证据」和「还没取正文」。
+
+    `runtime/research_state.py::compute_gaps` 的两条缺口正好是这一对：`not has_summary` → 弱证据、
+    `not has_text` → 只搜到没看正文。若这里把「有正文没摘要」也折成两列皆假，两条缺口就串味了
+    （取过正文却被报成「还没看正文」）。
+    """
+    _source(db, "src_text", year=2024, source_type="github")
+    _mention(db, "src_text")
+    _document(db, "doc_1", source_id="src_text")
+
+    rows = research_board.session_sources(db, "ses_001")
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["has_text"] is True
+    assert row["has_summary"] is False
+    # 缺口层还要读的三列：类型、域、年份，都跟着同一次查询回来（不用为判定再查一遍库）
+    assert (row["source_type"], row["domain"], row["year"]) == ("github", "arxiv.org", 2024)
+
+
 def test_session_sources_does_not_duplicate_a_source_mentioned_twice(db: Database) -> None:
     _source(db, "src_a", year=2024)
     _mention(db, "src_a")
