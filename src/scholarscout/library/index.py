@@ -24,25 +24,11 @@ from typing import Any
 
 from scholarscout import paths
 from scholarscout.library import naming
+from scholarscout.state import library_index as state_library_index
 from scholarscout.state.db import Database
 
 #: 时间/会话缺失时写的标签（与 ``paths.UNKNOWN_BUCKET`` 同口径：不编一个看着像真的值）。
 UNKNOWN = "unknown"
-
-_DOCUMENT_QUERY = """
-    SELECT d.id AS doc_id, d.title AS doc_title, d.sha256,
-           d.raw_path, d.text_path, d.fetched_at,
-           s.id AS source_id, s.title AS source_title, s.url,
-           s.domain, s.source_type, s.meta_json
-    FROM documents d JOIN sources s ON s.id = d.source_id
-    ORDER BY d.fetched_at DESC, d.rowid DESC
-"""
-
-#: 会话提及：按写入顺序（``rowid``）—— 与 ``state/archive.py::list_documents`` 的分组口径同一套
-#: （「一份资料被多次调研带出取最早那次，不去重合并」）。目录取第一个，索引列全部。
-_MENTIONS_QUERY = """
-    SELECT source_id, session_id FROM source_mentions ORDER BY rowid
-"""
 
 
 def _meta_of(raw: Any) -> dict[str, Any]:
@@ -56,7 +42,7 @@ def _meta_of(raw: Any) -> dict[str, Any]:
 def session_dirs_by_source(db: Database, session_dirs: dict[str, str]) -> dict[str, list[str]]:
     """``{source_id: [会话目录名, …]}`` —— 按提及顺序**去重保留先后**（最早那次在最前）。"""
     result: dict[str, list[str]] = {}
-    for row in db.query(_MENTIONS_QUERY):
+    for row in state_library_index.source_mentions(db):
         source_id = str(row["source_id"])
         name = session_dirs.get(str(row["session_id"]), UNKNOWN)
         seen = result.setdefault(source_id, [])
@@ -72,7 +58,7 @@ def build_rows(
     session_dirs = naming.session_dir_map(db)
     mentions = session_dirs_by_source(db, session_dirs)
     result: list[dict[str, Any]] = []
-    for row in db.query(_DOCUMENT_QUERY):
+    for row in state_library_index.documents_with_sources(db):
         meta = _meta_of(row["meta_json"])
         url = str(row["url"] or "")
         domain = str(row["domain"] or "") or naming.domain_of(url)
