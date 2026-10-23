@@ -39,7 +39,7 @@ from scholarscout import paths
 from scholarscout.fetch import feishu_send
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.rpc.registry import AppContext, _params, method
-from scholarscout.state import learning
+from scholarscout.state import learning, library_index, sessions
 
 #: 允许的三类目标（拼错一律按 `artifact` 处理，并如实记在回包 `kind` 里）
 FILE_KINDS: tuple[str, ...] = ("artifact", "library", "path")
@@ -73,7 +73,7 @@ def _session_id(db: Any, session_key: str) -> str:
     key = (session_key or "").strip()
     if not key:
         return ""
-    row = db.query_one("SELECT id FROM sessions WHERE session_key = ?", (key,))
+    row = sessions.get_session_by_key(db, key)
     return str(row["id"]) if row is not None else ""
 
 
@@ -237,14 +237,7 @@ def learning_route_export(ctx: AppContext, route_id: str) -> tuple[str, str] | N
 
 def _document_target(ctx: AppContext, *, query: str) -> tuple[FileTarget | None, list[str], str]:
     """已入库资料：按标题模糊匹配 `documents`（含 `sources.title`），发**原件**。"""
-    rows = ctx.db.query(
-        """
-        SELECT d.id AS doc_id, d.title, d.raw_path, d.text_path, d.fetched_at,
-               s.title AS source_title
-        FROM documents d LEFT JOIN sources s ON s.id = d.source_id
-        ORDER BY d.fetched_at DESC
-        """
-    )
+    rows = library_index.documents_with_source_titles(ctx.db)
     candidates: list[str] = []
     matched: list[dict[str, Any]] = []
     needle = query.lower()

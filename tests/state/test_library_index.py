@@ -167,3 +167,50 @@ def test_source_mentions_orders_by_write_order_not_created_at(db: Database) -> N
     rows = library_index.source_mentions(db)
 
     assert [row["session_id"] for row in rows] == ["ses_written_first", "ses_written_last"]
+
+
+# ------------------------------------------------------- 发文件挑目标（rpc/channel_file.py）
+
+
+def test_documents_with_source_titles_empty_db_returns_empty_list(db: Database) -> None:
+    assert library_index.documents_with_source_titles(db) == []
+
+
+def test_documents_with_source_titles_column_list_is_exact(db: Database) -> None:
+    """列清单逐字钉住 —— 这 6 列就是 `channel.send_file` 挑目标要的全部。
+
+    少一列：``raw_path``/``text_path`` 缺了发不出原件；``source_title`` 缺了「只有来源有标题」
+    的那批资料就永远匹配不到。多一列是没人读的死重量。
+    """
+    _source(db, "src_a")
+    _document(db, "doc_a", "src_a")
+
+    row = library_index.documents_with_source_titles(db)[0]
+
+    assert list(row) == ["doc_id", "title", "raw_path", "text_path", "fetched_at", "source_title"]
+    assert row["doc_id"] == "doc_a"
+    assert row["title"] == "资料 doc_a"
+    assert row["source_title"] == "来源 src_a"
+    assert row["raw_path"] == "data/raw/doc_a.pdf"
+    assert row["text_path"] == "data/text/doc_a.txt"
+    assert row["fetched_at"] == T0
+
+
+def test_documents_with_source_titles_orders_by_fetched_at_desc_only(db: Database) -> None:
+    """排序键只有 ``fetched_at DESC``，**没有** ``rowid`` 兜底（与 `documents_with_sources` 的差别）。
+
+    所以同一 ``fetched_at`` 的两条只断言「都回了」，不钉它们之间的次序 —— 这里刻意不引入
+    `documents_with_sources` 的 ``rowid DESC``：那会把同一个 ``fetched_at`` 下的次序从"未定序"
+    改成「后写入优先」，对 `channel.send_file` 就是「发哪一份」悄悄换了人。
+    """
+    _source(db, "src_a")
+    _source(db, "src_b")
+    _document(db, "doc_old", "src_a", fetched_at=T0)
+    _document(db, "doc_tie_first", "src_b", fetched_at=T1)
+    _document(db, "doc_tie_last", "src_a", fetched_at=T1)
+
+    ids = [row["doc_id"] for row in library_index.documents_with_source_titles(db)]
+
+    assert set(ids[:2]) == {"doc_tie_first", "doc_tie_last"}, "同 fetched_at 的两条都回、占前两位"
+    assert ids[0] in {"doc_tie_first", "doc_tie_last"}, "fetched_at 最新的先回"
+    assert ids[-1] == "doc_old", "更早入库的排最后"
