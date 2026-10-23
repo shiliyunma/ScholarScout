@@ -41,7 +41,10 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: 键 = 相对 `src/scholarscout/` 的路径，值 = 该文件里 SQL 调用点的处数。
 #: 修掉一处 SQL，就把那个数字减一；减到 0 删掉整条（自检会拦僵尸条目）。
 #: **新增 SQL 不许往这里加数字**：先把查询搬进 `state/`，再来把数字改小。
-#: 现值：2026-10-23 实测 **24 处 / 13 个模块**（`rpc/archive.py` 的 4 处已下沉到
+#: 现值：2026-10-23 实测 **21 处 / 12 个模块**（`tools/source_context.py` 的 3 处已下沉到
+#: `state/source_context.py` 的 `source_by_id` / `graded_sources_for_topic` / `recent_sources`，
+#: 该条整条删除）。
+#: 上一轮快照：2026-10-23 为 24 处 / 13 个模块（`rpc/archive.py` 的 4 处下沉到
 #: `state/archive.py` 的 `summary_hit_row` / `first_session_for_source` /
 #: `download_target_by_doc` / `download_target_by_source`，该条整条删除）。
 #: 更早快照：2026-10-23 为 28 处 / 14 个模块（`grading/support.py` 的 5 处下沉到
@@ -61,7 +64,6 @@ ALLOWED: dict[str, int] = {
     "runtime/compaction.py": 1,
     "runtime/practice.py": 2,
     "runtime/research_state.py": 1,
-    "tools/source_context.py": 3,
     "tools/source_fetch.py": 3,
     "tools/source_grade.py": 3,
 }

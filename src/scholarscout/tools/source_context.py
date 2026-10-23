@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from scholarscout.runtime.toolctx import ToolContext
+from scholarscout.state import source_context
 from scholarscout.state.ingest import latest_summary_for_source
 
 #: 送进模型的来源条数上限（控制 token）
@@ -36,35 +37,26 @@ def candidate_sources(
     topic: str | None = None,
     limit: int = MAX_CONTEXT_SOURCES,
 ) -> list[dict[str, Any]]:
-    """按 source_ids → 该主题下判权可用的来源 → 最近入库 三级取候选。"""
+    """按 source_ids → 该主题下判权可用的来源 → 最近入库 三级取候选。
+
+    SQL 全在 `state/source_context.py`；这一层只管三级优先级与"挑几条"。
+    """
     rows: list[dict[str, Any]] = []
 
     if source_ids:
         for source_id in source_ids:
-            row = ctx.db.query_one("SELECT * FROM sources WHERE id = ?", (str(source_id),))
+            row = source_context.source_by_id(ctx.db, str(source_id))
             if row is not None:
-                rows.append(dict(row))
+                rows.append(row)
         return attach_text(ctx, rows[: max(1, limit)])
 
     if topic:
-        graded = ctx.db.query(
-            """
-            SELECT s.*, max(g.created_at) AS graded_at
-            FROM sources s JOIN source_grades g ON g.source_id = s.id
-            WHERE g.topic = ? AND g.verdict IN (?, ?)
-            GROUP BY s.id
-            ORDER BY graded_at DESC
-            LIMIT ?
-            """,
-            (topic, *USABLE_VERDICTS, max(1, limit)),
+        rows = source_context.graded_sources_for_topic(
+            ctx.db, topic=topic, verdicts=USABLE_VERDICTS, limit=max(1, limit)
         )
-        rows = [dict(row) for row in graded]
 
     if not rows:
-        recent = ctx.db.query(
-            "SELECT * FROM sources ORDER BY last_seen_at DESC LIMIT ?", (max(1, limit),)
-        )
-        rows = [dict(row) for row in recent]
+        rows = source_context.recent_sources(ctx.db, limit=max(1, limit))
 
     return attach_text(ctx, rows)
 
