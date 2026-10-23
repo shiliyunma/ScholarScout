@@ -49,6 +49,7 @@ from typing import Any
 
 from scholarscout.state import traces
 from scholarscout.state.db import Database
+from scholarscout.state.usage import usage_window_totals
 
 #: 统计窗口（小时）。改成自然日要同时改文档与界面口径，所以只在这里写一次。
 WINDOW_HOURS = 24.0
@@ -113,17 +114,11 @@ def usage_since(db: Database, since: str) -> dict[str, Any]:
 
     金额只汇总 ``est_cost`` **非空**的行，并同时给出 ``priced_calls`` ——
     "没有价格"与"花了 0 元"必须能分开看。
+
+    SQL 在 ``state/usage.py::usage_window_totals``（跨会话、按 ``julianday`` 卡窗口）；这里只做
+    三件**领域**的事：把 prompt/completion 合成 ``tokens``、没配单价时把金额置 ``None``、把空表补成 0。
     """
-    row = db.query_one(
-        "SELECT coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
-        " coalesce(sum(completion_tokens),0) AS completion_tokens,"
-        " count(*) AS calls,"
-        " sum(est_cost) AS est_cost,"
-        " count(est_cost) AS priced_calls"
-        " FROM usage_records WHERE julianday(created_at) >= julianday(?)",
-        (since,),
-    )
-    data = dict(row) if row is not None else {}
+    data = usage_window_totals(db, since)
     prompt = int(data.get("prompt_tokens") or 0)
     completion = int(data.get("completion_tokens") or 0)
     priced = int(data.get("priced_calls") or 0)

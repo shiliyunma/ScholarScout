@@ -1,9 +1,18 @@
-"""会话用量的两条读查询（`session.usage` 的取数口）。
+"""`usage_records` 的三条读查询（`session.usage` 与每日封顶的取数口）。
 
-原本写在 `rpc/session.py::session_usage`（白名单 `rpc/session.py: 2`），这一轮只是**位置**搬进
-`state/`：列清单、聚合函数、`WHERE`、`GROUP BY`、`ORDER BY` 一个词没动。**业务边界仍留在 rpc 层**
+前两条原本写在 `rpc/session.py::session_usage`（白名单 `rpc/session.py: 2`），第三条原本写在
+`runtime/budget.py::usage_since`（白名单 `runtime/budget.py: 1`）；两轮都是**纯搬运**：列清单、
+聚合函数、`WHERE`、`GROUP BY`、`ORDER BY` 一个词没动。**业务边界仍留在调用方那一层**
 —— 缓存命中率只在服务端确实报过缓存字段时才算（否则回 `None`，不是 0%）、单价没配就不报金额、
-`by_purpose` 怎么摆给界面，全在 `session_usage` 里；这里只回**原始行**。
+`by_purpose` 怎么摆给界面，全在 `session_usage` 里；封顶的 `tokens = prompt + completion`、
+`est_cost` 为空回 `None`（不是 0.0）在 `runtime/budget.py::usage_since` 里。这里只回**原始行**。
+
+第三条（``_WINDOW_QUERY``）**为什么另起一条而不复用前面两条**：它算的是**跨会话**的滚动时间窗
+（``julianday(created_at) >= julianday(?)``），前两条按 ``session_id = ?`` 过滤 —— `WHERE` 的语义
+不同，合成一条就要在 SQL 里加可选条件（``(? IS NULL OR session_id = ?)``），那会让查询计划与
+「空会话 id 到底算什么」变成隐式约定。另外三处刻意的不一样也都在 SQL 里：
+``sum(est_cost)`` **不兜底**（有空单价就有空合计，调用方靠 ``priced_calls`` 判「没配单价」）、
+多一列 ``count(est_cost) AS priced_calls``、没有 ``cached_tokens`` 那两列（封顶不关心缓存）。
 
 口径细在四处、写在 SQL 里都看不出来：
 
@@ -52,3 +61,24 @@ def session_usage_totals(db: Database, session_id: str) -> dict[str, Any]:
 def session_usage_by_purpose(db: Database, session_id: str) -> list[dict[str, Any]]:
     """这个会话按 ``purpose`` 拆分的用量行（``purpose`` 为 NULL 的一律记作 ``'?'``），调用次数降序；无记录回空列表。"""
     return [dict(row) for row in db.query(_BY_PURPOSE_QUERY, (session_id,))]
+
+
+#: 滚动时间窗（**跨会话**）：封顶用。``est_cost`` 不兜底、多一列 ``priced_calls`` —— 见模块 docstring。
+_WINDOW_QUERY = (
+    "SELECT coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
+    " coalesce(sum(completion_tokens),0) AS completion_tokens,"
+    " count(*) AS calls,"
+    " sum(est_cost) AS est_cost,"
+    " count(est_cost) AS priced_calls"
+    " FROM usage_records WHERE julianday(created_at) >= julianday(?)"
+)
+
+
+def usage_window_totals(db: Database, since: str) -> dict[str, Any]:
+    """``since`` 之后（**跨会话**，按 ``julianday`` 比较）的原始合计行；一条记录都没有时全为 0、``est_cost`` 为 NULL。
+
+    ``est_cost`` 故意不 ``coalesce``：``None`` 与 ``0.0`` 在这里必须可区分（没配单价 ≠ 花了 0 元），
+    由调用方结合 ``priced_calls`` 判断后再决定报不报金额。
+    """
+    row = db.query_one(_WINDOW_QUERY, (since,))
+    return dict(row) if row is not None else {}

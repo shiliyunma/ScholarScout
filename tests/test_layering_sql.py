@@ -41,7 +41,14 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: 键 = 相对 `src/scholarscout/` 的路径，值 = 该文件里 SQL 调用点的处数。
 #: 修掉一处 SQL，就把那个数字减一；减到 0 删掉整条（自检会拦僵尸条目）。
 #: **新增 SQL 不许往这里加数字**：先把查询搬进 `state/`，再来把数字改小。
-#: 现值：2026-10-23 实测 **2 处 / 2 个模块**（`tools/source_fetch.py` 的 3 处逐处定去向：
+#: 现值：2026-10-23 实测 **1 处 / 1 个模块**（`runtime/budget.py` 的 1 处：`usage_since` 的
+#: `SELECT coalesce(sum(prompt_tokens),0) …, count(est_cost) AS priced_calls
+#: FROM usage_records WHERE julianday(created_at) >= julianday(?)` **分建**
+#: `state/usage.py::usage_window_totals` —— 同文件的 `session_usage_totals` 按 `session_id = ?`
+#: 过滤，那是「一个会话的累计」；这条是**跨会话的滚动时间窗**，`WHERE` 语义不同，而且
+#: `sum(est_cost)` 不兜底、多一列 `priced_calls`、没有 `cached_tokens` 两列。合成一条就要在 SQL 里
+#: 写 `(? IS NULL OR session_id = ?)`，把「空会话 id 算什么」变成隐式约定，所以不将就复用）。
+#: 上一轮快照：2026-10-23 为 2 处 / 2 个模块（`tools/source_fetch.py` 的 3 处逐处定去向：
 #: ① `_document_row` 的 `SELECT * FROM documents WHERE source_id = ? AND sha256 = ?`
 #: **分建** `state/ingest.py::document_by_source_sha` —— 同文件既有的 `save_document` 只 `SELECT id`
 #: 判在不在（写路径），`document_for_source` 取的是「最新一份」不认内容字节；
@@ -81,7 +88,6 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: `state/sessions.py` / `state/memory.py`）；再往前为 40 处 / 16 个模块；47 处 / 17 个模块；
 #: 2026-10-21 为 56 处 / 18 个模块；评审清单记的 69 处是更早的粗计数，差别见 `docs/23` 那一行。
 ALLOWED: dict[str, int] = {
-    "runtime/budget.py": 1,
     "runtime/research_state.py": 1,
 }
 
