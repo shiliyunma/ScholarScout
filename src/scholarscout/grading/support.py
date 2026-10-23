@@ -33,7 +33,14 @@ from pathlib import Path
 from typing import Any
 
 from scholarscout.state.db import Database
-from scholarscout.state.support import upsert_check
+from scholarscout.state.support import (
+    checks_for_artifact,
+    latest_source_summary,
+    route_row,
+    source_row,
+    topic_map_row,
+    upsert_check,
+)
 
 #: 判定的三种结果（写进库、进报告）
 VERDICTS = ("supported", "partial", "unsupported")
@@ -81,9 +88,7 @@ class SupportVerdict:
 
 def _source_evidence(db: Database, source_id: str) -> tuple[str, str]:
     """取一条来源能拿到的证据，返回 ``(等级, 文本)``。"""
-    row = db.query_one(
-        "SELECT id, title, url, year, source_type FROM sources WHERE id = ?", (source_id,)
-    )
+    row = source_row(db, source_id)
     if row is None:
         return "title", f"（库中没有这条来源：{source_id}）"
     item = dict(row)
@@ -97,12 +102,7 @@ def _source_evidence(db: Database, source_id: str) -> tuple[str, str]:
         )
         if part
     )
-    summary = db.query_one(
-        "SELECT title_zh, summary_short, points_json FROM summaries"
-        " WHERE source_id = ? AND coalesce(summary_short,'') != ''"
-        " ORDER BY created_at DESC LIMIT 1",
-        (source_id,),
-    )
+    summary = latest_source_summary(db, source_id)
     if summary is None:
         return "title", f"{head}\n{meta}"
     data = dict(summary)
@@ -131,7 +131,7 @@ def build_pairs(
 ) -> list[SupportPair]:
     """把一件产物拆成待审对。只审资料类条目；一个条目最多带 `max_sources_per_item` 条证据。"""
     if artifact_kind == "topic_map":
-        row = db.query_one("SELECT id, graph_json FROM topic_maps WHERE id = ?", (artifact_id,))
+        row = topic_map_row(db, artifact_id)
         if row is None:
             raise KeyError(artifact_id)
         graph = json.loads(str(row["graph_json"]))
@@ -154,7 +154,7 @@ def build_pairs(
         return pairs
 
     if artifact_kind == "route":
-        row = db.query_one("SELECT id, plan_json FROM learning_routes WHERE id = ?", (artifact_id,))
+        row = route_row(db, artifact_id)
         if row is None:
             raise KeyError(artifact_id)
         plan = json.loads(str(row["plan_json"]))
@@ -298,10 +298,8 @@ def _now() -> str:
 
 
 def list_checks(db: Database, artifact_id: str) -> list[dict[str, Any]]:
-    rows = db.query(
-        "SELECT * FROM support_checks WHERE artifact_id = ? ORDER BY item_id", (artifact_id,)
-    )
-    return [dict(row) for row in rows]
+    """这件产物的全部判定（按 `item_id` 排序；SQL 已下沉 `state.support.checks_for_artifact`）。"""
+    return checks_for_artifact(db, artifact_id)
 
 
 # ------------------------------------------------------------------- 汇总
