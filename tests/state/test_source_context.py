@@ -155,6 +155,28 @@ def test_source_by_url_canonical_picks_the_named_row_among_several(db: Database)
     assert row is not None and row["id"] == "src_b"
 
 
+def test_source_lookups_carry_the_fields_source_fetch_reads(db: Database) -> None:
+    """`source.fetch` 的两处回查（按 id 取 URL / 按 canonical 取类型·标题·元数据）落在整行上。
+
+    它原来在自己的文件里写着「只取这几列」的两句 SQL（`SELECT url …`、
+    `SELECT id, title, source_type, meta_json …`）；下沉时改成复用这两条**整行**查询 ——
+    多取的列没人读，但被读的那几列必须真在这行里，所以在这里钉住。
+    """
+    _source(db, "src_a", title="知识追踪")
+    db.execute(
+        "UPDATE sources SET source_type = ?, meta_json = ? WHERE id = ?",
+        ("arxiv", '{"external_id": "2501.00001"}', "src_a"),
+    )
+    by_id = source_context.source_by_id(db, "src_a")
+    assert by_id is not None and by_id["url"] == "https://src_a.test/a.pdf"
+    by_canonical = source_context.source_by_url_canonical(db, "https://src_a.test/a.pdf")
+    assert by_canonical is not None
+    assert by_canonical["id"] == "src_a"
+    assert by_canonical["title"] == "知识追踪"
+    assert by_canonical["source_type"] == "arxiv"
+    assert by_canonical["meta_json"] == '{"external_id": "2501.00001"}'
+
+
 def test_ungated_sources_empty_db_is_empty_list(db: Database) -> None:
     assert source_context.ungated_sources(db, limit=20) == []
 

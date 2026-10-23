@@ -41,10 +41,18 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: 键 = 相对 `src/scholarscout/` 的路径，值 = 该文件里 SQL 调用点的处数。
 #: 修掉一处 SQL，就把那个数字减一；减到 0 删掉整条（自检会拦僵尸条目）。
 #: **新增 SQL 不许往这里加数字**：先把查询搬进 `state/`，再来把数字改小。
-#: 现值：2026-10-23 实测 **5 处 / 3 个模块**（`rpc/session.py` 的 2 处——`session.usage` 的会话累计
+#: 现值：2026-10-23 实测 **2 处 / 2 个模块**（`tools/source_fetch.py` 的 3 处逐处定去向：
+#: ① `_document_row` 的 `SELECT * FROM documents WHERE source_id = ? AND sha256 = ?`
+#: **分建** `state/ingest.py::document_by_source_sha` —— 同文件既有的 `save_document` 只 `SELECT id`
+#: 判在不在（写路径），`document_for_source` 取的是「最新一份」不认内容字节；
+#: ② `SELECT url FROM sources WHERE id = ?` **复用** `state/source_context.py::source_by_id`；
+#: ③ `SELECT id, title, source_type, meta_json FROM sources WHERE url_canonical = ?`
+#: **复用** `source_by_url_canonical`；②③ 与既有那两条**同一句 `WHERE`**，只是投影更宽
+#: （`SELECT *` 是子集关系的超集，多取的列没人读），所以不抄第二份。该条整条删除）。
+#: 上一轮快照：2026-10-23 为 5 处 / 3 个模块（`rpc/session.py` 的 2 处——`session.usage` 的会话累计
 #: 与按用途拆分——都下沉到 `state/usage.py` 的 `session_usage_totals` / `session_usage_by_purpose`，
 #: 该条整条删除）。
-#: 上一轮快照：2026-10-23 为 7 处 / 4 个模块（`rpc/channel_file.py` 的 2 处：`_session_id` 直接
+#: 更早快照：2026-10-23 为 7 处 / 4 个模块（`rpc/channel_file.py` 的 2 处：`_session_id` 直接
 #: **复用** `state/sessions.py::get_session_by_key`（同一句 `WHERE session_key = ?`），`_document_target`
 #: 下沉到 `state/library_index.py::documents_with_source_titles`；该条整条删除）。
 #: 更早快照：2026-10-23 为 9 处 / 5 个模块（`library/migrate.py` 的 2 处下沉到
@@ -75,7 +83,6 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 ALLOWED: dict[str, int] = {
     "runtime/budget.py": 1,
     "runtime/research_state.py": 1,
-    "tools/source_fetch.py": 3,
 }
 
 

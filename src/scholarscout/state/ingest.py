@@ -244,6 +244,29 @@ def document_for_source(db: Database, source_id: str) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def document_by_source_sha(db: Database, source_id: str, sha256: str) -> dict[str, Any] | None:
+    """按 ``(source_id, sha256)`` 取**整行**资料（不存在回 ``None``）。
+
+    `source.fetch` 的去重快路径用它：同一个来源、同样的内容字节已经抓过，就直接把既有结果
+    原样回出去（`doc_id` / 路径 / 抽取状态 / 截断标记全在这一行里）。
+
+    为什么**不是**复用旁边几个：
+
+    - ``save_document`` 里那句 ``SELECT id … WHERE source_id = ? AND sha256 = ?`` 只判「在不在」
+      （投影只有 ``id``），而且是写入路径 —— 这里要的是回包形状的整行；
+    - ``document_for_source`` 是「这个来源**最新**的那份资料」（``ORDER BY fetched_at DESC``），
+      不认内容字节：同一来源换了个 PDF 会命中另一行，去重就变成「拿错文档」。
+
+    列清单是 ``*``（`source.fetch` 要 `raw_path`/`text_path`/`extract_status`/`extract_engine`/
+    `truncated`/`chars`/`lang`/`mime`）；``UNIQUE (source_id, sha256)`` 保证最多一条，所以
+    ``query_one`` 而不是 ``query`` + 自己挑。``sha256`` 由调用方算好再传（哈希不在 state 里算）。
+    """
+    row = db.query_one(
+        "SELECT * FROM documents WHERE source_id = ? AND sha256 = ?", (source_id, sha256)
+    )
+    return dict(row) if row is not None else None
+
+
 # --------------------------------------------------------------------- 判权结果（M4）
 
 

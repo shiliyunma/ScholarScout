@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from scholarscout.state.db import Database
 from scholarscout.state.ingest import (
+    document_by_source_sha,
     latest_summary,
     record_mention,
     save_document,
@@ -147,3 +148,54 @@ def test_record_mention_links_source_to_session(db: Database) -> None:
 
 def test_latest_summary_none_for_unknown_doc(db: Database) -> None:
     assert latest_summary(db, "doc_none") is None
+
+
+def test_document_by_source_sha_none_when_no_such_pair(db: Database) -> None:
+    """空库回 `None`；换了 sha 或换了来源都查不到 —— 去重快路径不能靠「同来源」蒙混。"""
+    assert document_by_source_sha(db, "src_none", "abc") is None
+    source_a, _ = upsert_source(db, SOURCE_ROW)
+    source_b, _ = upsert_source(
+        db, {**SOURCE_ROW, "url_canonical": "https://arxiv.org/abs/2501.00002"}
+    )
+    save_document(db, source_id=source_a, sha256="abc")
+    assert document_by_source_sha(db, source_a, "other") is None
+    assert document_by_source_sha(db, source_b, "abc") is None
+
+
+def test_document_by_source_sha_returns_the_whole_row(db: Database) -> None:
+    """回包形状就是整行：`source.fetch` 的去重快路径要路径 / 抽取状态 / 截断标记。"""
+    source_id, _ = upsert_source(db, SOURCE_ROW)
+    doc_id, _ = save_document(
+        db,
+        source_id=source_id,
+        sha256="abc",
+        mime="application/pdf",
+        chars=42,
+        raw_path="data/raw/doc_x.pdf",
+        text_path="data/text/doc_x.txt",
+        extract_status="ok",
+        extract_engine="local",
+        truncated=True,
+    )
+    row = document_by_source_sha(db, source_id, "abc")
+    assert row is not None
+    assert row["id"] == doc_id
+    assert row["raw_path"] == "data/raw/doc_x.pdf"
+    assert row["text_path"] == "data/text/doc_x.txt"
+    assert row["extract_status"] == "ok"
+    assert row["extract_engine"] == "local"
+    assert row["truncated"] == 1
+    assert row["chars"] == 42
+
+
+def test_document_by_source_sha_picks_by_content_not_latest(db: Database) -> None:
+    """按内容字节点名，不是「这个来源最新一份」：老字节也要原样回来。"""
+    source_id, _ = upsert_source(db, SOURCE_ROW)
+    old_id, _ = save_document(
+        db, source_id=source_id, sha256="old", doc_id="doc_old", fetched_at="2025-01-01T00:00:00"
+    )
+    save_document(
+        db, source_id=source_id, sha256="new", doc_id="doc_new", fetched_at="2026-10-01T00:00:00"
+    )
+    row = document_by_source_sha(db, source_id, "old")
+    assert row is not None and row["id"] == old_id == "doc_old"

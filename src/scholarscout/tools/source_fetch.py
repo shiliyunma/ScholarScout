@@ -44,6 +44,7 @@ from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import sessions
 from scholarscout.state.ingest import (
+    document_by_source_sha,
     latest_summary,
     record_mention,
     save_document,
@@ -51,6 +52,7 @@ from scholarscout.state.ingest import (
     upsert_source,
 )
 from scholarscout.state.migrate import now_iso
+from scholarscout.state.source_context import source_by_id, source_by_url_canonical
 from scholarscout.summary.pipeline import SummaryInput, summarize
 from scholarscout.tools.envelope import ToolResult, fail, ok
 from scholarscout.tools.mineru_fallback import _mineru_fallback
@@ -135,13 +137,6 @@ def _pdf_text(content: bytes, *, budget_s: float) -> tuple[str, str, str, str]:
     if text:
         return text, "ok", "local", ""
     return "", "no_text_layer", "local", "没有文字层（多为扫描版）→ 交给 MinerU"
-
-
-def _document_row(ctx: ToolContext, source_id: str, sha256: str) -> dict[str, Any] | None:
-    row = ctx.db.query_one(
-        "SELECT * FROM documents WHERE source_id = ? AND sha256 = ?", (source_id, sha256)
-    )
-    return dict(row) if row is not None else None
 
 
 def _meta_of(raw: Any) -> dict[str, Any]:
@@ -248,10 +243,10 @@ def source_fetch(
     if not url and not source_id:
         raise ValueError("必须给 url 或 source_id 之一")
     if not url:
-        row = ctx.db.query_one("SELECT url FROM sources WHERE id = ?", (source_id,))
-        if row is None:
+        source = source_by_id(ctx.db, str(source_id))
+        if source is None:
             raise ValueError(f"未知 source_id：{source_id}")
-        url = str(row["url"])
+        url = str(source["url"])
     assert url is not None  # 上面的分支已保证
 
     http = ctx.require_http()
@@ -332,12 +327,10 @@ def source_fetch(
 
     # ---- 去重快路径：同来源同内容已经抓过，直接返回既有结果（不重复调模型）
     # 顺手把来源元数据取出来：命名要的类型 / 标题 / 发表月份此刻就能拿到（docs/19 §4）。
-    existing_source = ctx.db.query_one(
-        "SELECT id, title, source_type, meta_json FROM sources WHERE url_canonical = ?",
-        (canonical_url(url),),
-    )
+    # 回查按**规范化后**的 URL（`canonical_url` 在工具层先算好），state 只认库里那一列。
+    existing_source = source_by_url_canonical(ctx.db, canonical_url(url))
     if existing_source is not None and not force:
-        found = _document_row(ctx, str(existing_source["id"]), sha256)
+        found = document_by_source_sha(ctx.db, str(existing_source["id"]), sha256)
         if found is not None:
             summary = latest_summary(ctx.db, str(found["id"]))
             return ok(
