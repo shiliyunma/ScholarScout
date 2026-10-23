@@ -261,6 +261,61 @@ def read_text(
     }
 
 
+# --------------------------------------------- 读（搜索命中 / 下载上下文：RPC 只调函数，不写 SQL）
+
+
+def summary_hit_row(db: Database, summary_id: str) -> dict[str, Any] | None:
+    """一条摘要命中的展示行：摘要字段 + 它所属资料的路径与抽取状态；查不到回 None。
+
+    搜索命中的 ``snippet`` / ``path`` 不在库里（由 FTS 查询给出），所以这里只回库里的那几列。
+    """
+    row = db.query_one(
+        """
+        SELECT s.doc_id, s.source_id, s.title_zh, s.summary_short,
+               d.raw_path, d.text_path, d.extract_status
+        FROM summaries s JOIN documents d ON d.id = s.doc_id
+        WHERE s.id = ?
+        """,
+        (summary_id,),
+    )
+    return dict(row) if row is not None else None
+
+
+def first_session_for_source(db: Database, source_id: str) -> str | None:
+    """这份资料**最早**被哪个会话带出来（与 `list_documents` 的分组口径同一套，docs/19 §2）。"""
+    row = db.query_one(
+        "SELECT session_id FROM source_mentions WHERE source_id = ? ORDER BY rowid LIMIT 1",
+        (source_id,),
+    )
+    return str(row["session_id"]) if row is not None else None
+
+
+def download_target_by_doc(db: Database, doc_id: str) -> dict[str, Any] | None:
+    """``doc_id`` 对应的下载上下文**原始行**（documents × sources）；没有这一行回 None。
+
+    列是 `archive.download` 要用的那几列（现有原件位置 / MIME / 状态码 / 标题 / 源地址 / meta）。
+    """
+    row = db.query_one(
+        """
+        SELECT d.id AS doc_id, d.source_id, d.raw_path, d.mime, d.http_status,
+               d.title, s.url, s.source_type, s.title AS source_title, s.meta_json
+        FROM documents d JOIN sources s ON s.id = d.source_id
+        WHERE d.id = ?
+        """,
+        (doc_id,),
+    )
+    return dict(row) if row is not None else None
+
+
+def download_target_by_source(db: Database, source_id: str) -> dict[str, Any] | None:
+    """``source_id`` 对应的来源行（下载解析目标用得到的那几列）；没有这一行回 None。"""
+    row = db.query_one(
+        "SELECT id, url, title, source_type, meta_json FROM sources WHERE id = ?",
+        (source_id,),
+    )
+    return dict(row) if row is not None else None
+
+
 # ------------------------------------------------------------------ 写（下载回填 / 迁移改路径）
 
 

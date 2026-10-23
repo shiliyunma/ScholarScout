@@ -42,17 +42,9 @@ def archive_list(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         hits = search_summaries(ctx.db, query, limit=limit)
         items = []
         for hit in hits:
-            row = ctx.db.query_one(
-                """
-                SELECT s.doc_id, s.source_id, s.title_zh, s.summary_short,
-                       d.raw_path, d.text_path, d.extract_status
-                FROM summaries s JOIN documents d ON d.id = s.doc_id
-                WHERE s.id = ?
-                """,
-                (hit.id,),
-            )
+            row = archive.summary_hit_row(ctx.db, hit.id)
             if row is not None:
-                items.append({**dict(row), "hit_path": hit.path, "snippet": hit.snippet})
+                items.append({**row, "hit_path": hit.path, "snippet": hit.snippet})
         return {
             "items": items,
             "total": len(items),
@@ -142,15 +134,6 @@ def _meta_dict(raw: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _first_session(db: Any, source_id: str) -> str | None:
-    """这份资料**最早**被哪个会话带出来（与 `archive.list` 的分组口径同一套，docs/19 §2）。"""
-    row = db.query_one(
-        "SELECT session_id FROM source_mentions WHERE source_id = ? ORDER BY rowid LIMIT 1",
-        (source_id,),
-    )
-    return str(row["session_id"]) if row is not None else None
-
-
 def _ext_from_rel(raw_path: str, mime: str) -> str:
     """从已有的原件相对路径取扩展名（给 ``already`` 那条路回包用；取不到再退回 media type）。"""
     name = str(raw_path or "").rsplit("/", 1)[-1]
@@ -182,23 +165,14 @@ def _download_target(
     ``raw_path`` / ``mime`` / ``http_status`` 是**库里现有的**那条记录（可能为 None）。
     """
     if doc_id:
-        row = ctx.db.query_one(
-            """
-            SELECT d.id AS doc_id, d.source_id, d.raw_path, d.mime, d.http_status,
-                   d.title, s.url, s.source_type, s.title AS source_title, s.meta_json
-            FROM documents d JOIN sources s ON s.id = d.source_id
-            WHERE d.id = ?
-            """,
-            (doc_id,),
-        )
+        row = archive.download_target_by_doc(ctx.db, doc_id)
         if row is None:
             return None
-        return _target_row(row, session_id=_first_session(ctx.db, str(row["source_id"])))
-    if source_id:
-        src = ctx.db.query_one(
-            "SELECT id, url, title, source_type, meta_json FROM sources WHERE id = ?",
-            (source_id,),
+        return _target_row(
+            row, session_id=archive.first_session_for_source(ctx.db, str(row["source_id"]))
         )
+    if source_id:
+        src = archive.download_target_by_source(ctx.db, source_id)
         if src is None:
             return None
         doc = document_for_source(ctx.db, str(src["id"]))
@@ -214,7 +188,9 @@ def _download_target(
             "source_title": src["title"],
             "meta_json": src["meta_json"],
         }
-        return _target_row(merged_row, session_id=_first_session(ctx.db, str(src["id"])))
+        return _target_row(
+            merged_row, session_id=archive.first_session_for_source(ctx.db, str(src["id"]))
+        )
     return {
         "doc_id": None,
         "source_id": None,

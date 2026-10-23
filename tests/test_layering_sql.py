@@ -41,10 +41,11 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: 键 = 相对 `src/scholarscout/` 的路径，值 = 该文件里 SQL 调用点的处数。
 #: 修掉一处 SQL，就把那个数字减一；减到 0 删掉整条（自检会拦僵尸条目）。
 #: **新增 SQL 不许往这里加数字**：先把查询搬进 `state/`，再来把数字改小。
-#: 现值：2026-10-23 实测 **28 处 / 14 个模块**（`grading/support.py` 的 5 处已下沉到
-#: `state/support.py` 的 `source_row` / `latest_source_summary` / `topic_map_row` / `route_row` /
-#: `checks_for_artifact`，该条整条删除）。
-#: 更早快照：2026-10-22 为 33 处 / 15 个模块（`runtime/research_view.py` 的 7 处下沉到
+#: 现值：2026-10-23 实测 **24 处 / 13 个模块**（`rpc/archive.py` 的 4 处已下沉到
+#: `state/archive.py` 的 `summary_hit_row` / `first_session_for_source` /
+#: `download_target_by_doc` / `download_target_by_source`，该条整条删除）。
+#: 更早快照：2026-10-23 为 28 处 / 14 个模块（`grading/support.py` 的 5 处下沉到
+#: `state/support.py`）；2026-10-22 为 33 处 / 15 个模块（`runtime/research_view.py` 的 7 处下沉到
 #: `state/research_board.py` / `state/support.py`；`runtime/learner_profile.py` 的 7 处更早已下沉到
 #: `state/learner_profile.py`；`runtime/memory.py` 的 9 处下沉到 `state/facts.py` /
 #: `state/sessions.py` / `state/memory.py`）；再往前为 40 处 / 16 个模块；47 处 / 17 个模块；
@@ -54,7 +55,6 @@ ALLOWED: dict[str, int] = {
     "library/index.py": 2,
     "library/migrate.py": 2,
     "library/naming.py": 1,
-    "rpc/archive.py": 4,
     "rpc/channel_file.py": 2,
     "rpc/session.py": 2,
     "runtime/budget.py": 1,

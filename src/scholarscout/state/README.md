@@ -61,7 +61,10 @@
 - `traces.py`：`digest(payload)` / `record_trace(...)` / `list_traces(...)` / `record_usage(...)` /
   `record_provider_status(...)`
 - `archive.py`：`list_documents(...)` / `get_document(db, doc_id)` / `document_paths(...)` /
-  `display_format(url, raw_path)` / `read_text(...)`
+  `display_format(url, raw_path)` / `read_text(...)` / `summary_hit_row(db, summary_id)` /
+  `first_session_for_source(db, source_id)` / `download_target_by_doc(...)` /
+  `download_target_by_source(...)` / 写侧 `set_document_download` / `set_document_raw_ref` /
+  `set_document_paths`
 - `search.py`：`class Hit` / `normalize_query(query)` / `query_path(query)` /
   `search_summaries(db, query, *, limit)` / `search_messages(db, query, *, session_id, limit)` /
   `search_all(db, query, *, limit)`
