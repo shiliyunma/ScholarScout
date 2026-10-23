@@ -21,6 +21,8 @@ EXPECTED_TABLES = set(DOMAIN_TABLES) | {
     "source_grades",
     "summaries_fts",
     "messages_fts",
+    # 入口层状态（不进 DOMAIN_TABLES）：每群绑模块，迁移 0018
+    "channel_modules",
 }
 
 EXPECTED_TRIGGERS = {
@@ -91,17 +93,36 @@ def test_cascade_delete_removes_documents_and_summaries(db: Database) -> None:
 
 def test_migration_is_idempotent(db: Database) -> None:
     first = current_version(db)
-    assert first == 17
+    assert first == 18
     applied_again = apply_migrations(db)
     assert applied_again == [], "重复执行迁移不应再次应用"
     assert current_version(db) == first
-    assert db.scalar("SELECT count(*) FROM schema_version") == 17
+    assert db.scalar("SELECT count(*) FROM schema_version") == 18
 
 
 def test_migration_files_are_well_named() -> None:
     versions = [number for number, _ in discover()]
     assert versions == sorted(versions)
-    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    assert versions == [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+    ]
 
 
 def test_tier_rules_are_seeded(db: Database) -> None:
@@ -146,3 +167,58 @@ def test_counts_empty_on_fresh_db(db: Database) -> None:
     counts = db.counts()
     assert set(counts) == set(DOMAIN_TABLES)
     assert all(value == 0 for value in counts.values())
+
+
+def test_v17_database_upgrades_to_18_without_losing_rows(tmp_path) -> None:
+    """0018 要能在**已有数据的 v17 库**上就地升级（只在空库上"一路建到 18"不算数）。
+
+    用户机上的库就是 v17 + 真实数据（`run/state.db`），所以这里先 `target=17` 建出一个
+    真 v17 库、塞进研究数据，再跑**生产同一条** `apply_migrations()` 升到 18。
+    """
+    from ..conftest import insert_document, insert_source, insert_summary
+
+    database = Database(tmp_path / "v17.db")
+    try:
+        assert apply_migrations(database, target=17)[-1] == 17
+        assert current_version(database) == 17
+        assert not database.has_table("channel_modules"), "18 之前不该有这张表"
+
+        insert_source(database)
+        insert_document(database)
+        insert_summary(database)
+        before = database.counts()
+
+        assert apply_migrations(database) == [18], "只该应用 0018 一条"
+        assert current_version(database) == 18
+        assert database.has_table("channel_modules")
+        assert database.counts() == before, "升级不许动旧数据"
+        assert database.scalar_int("SELECT count(*) FROM sources") == 1
+
+        # 新表可写可读，且 (channel, chat_id) 是主键（同一群只能一行）
+        database.execute(
+            "INSERT INTO channel_modules (channel, chat_id, module, updated_at)"
+            " VALUES ('feishu', 'oc_v17', 'research', ?)",
+            (T0,),
+        )
+        assert database.scalar_int("SELECT count(*) FROM channel_modules") == 1
+        with pytest.raises(sqlite3.IntegrityError):
+            database.execute(
+                "INSERT INTO channel_modules (channel, chat_id, module, updated_at)"
+                " VALUES ('feishu', 'oc_v17', 'kb', ?)",
+                (T0,),
+            )
+    finally:
+        database.close()
+
+
+def test_fresh_database_is_born_at_18(tmp_path) -> None:
+    """空库直建到 18：一次 `apply_migrations()` 就含 `channel_modules`（不必"先升后建"）。"""
+    database = Database(tmp_path / "fresh.db")
+    try:
+        assert apply_migrations(database) == list(range(1, 19))
+        assert current_version(database) == 18
+        assert database.has_table("channel_modules")
+        columns = [row["name"] for row in database.query("PRAGMA table_info(channel_modules)")]
+        assert columns == ["channel", "chat_id", "module", "updated_at"]
+    finally:
+        database.close()

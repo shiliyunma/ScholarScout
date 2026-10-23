@@ -142,6 +142,11 @@ __all__ = [
 #: 「发文件」走后端这条 RPC（docs/17 §3.12）：渠道层只解析意图，查库/导出/上传/发送在主进程
 FILE_DELIVERY_METHOD = "channel.send_file"
 
+#: 每群绑模块的**解析口**（唯一实现是 `rpc/channel.py::channel_module_for_chat`）：
+#: 这一条消息该用哪个模块 = 该 (channel, chat_id) 的绑定 → 全局默认 → 兜底。
+#: 渠道层不读库，所以在跑轮次前问一次，把回包的 `toolsets` 原样交给 `chat.send`。
+MODULE_FOR_CHAT_METHOD = "channel.module_for_chat"
+
 #: 入站身份刷新（修 `99992361 open_id cross app`）：放行之后把事件里的**真实 open_id**
 #: 落/刷新到 `feishu_paired_users`；**只对白名单内的发送者**，非白名单由主进程再复核一次。
 IDENTITY_REMEMBER_METHOD = "feishu.pairing.remember"
@@ -451,6 +456,39 @@ class FeishuMessageHandler:
         )
         return InterceptDecision("file", "file_request")
 
+    def module_toolsets(self, message: FeishuMessage) -> list[str] | None:
+        """这一条消息该用哪个模块 → 交给 `chat.send` 的 `toolsets`（`None` = 不传，走全局默认）。
+
+        **集中在这一处**（`docs/01 §3.15`）：解析顺序"该 (channel, chat_id) 的绑定 →
+        全局默认 → 兜底"**只有一份实现**（`rpc/channel.py::_resolve`）—— 渠道层不读库、
+        不复制模块白名单，只问一次并原样取回工具集列表。
+
+        **失败不拖垮消息**：RPC 挂了 / 解析异常 → 回 `None`（= 不传 `toolsets`，
+        `chat.send` 自己走全局默认）。一条过期绑定或一次 RPC 抖动都不该让群消息丢失。
+        """
+        try:
+            resolved = self._dispatcher(
+                self._ctx,
+                MODULE_FOR_CHAT_METHOD,
+                {"channel": self._source, "chat_id": message.chat_id},
+            )
+        except Exception as exc:  # 解析失败 = 回退到全局默认，绝不外抛
+            logger.warning(
+                "[Feishu] 取群模块失败（走全局默认）：chat_id=%s err=%s", message.chat_id, exc
+            )
+            return None
+        if not isinstance(resolved, Mapping):
+            return None
+        toolsets = [str(name) for name in (resolved.get("toolsets") or []) if str(name).strip()]
+        logger.info(
+            "[Feishu] 群模块解析：chat_id=%s source=%s module=%s toolsets=%s",
+            message.chat_id,
+            resolved.get("source"),
+            resolved.get("module"),
+            toolsets,
+        )
+        return toolsets or None
+
     def run_turn(self, message: FeishuMessage) -> InterceptDecision:
         """一条消息 = 一次会话请求：**先过运行时拦截**，再幂等拿会话 → 跑一轮 → 回包。
 
@@ -503,9 +541,12 @@ class FeishuMessageHandler:
             {"session_key": message.chat_id, "source": self._source},
         )
         session_id = str(ensured["session_id"])
-        result = self._dispatcher(
-            self._ctx, "chat.send", {"session_id": session_id, "text": message.text}
-        )
+        # 这一轮用哪个模块：**只有这一处**解析（绑定 → 全局默认 → 兜底，见 module_toolsets）。
+        toolsets = self.module_toolsets(message)
+        turn_params: dict[str, Any] = {"session_id": session_id, "text": message.text}
+        if toolsets is not None:
+            turn_params["toolsets"] = toolsets
+        result = self._dispatcher(self._ctx, "chat.send", turn_params)
         reply_text = str((result or {}).get("text") or "")
         self._sender(message.chat_id, reply_text)
         logger.info(

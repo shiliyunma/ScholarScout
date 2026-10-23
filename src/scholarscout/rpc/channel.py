@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -38,11 +39,21 @@ from scholarscout.fetch import feishu_onboard, feishu_send
 from scholarscout.fetch.http import HttpClient
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.rpc.registry import AppContext, _params, method
+from scholarscout.runtime import registry as tool_registry
+from scholarscout.state import channel_modules as module_store
+
+logger = logging.getLogger(__name__)
 
 #: 本轮支持的平台（与 `channels/supervisor.PLATFORMS` 同源，**只有飞书**）
 PLATFORMS: tuple[str, ...] = supervisor.PLATFORMS
 #: 平台 → 展示名
 LABELS: dict[str, str] = {"feishu": "飞书"}
+#: "跟全局默认走"的哨兵模块名（`docs/21 §5.3` 的 `default`）：显式解绑/不指定时用它，
+#: 与"从没绑过"（`get_module` 回 null）**语义等价**，只是能写进表里。
+MODULE_DEFAULT = "default"
+#: 可绑的模块集 = **已存在的工具集白名单**（`runtime/registry.TOOLSETS`，唯一真源；不另抄一份）
+#: + `default`。`set_module` 只认这些值，别的 `INVALID_PARAMS`。
+MODULES: tuple[str, ...] = (*tool_registry.TOOLSETS, MODULE_DEFAULT)
 #: 平台 → 允许写入的凭据键（逻辑名 → `.env` 键名）。**白名单之外一律报错**。
 CREDENTIAL_KEYS: dict[str, dict[str, str]] = {
     "feishu": {"app_id": "FEISHU_APP_ID", "app_secret": "FEISHU_APP_SECRET"},
@@ -486,6 +497,141 @@ def channel_send(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         "code": int(outcome.get("code") or 0),
         "error": outcome.get("error"),
     }
+
+
+# ------------------------------------------------------------------ 每群绑模块
+
+#: 一条入站消息问"我这一轮用哪个模块"的方法名（`channels/feishu.py::run_turn` 只调这一条）。
+MODULE_FOR_CHAT_METHOD = "channel.module_for_chat"
+
+
+def _chat_target(params: dict[str, Any]) -> tuple[str, str]:
+    """取 `(渠道, 会话 id)`，并校验渠道在白名单里（本轮只有飞书）。
+
+    参数名用 **`channel`**（表列名，契约见 `docs/01 §3.15`）；同时接受 `platform` 作为别名 ——
+    `channel.*` 其余方法都用 `platform`（`docs/21 §5.1`），前端照那个惯例传也算对。
+    两个都给且不一致 → `INVALID_PARAMS`：**不猜**哪个是真的（猜错就是绑到别的群上）。
+    """
+    given = str(params.get("channel") or "").strip()
+    alias = str(params.get("platform") or "").strip()
+    if given and alias and given != alias:
+        raise RpcError(Code.INVALID_PARAMS, f"channel 与 platform 不一致（{given!r} vs {alias!r}）")
+    name = supervisor.normalize_platform(given or alias)
+    if name not in PLATFORMS:
+        raise RpcError(
+            Code.INVALID_PARAMS,
+            f"channel 只能是 {'、'.join(PLATFORMS)}（本轮只做飞书；微信/QQ 见 docs/21 §8）",
+        )
+    chat_id = str(params.get("chat_id") or "").strip()
+    if not chat_id:
+        raise RpcError(Code.INVALID_PARAMS, "缺参数：chat_id（平台侧会话 id，如飞书的 oc_...）")
+    return name, chat_id
+
+
+def _enable_kb(ctx: AppContext) -> bool:
+    return bool(ctx.config.features.enable_kb)
+
+
+def _available_modules(ctx: AppContext) -> tuple[str, ...]:
+    """当前**真的能用**的模块：工具集白名单经特性开关收敛（`enable_kb` 关着就没有 `kb`）。
+
+    直接复用 `runtime/registry.enabled_toolsets` 而不是自己判断 —— 开关语义只存一份，
+    否则"关着 kb 却把群绑到 kb"会变成一个静默无效的绑定。
+    """
+    return tool_registry.enabled_toolsets(tool_registry.TOOLSETS, enable_kb=_enable_kb(ctx))
+
+
+def _global_default(ctx: AppContext) -> list[str]:
+    """全局默认工具集 = 进程启动时的 `ctx.toolsets`（`--toolsets`，默认 `research`）。
+
+    这里**就是"解析顺序"的第二级**：没有任何绑定（或绑定是 `default`）时用它。
+    经 `enabled_toolsets` 收敛后顺便得到第三级兜底 —— 空/全不认识时它回 `("research",)`。
+    """
+    requested = [str(name) for name in ctx.toolsets if str(name).strip()]
+    return list(tool_registry.enabled_toolsets(requested or None, enable_kb=_enable_kb(ctx)))
+
+
+def _resolve(ctx: AppContext, channel: str, chat_id: str) -> dict[str, Any]:
+    """**唯一的解析实现**：绑定 → 全局默认 → 兜底（三级，按顺序取第一个能用的）。
+
+    绑定指向的模块已经不在了（`TOOLSETS` 缩小 / `enable_kb` 关着 / 库里是脏值）时
+    **不崩、不静默**：记一条 warning，然后按全局默认继续 —— 群消息不该因为一条过期绑定丢失。
+    """
+    binding = module_store.get_module(ctx.db, channel, chat_id)
+    available = _available_modules(ctx)
+    warning: str | None = None
+    if binding and binding != MODULE_DEFAULT:
+        if binding in available:
+            return {
+                "channel": channel,
+                "chat_id": chat_id,
+                "module": binding,
+                "toolsets": [binding],
+                "source": "binding",
+                "binding": binding,
+                "warning": None,
+            }
+        warning = (
+            f"群模块绑定失效：{channel}/{chat_id} 绑定的是 {binding!r}，"
+            f"已不在可用模块 {'、'.join(available)} 里 —— 回退到全局默认"
+        )
+        logger.warning("[Channel] %s", warning)
+
+    toolsets = _global_default(ctx)
+    requested = [str(name) for name in ctx.toolsets if str(name).strip()]
+    source = "default" if requested else "fallback"
+    return {
+        "channel": channel,
+        "chat_id": chat_id,
+        "module": toolsets[0],
+        "toolsets": toolsets,
+        "source": source,
+        "binding": binding,
+        "warning": warning,
+    }
+
+
+@method("channel.set_module")
+def channel_set_module(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """给某个群/会话绑模块（**覆盖**写，换绑就是改这一行）。
+
+    - `module` 必须属于**已存在的模块集** `MODULES`（= `runtime/registry.TOOLSETS` + `default`），
+      否则 `INVALID_PARAMS`：放过去就会得到一条"看着绑了、其实这轮用不了"的绑定；
+    - `module="default"` = 显式跟全局默认走（与从没绑过等价，但能写进表里）；
+    - 回包只回写入后的三字段（`channel` / `chat_id` / `module`），不含任何别的东西。
+    """
+    params = _params(params)
+    channel, chat_id = _chat_target(params)
+    module = str(params.get("module") or "").strip()
+    if module not in MODULES:
+        raise RpcError(
+            Code.INVALID_PARAMS,
+            f"module 只能是：{'、'.join(MODULES)}（拿到 {params.get('module')!r}）",
+        )
+    module_store.set_module(ctx.db, channel, chat_id, module)
+    return {"ok": True, "data": {"channel": channel, "chat_id": chat_id, "module": module}}
+
+
+@method("channel.get_module")
+def channel_get_module(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """看某个群/会话绑了什么：**没绑过回 `{"module": null}`，不报错**（没绑是正常状态）。"""
+    params = _params(params)
+    channel, chat_id = _chat_target(params)
+    return {"module": module_store.get_module(ctx.db, channel, chat_id)}
+
+
+@method(MODULE_FOR_CHAT_METHOD)
+def channel_module_for_chat(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """**入站解析口**：这一条消息该用哪个模块 —— 绑定 → 全局默认 → 兜底。
+
+    给渠道层用（`channels/feishu.py::run_turn` 是**唯一**调用点）：渠道层不读库，
+    只在跑轮次前问一次，把回包的 `toolsets` 原样交给 `chat.send`。
+    回包的 `source ∈ binding|default|fallback` 说明这次是**哪一级**决定的，
+    `warning` 非空表示绑定失效、已回退（同时已记 warning 日志）。
+    """
+    params = _params(params)
+    channel, chat_id = _chat_target(params)
+    return _resolve(ctx, channel, chat_id)
 
 
 # ------------------------------------------------------------------ 起 / 停
