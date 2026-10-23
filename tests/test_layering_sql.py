@@ -41,10 +41,13 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: 键 = 相对 `src/scholarscout/` 的路径，值 = 该文件里 SQL 调用点的处数。
 #: 修掉一处 SQL，就把那个数字减一；减到 0 删掉整条（自检会拦僵尸条目）。
 #: **新增 SQL 不许往这里加数字**：先把查询搬进 `state/`，再来把数字改小。
-#: 现值：2026-10-23 实测 **7 处 / 4 个模块**（`rpc/channel_file.py` 的 2 处：`_session_id` 直接
+#: 现值：2026-10-23 实测 **5 处 / 3 个模块**（`rpc/session.py` 的 2 处——`session.usage` 的会话累计
+#: 与按用途拆分——都下沉到 `state/usage.py` 的 `session_usage_totals` / `session_usage_by_purpose`，
+#: 该条整条删除）。
+#: 上一轮快照：2026-10-23 为 7 处 / 4 个模块（`rpc/channel_file.py` 的 2 处：`_session_id` 直接
 #: **复用** `state/sessions.py::get_session_by_key`（同一句 `WHERE session_key = ?`），`_document_target`
 #: 下沉到 `state/library_index.py::documents_with_source_titles`；该条整条删除）。
-#: 上一轮快照：2026-10-23 为 9 处 / 5 个模块（`library/migrate.py` 的 2 处下沉到
+#: 更早快照：2026-10-23 为 9 处 / 5 个模块（`library/migrate.py` 的 2 处下沉到
 #: `state/library_index.py` 的 `documents_with_sources` / `source_mentions` —— 那两条查询与
 #: `library/index.py` 用的是**同一份**，直接复用而不是抄第二份，该条整条删除）。
 #: 更早快照：2026-10-23 为 11 处 / 6 个模块（`library/naming.py` 的 1 处下沉到
@@ -70,7 +73,6 @@ DB_RECEIVERS = frozenset({"db", "conn", "cursor"})
 #: `state/sessions.py` / `state/memory.py`）；再往前为 40 处 / 16 个模块；47 处 / 17 个模块；
 #: 2026-10-21 为 56 处 / 18 个模块；评审清单记的 69 处是更早的粗计数，差别见 `docs/23` 那一行。
 ALLOWED: dict[str, int] = {
-    "rpc/session.py": 2,
     "runtime/budget.py": 1,
     "runtime/research_state.py": 1,
     "tools/source_fetch.py": 3,

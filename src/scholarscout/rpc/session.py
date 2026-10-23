@@ -10,7 +10,7 @@ from typing import Any
 from scholarscout.rpc.errors import Code, RpcError
 from scholarscout.rpc.registry import AppContext, _int_param, _params, _require, method
 from scholarscout.runtime import loop, titles
-from scholarscout.state import export_html, export_session, sessions, traces
+from scholarscout.state import export_html, export_session, sessions, traces, usage
 
 
 @method("session.create")
@@ -383,22 +383,8 @@ def session_usage(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """
     params = _params(params)
     session_id = _require(params, "session_id")
-    total = ctx.db.query_one(
-        "SELECT count(*) AS calls, coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
-        " coalesce(sum(completion_tokens),0) AS completion_tokens,"
-        " coalesce(sum(cached_tokens),0) AS cached_tokens,"
-        " count(cached_tokens) AS calls_with_cache_field,"
-        " coalesce(sum(est_cost),0.0) AS est_cost FROM usage_records WHERE session_id = ?",
-        (session_id,),
-    )
-    by_purpose = ctx.db.query(
-        "SELECT coalesce(purpose,'?') AS purpose, count(*) AS calls,"
-        " coalesce(sum(prompt_tokens),0) AS prompt_tokens,"
-        " coalesce(sum(completion_tokens),0) AS completion_tokens"
-        " FROM usage_records WHERE session_id = ? GROUP BY 1 ORDER BY calls DESC",
-        (session_id,),
-    )
-    row = dict(total) if total is not None else {}
+    row = usage.session_usage_totals(ctx.db, session_id)
+    by_purpose = usage.session_usage_by_purpose(ctx.db, session_id)
     cost = float(row.get("est_cost") or 0.0)
     prompt_tokens = int(row.get("prompt_tokens") or 0)
     cached_tokens = int(row.get("cached_tokens") or 0)
@@ -420,7 +406,7 @@ def session_usage(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         ),
         # 单价没配就不报金额（报 0 会让人以为"免费"）
         "est_cost": cost if cost > 0 else None,
-        "by_purpose": [dict(item) for item in by_purpose],
+        "by_purpose": by_purpose,
     }
 
 
