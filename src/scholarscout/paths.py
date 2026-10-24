@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
-from collections.abc import Iterable
+import tempfile
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 #: data/ 下允许出现的子目录（超出这个集合即视为越界）
@@ -57,24 +60,70 @@ DEFAULT_LAYOUT: tuple[str, ...] = ("session", "format")
 
 _ENV_HOME = "SCHOLARSCOUT_HOME"
 
+#: 进程内的根目录覆盖（见 :func:`override_home`）。``None`` = 没覆盖，走环境变量/默认。
+_HOME_OVERRIDE: Path | None = None
+
 
 class PathOutsideDataError(ValueError):
     """请求的路径落在 data/ 之外。"""
 
 
 def home() -> Path:
-    """项目根目录：环境变量优先；打包后取 exe 所在目录；否则取包目录的上三级。
+    """项目根目录：进程内覆盖优先；环境变量次之；打包后取 exe 所在目录；否则取包目录的上三级。
 
-    为什么打包后要换：PyInstaller 把代码放进临时解包目录（onefile）或 `_internal/`（onedir），
+    为什么打包后要换：PyInstaller 把代码放进临时解包目录（onefile）或 `_internal/`（ondir），
     **那个位置不能放数据** —— `data/`、`run/state.db`、`config.yaml` 必须落在用户看得见、
     拷得走的地方。所以冻结模式下统一用 `sys.executable` 的目录：exe 在哪，数据就在哪（便携）。
+
+    为什么进程内覆盖排在环境变量**前面**：它是代码显式下的决定（评测的临时根、测试的重定向），
+    而环境变量可能只是用户机器上一直设着的默认值 —— 让默认值压过显式决定，评测就会写回
+    用户的真实资料库（正是本钩子要修的那件事）。
     """
+    if _HOME_OVERRIDE is not None:
+        return _HOME_OVERRIDE
     env = os.environ.get(_ENV_HOME)
     if env:
         return Path(env).expanduser().resolve()
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
+
+
+def override_home(root: Path | None) -> None:
+    """把 :func:`home()` 在本进程内临时指到 ``root``（``None`` 复原）。**只给评测与测试用。**
+
+    生产路径不变：桌面应用与正常 CLI 都不调它，解析结果与以前逐字相同。
+    注意它换的是**整个根**（`data/`、`run/`、`.env`、`config.yaml`、`skills/` 都跟着换），
+    所以调用方要**先把配置与密钥读进来**（`load_config()` 会把 `.env` 灌进 `os.environ`），
+    换根之后密钥仍在进程环境里 —— 见 :func:`isolated_home` 的说明。
+    """
+    global _HOME_OVERRIDE
+    _HOME_OVERRIDE = Path(root).expanduser().resolve() if root is not None else None
+
+
+@contextmanager
+def isolated_home(prefix: str = "scs-eval-", *, keep: bool = False) -> Iterator[Path]:
+    """临时根目录：进入时把 ``home()`` 指过去，退出时把目录删掉（``keep=True`` 保留）。
+
+    用途只有一个：**评测不许写进用户的真实资料库**。评测本来就用临时库
+    （`db_mode: temporary`），但 `source.fetch` 的原件/全文是按 ``home()`` 落盘的 ——
+    只换库不换根，跑完库没了、文件留下成孤儿（实测一次评测在 `data/raw/` 留 43 个）。
+    把根也换掉之后，库与文件同源，一起消失。
+
+    密钥不受影响：``.env`` 的键由 `config.load_dotenv` **写进 `os.environ`**，
+    而本函数只改路径解析、不碰进程环境 —— 调用方在进入本上下文之前 `load_config()` 过即可。
+
+    清不掉的情况（Windows 上 SQLite 句柄未及时释放）只抑制、不抛：报告比临时目录重要。
+    """
+    root = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
+    previous = _HOME_OVERRIDE
+    override_home(root)
+    try:
+        yield root
+    finally:
+        override_home(previous)
+        if not keep:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 def data_dir(root: Path | None = None) -> Path:

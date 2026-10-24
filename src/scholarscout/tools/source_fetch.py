@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -508,6 +509,11 @@ def source_fetch(
     # 值来自 config.yaml 的 `library.layout`，代码与迁移脚本都从它读，不写死布局（docs/19 §2）。
     layout = ctx.config.library.layout
     session_dir = naming.session_dir_for(ctx.db, ctx.session_id)
+    # 落盘根取**配置里那份 data_dir 的上一级**，不是 `paths.home()`：评测把 data_dir 指到临时根
+    # （`db_mode: temporary`）时，原件/全文必须跟着库一起走，否则跑完库没了、文件留在用户资料库里成孤儿。
+    # 生产路径两者相等（`Config.data_dir` 默认就是 `paths.data_dir()`），行为不变。
+    # 同一个口径 `state/kb_index.py` 已在用（那里也取 `Path(config.data_dir).parent`）。
+    root = Path(ctx.config.data_dir).parent
     raw_file = paths.raw_path_for_layout(
         layout,
         session=session_dir,
@@ -518,6 +524,7 @@ def source_fetch(
         sha256=sha256,
         domain=domain,
         ext=extension,
+        root=root,
     )
     raw_file.parent.mkdir(parents=True, exist_ok=True)
     raw_file.write_bytes(content)
@@ -531,6 +538,7 @@ def source_fetch(
         title=name_title,
         sha256=sha256,
         domain=domain,
+        root=root,
     )
     text_file.parent.mkdir(parents=True, exist_ok=True)
     text_file.write_text(text, encoding="utf-8")
@@ -546,8 +554,8 @@ def source_fetch(
         mime=media_type,
         lang=lang,
         chars=len(text),
-        raw_path=paths.rel_to_home(raw_file),
-        text_path=paths.rel_to_home(text_file),
+        raw_path=paths.rel_to_home(raw_file, root),
+        text_path=paths.rel_to_home(text_file, root),
         extract_status=extract_status,
         extract_engine=engine,
         extract_detail=extract_detail or None,
@@ -605,8 +613,8 @@ def source_fetch(
             "lang": lang,
             "bytes": size_bytes,
             "ext": extension,
-            "raw_path": paths.rel_to_home(raw_file),
-            "text_path": paths.rel_to_home(text_file),
+            "raw_path": paths.rel_to_home(raw_file, root),
+            "text_path": paths.rel_to_home(text_file, root),
             "requested_url": requested_url,
             "fetched_url": fetched_url,
             "used_landing_page": used_landing_page,

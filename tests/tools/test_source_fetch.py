@@ -108,6 +108,30 @@ def test_fetch_html_writes_files_and_summary(
     assert search_summaries(ctx.db, "教育智能体"), "摘要必须可被 FTS 检索到"
 
 
+def test_fetch_follows_config_data_dir_not_home(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`config.data_dir` 指到别处时，原件/全文要跟着走 —— 这是「评测留孤儿」的根因。
+
+    评测只换了库的位置（`cfg.data_dir` → 临时根），`source.fetch` 却按 `paths.home()`
+    落盘，于是库销毁、文件留在用户资料库里。这里把「落盘根取 `config.data_dir` 的上一级」
+    钉死：数据根换到哪，文件就跟到哪。
+    """
+    _redirect_home(monkeypatch, tmp_path)  # home = tmp_path（扮演"用户真实库"）
+    eval_root = tmp_path / "eval-root"
+    ctx.config = replace(ctx.config, data_dir=eval_root / "data")
+    calls: list[str] = []
+    tool_ctx = _tool_ctx(ctx, _html_handler(calls), llm=StubLlm(reply(SUMMARY_TEXT)))
+
+    data = source_fetch(tool_ctx, url="https://docs.example.com/guide")["data"]
+
+    assert (eval_root / data["raw_path"]).is_file(), "原件要落在被指定的数据根下"
+    assert (eval_root / data["text_path"]).is_file(), "全文同理"
+    assert data["raw_path"].startswith("data/raw/"), "库里记的仍是相对数据根的 data/raw/…"
+    leftover = [p for p in (tmp_path / "data" / "raw").rglob("*") if p.is_file()]
+    assert not leftover, f"不许往 home() 的 data/raw 里写（留下了 {leftover}）"
+
+
 def test_second_fetch_uses_dedupe_fast_path(
     ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -431,6 +431,11 @@ def main(argv: list[str] | None = None) -> int:
         default="eval/reports",
         help="报告输出位置：以 .json 结尾＝文件路径（同名 .md 并列）；否则＝目录",
     )
+    ap.add_argument(
+        "--keep-data",
+        action="store_true",
+        help="评测的临时根（库 + data/）跑完不删，留在系统临时目录里供排查（默认删掉）",
+    )
     args = ap.parse_args(argv)
 
     if args.rescore:
@@ -459,29 +464,41 @@ def main(argv: list[str] | None = None) -> int:
         res = run_plan(rows)
         written = _write_reports(res, out, stamp)
     else:
-        import tempfile
         from dataclasses import replace
 
+        from scholarscout import paths
         from scholarscout.app import build_context
         from scholarscout.config import load_config
 
-        # 与 run_eval.py 一致：**跑在临时库上**，跑完即删，不污染 data/state.db。
-        # `ignore_cleanup_errors=True`：Windows 下 SQLite 句柄未及时释放会让清理抛
-        # NotADirectoryError（把 state.db 当目录递归），**不能让它把报告冲掉**。
-        with tempfile.TemporaryDirectory(prefix="scout-eval-", ignore_cleanup_errors=True) as tmp:
-            tmp_path = Path(tmp)
-            cfg = replace(load_config(), data_dir=tmp_path / "data", db_path=tmp_path / "state.db")
+        # **先读配置与密钥，再换根。** `home()` 一换，`config.yaml` 与 `.env` 的默认位置
+        # 也跟着换（两者都拼在 `paths.home()` 上）—— 换完再 `load_config()` 就是「参数全默认、
+        # 密钥全没有」。所以这一步显式用**换根之前**的家目录读配置；`load_config()` 内部
+        # `load_dotenv()` 会把密钥灌进 `os.environ`，之后换根只动路径解析，不碰进程环境。
+        base_home = paths.home()
+        cfg = load_config(base_home / "config.yaml")
+
+        # 隔离：临时库与临时 data/ 同源（都从被覆盖后的 `home()` 推出来）。
+        # 不这么做的话库在 temp、`source.fetch` 的原件/全文却写进用户真实的 `data/raw`，
+        # 跑完库没了、文件留下成孤儿（实测一次 E4 全跑留 43 个）。
+        with paths.isolated_home(prefix="scs-eval-", keep=args.keep_data) as tmp_path:
+            cfg = replace(cfg, data_dir=paths.data_dir(), db_path=paths.db_path())
             ctx = build_context(config=cfg, db_path=cfg.db_path)
             try:
                 res = run_live(ctx, rows, limit=args.limit)
                 res["summary"] = summarize(res)
-                res["db_mode"] = "temporary (tempfile.TemporaryDirectory)"
+                res["db_mode"] = "temporary (paths.isolated_home)"
+                if args.keep_data:
+                    # 保留时把位置写进报告：否则没人知道去哪儿找
+                    res["data_root"] = str(tmp_path)
+                    res["db_path"] = str(cfg.db_path)
             finally:
                 # 先关库再退出 with，减少 Windows 上的句柄残留
                 # （关库失败不该盖掉上面的评分结果，所以只抑制、不抛）
                 with contextlib.suppress(Exception):
                     ctx.db.close()
             written = _write_reports(res, out, stamp)
+        if args.keep_data:
+            print(f"临时根（--keep-data 保留）：{tmp_path}")
 
     print(f"写出 {written[0].resolve()} / {written[1].resolve()}")
     if res["mode"] == "live":
