@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from eval import report, run_dialogues
+from eval import report, run_dialogues, run_eval
 
 
 def test_json_out_resolves_to_that_file(tmp_path: Path) -> None:
@@ -77,3 +77,29 @@ def test_write_reports_returns_the_paths_it_wrote(tmp_path: Path) -> None:
     assert json_path.name == "a.json" and md_path.name == "a.md"
     assert json.loads(json_path.read_text(encoding="utf-8"))["mode"] == "plan"
     assert md_path.read_text(encoding="utf-8").startswith("# E4 六对话过程评分")
+
+
+def test_run_eval_json_out_writes_file_not_directory(tmp_path: Path) -> None:
+    """`run_eval.py` 同一个病，同一条规矩：`.json` 结尾是文件，不许建同名目录。"""
+    target = tmp_path / "eval" / "e1.json"
+
+    assert run_eval.main(["--set", "e1", "--limit", "2", "--out", str(target)]) == 0
+
+    assert target.is_file() and not target.is_dir()
+    assert target.with_suffix(".md").is_file()
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["sets"]["e1"]["n"] == 2
+    assert payload["selection"] == {"only": None, "limit": 2}
+
+
+def test_run_eval_dir_out_keeps_stamp_names(tmp_path: Path) -> None:
+    """`run_eval.py` 不带后缀时仍是 `<out>/<时间戳>.{json,md}`。"""
+    out = tmp_path / "reports"
+
+    assert run_eval.main(["--set", "e2", "--out", str(out)]) == 0
+
+    jsons = sorted(out.glob("*.json"))
+    mds = sorted(out.glob("*.md"))
+    assert len(jsons) == 1 and len(mds) == 1
+    assert jsons[0].stem == mds[0].stem
+    assert jsons[0].name == f"{mds[0].stem}.json"

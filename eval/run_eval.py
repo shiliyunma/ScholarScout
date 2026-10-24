@@ -614,9 +614,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None, help="最多跑前 N 题")
     args = parser.parse_args(argv)
 
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
+    # `--out` 以 .json 结尾＝文件路径（.md 同名替换后缀）；否则＝目录/前缀。
+    # 不能无脑 mkdir：那样会建出 `xxx.json/` 目录，报告路径与预期不符（run_dialogues 踩过）。
+    json_path, md_path = report.resolve_report_paths(args.out, timestamp)
 
     results: dict[str, Any] = {"generated_at": timestamp, "sets": {}}
     if args.only or args.limit:
@@ -664,12 +665,10 @@ def main(argv: list[str] | None = None) -> int:
             # 必须显式关库：Windows 上 WAL 句柄没释放会让临时目录删不掉（踩过）
             ctx.db.close()
 
-    (out_dir / f"{timestamp}.json").write_text(
-        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown = report.render(results)
-    (out_dir / f"{timestamp}.md").write_text(markdown, encoding="utf-8")
-    print(f"报告已写入 {out_dir / (timestamp + '.md')}")
+    md_path.write_text(markdown, encoding="utf-8")
+    print(f"报告已写入 {json_path.resolve()} / {md_path.resolve()}")
     print()
     print(markdown)
     return 0
