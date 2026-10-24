@@ -54,6 +54,13 @@ MODULE_DEFAULT = "default"
 #: 可绑的模块集 = **已存在的工具集白名单**（`runtime/registry.TOOLSETS`，唯一真源；不另抄一份）
 #: + `default`。`set_module` 只认这些值，别的 `INVALID_PARAMS`。
 MODULES: tuple[str, ...] = (*tool_registry.TOOLSETS, MODULE_DEFAULT)
+#: 模块 → 展示名（**只用于显示**，不参与校验/解析）。取值集合的真源仍是 `MODULES`；
+#: 认不出的名字在界面里原样显示，不猜成"其它"。
+MODULE_LABELS: dict[str, str] = {
+    "research": "研究（检索 + 抓取 + 资料库）",
+    "kb": "知识库（本地库问答）",
+    MODULE_DEFAULT: "默认（跟随全局）",
+}
 #: 平台 → 允许写入的凭据键（逻辑名 → `.env` 键名）。**白名单之外一律报错**。
 CREDENTIAL_KEYS: dict[str, dict[str, str]] = {
     "feishu": {"app_id": "FEISHU_APP_ID", "app_secret": "FEISHU_APP_SECRET"},
@@ -618,6 +625,34 @@ def channel_get_module(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any
     params = _params(params)
     channel, chat_id = _chat_target(params)
     return {"module": module_store.get_module(ctx.db, channel, chat_id)}
+
+
+@method("channel.list_chats")
+def channel_list_chats(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """列**已知的** (channel, chat_id)，连同"这个群绑了什么"与**能绑的模块**。
+
+    设置页那张表需要三样东西，而它们必须来自**同一份**真源，所以由一条 RPC 一起给：
+
+    - `chats[]`：绑过的（`channel_modules`）∪ 渠道入站建过会话的（`sessions`，见
+      `state/channel_modules.list_chats`）。**后者是"未绑"的唯一来源** —— 只看绑定表，
+      设置页就永远没有入口给一个新群选模块；
+    - `module` 为 `null` = 从未绑过（与 `channel.get_module` 同口径，不编成 `"default"`：
+      "从没绑过"和"显式跟全局走"在库里是两行不同的事，界面负责把两者都显示成默认）；
+    - `modules[]`：`default` + `_available_modules(ctx)`（**当前真的能用**的那些，
+      `enable_kb` 关着就没有 `kb`），带展示名。**前端不许自己写一份清单** ——
+      写死一份的结果是关掉 `kb` 后界面仍让人选它，绑完才发现这轮用不了。
+    """
+    _params(params)
+    chats = module_store.list_chats(ctx.db, channels=PLATFORMS)
+    for chat in chats:
+        chat["label"] = LABELS.get(chat["channel"], chat["channel"])
+    names = (MODULE_DEFAULT, *_available_modules(ctx))
+    return {
+        "chats": chats,
+        "modules": [{"name": name, "label": MODULE_LABELS.get(name, name)} for name in names],
+        "default": MODULE_DEFAULT,
+        "platforms": list(PLATFORMS),
+    }
 
 
 @method(MODULE_FOR_CHAT_METHOD)

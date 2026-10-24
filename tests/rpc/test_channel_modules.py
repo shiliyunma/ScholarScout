@@ -27,6 +27,7 @@ from scholarscout.rpc import channel as channel_rpc
 from scholarscout.rpc.errors import RpcError
 from scholarscout.rpc.methods import AppContext, dispatch, method_names
 from scholarscout.state import channel_modules as module_store
+from scholarscout.state.sessions import create_session
 
 CHAT = "oc_aaa111"
 OTHER = "oc_bbb222"
@@ -236,4 +237,61 @@ def test_module_store_rejects_blank_identifiers(ctx: AppContext) -> None:
         module_store.get_module(ctx.db, "feishu", "   ")
     with pytest.raises(ValueError):
         module_store.set_module(ctx.db, "feishu", CHAT, "")
+    assert _rows(ctx) == 0
+
+
+# ------------------------------------------------ 列群（设置页那张表的数据源）
+
+
+def _chats(ctx: AppContext) -> dict[str, dict[str, object]]:
+    listing = dispatch(ctx, "channel.list_chats", {})
+    return {str(chat["chat_id"]): chat for chat in listing["chats"]}
+
+
+def test_list_chats_unions_bindings_and_channel_sessions(ctx: AppContext) -> None:
+    """**未绑的群也必须在表里** —— 只有 `sessions` 里才有它。
+
+    只读 `channel_modules` 的实现会把\"两绑一未绑\"渲染成两行，新群永远没有入口选模块；
+    这里用"绑一个 + 渠道会话一个（未绑）+ 桌面会话一个（不是渠道）"钉住并集口径。
+    """
+    _set(ctx, "research", chat_id=CHAT)
+    create_session(ctx.db, title="高数答疑群", session_key=OTHER, source="feishu")
+    create_session(ctx.db, title="桌面会话", source="desktop")
+
+    chats = _chats(ctx)
+    assert set(chats) == {CHAT, OTHER}  # 桌面会话（source=desktop）不算渠道
+    assert chats[CHAT]["module"] == "research"
+    assert chats[CHAT]["channel"] == "feishu"
+    assert chats[CHAT]["label"] == "飞书"
+    assert chats[OTHER]["module"] is None  # 未绑 = null，不编成 "default"
+    assert chats[OTHER]["title"] == "高数答疑群"  # 会话名来自 sessions.title，不另存一份
+
+
+def test_list_chats_distinguishes_never_bound_from_explicit_default(ctx: AppContext) -> None:
+    """`null`（从没绑过）与 `"default"`（显式跟全局走）是库里两件不同的事，回包不许合并。"""
+    _set(ctx, "default", chat_id=CHAT)
+    create_session(ctx.db, session_key=OTHER, source="feishu")
+    chats = _chats(ctx)
+    assert chats[CHAT]["module"] == "default"
+    assert chats[OTHER]["module"] is None
+
+
+def test_list_chats_modules_follow_the_feature_switch(ctx: AppContext) -> None:
+    """下拉选项 = `default` + **当前真能用**的模块（`enable_kb` 关着就没有 `kb`）。
+
+    前端若自己写死一份清单，关掉 `kb` 之后仍能选中它 —— 绑完这一轮用不了，是静默失效。
+    """
+    on = dispatch(_with_kb(ctx, on=True), "channel.list_chats", {})
+    assert [item["name"] for item in on["modules"]] == ["default", "research", "kb"]
+    assert on["default"] == "default"
+    assert all(item["label"] for item in on["modules"])  # 每个都有展示名，界面不显示裸枚举
+
+    off = dispatch(_with_kb(ctx, on=False), "channel.list_chats", {})
+    assert [item["name"] for item in off["modules"]] == ["default", "research"]
+
+
+def test_list_chats_is_read_only(ctx: AppContext) -> None:
+    """列群是**只读**：没绑过也不许顺手往 `channel_modules` 里写一行"看着像绑了"的。"""
+    create_session(ctx.db, session_key=OTHER, source="feishu")
+    dispatch(ctx, "channel.list_chats", {})
     assert _rows(ctx) == 0
