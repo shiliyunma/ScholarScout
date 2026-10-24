@@ -42,7 +42,8 @@ DESCRIPTION = (
     "**第一次调用必须不带 approval**：工具会回 ok=false + data.kind=needs_approval，"
     "把 data.risks（要动什么）交给用户确认；用户点完，上层会用 approval=deny/once/session/always "
     "重新调用同一个工具，那次才真的执行。"
-    "workdir 只允许 data/ 下的子目录（缺省 data/exports）；网络、子进程、原生调用一律被拦；"
+    "workdir 只允许 data/ 下的子目录（缺省 data/exports；相对 data/ 给 exports 或 data/exports 都一样，"
+    "不会重复拼接）；网络、子进程、原生调用一律被拦；"
     "只能读写工作目录内的文件。被拒时按 error 里的说明停下，不要换写法重试。"
 )
 
@@ -55,7 +56,11 @@ PARAMETERS: dict[str, Any] = {
         },
         "workdir": {
             "type": "string",
-            "description": "工作目录，只允许 data/ 下的子目录（相对 data/ 或绝对路径）；缺省 data/exports",
+            "description": (
+                "工作目录，只允许 data/ 下的子目录；缺省 data/exports。"
+                "相对 data/ 写 exports 即可（写 data/exports 也按 data/exports 处理，不会重复拼接）；"
+                "也可给 data/ 下的绝对路径"
+            ),
         },
         "timeout_s": {
             "type": "number",
@@ -91,20 +96,38 @@ def _data_root() -> Path:
 
 
 def _resolve_workdir(workdir: str | None) -> tuple[Path | None, str]:
-    """把参数里的 workdir 收在 ``data/`` 下。返回 ``(路径, 错误文案)``，两者必有一个为空。"""
+    """把参数里的 workdir 收在 ``data/`` 下。返回 ``(路径, 错误文案)``，两者必有一个为空。
+
+    **相对路径的基准是 ``data/``**，但入参里重复写 ``data/`` 不算错：模型读到的描述是
+    "只允许 data/ 下的子目录（相对 data/）"，最自然的抄法就是 ``data/exports`` ——
+    旧实现直接拿它去拼 ``root``，得到 ``<home>/data/data/exports``，**审批卡上显示的就是这个
+    错路径**（用户看不出工具到底要在哪儿动手）。所以先剥掉与数据根同名的前导分量，再拼。
+    """
     root = _data_root()
     if workdir is None or not str(workdir).strip():
         return root / "exports", ""
     try:
         candidate = Path(str(workdir).strip()).expanduser()
         if not candidate.is_absolute():
-            candidate = root / candidate
+            candidate = _under_root(root, candidate)
         resolved = candidate.resolve()
     except (OSError, ValueError) as exc:
         return None, f"workdir 不合法：{exc}"
     if resolved != root and root not in resolved.parents:
         return None, f"workdir 只能是 data/ 下的子目录，收到的是 {resolved}"
     return resolved, ""
+
+
+def _under_root(root: Path, relative: Path) -> Path:
+    """相对路径按 ``data/`` 解析，并剥掉入参里已写过的 ``data`` 前缀（不区分大小写）。
+
+    ``data/exports`` / ``Data/exports`` / ``data/data/exports`` → ``<data>/exports``；
+    ``exports`` → ``<data>/exports``。数据根名字从 ``root`` 取，不在代码里写死 "data"。
+    """
+    parts = relative.parts
+    while parts and parts[0].lower() == root.name.lower():
+        parts = parts[1:]
+    return root.joinpath(*parts) if parts else root
 
 
 def _timeout(value: float | None) -> float:

@@ -232,3 +232,50 @@ def test_default_workdir_is_under_data(ctx: AppContext) -> None:
     assert result["ok"] is False
     assert result["data"]["kind"] == "invalid"
     assert "data/" in result["error"]
+
+
+# --------------------------------------------------------------------------- #
+# 6. workdir：参数里重复写 data/ 不许被拼成 data/data/…
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "workdir", ["exports", "data/exports", "Data/Exports", "data/data/exports"]
+)
+def test_relative_workdir_with_or_without_the_data_prefix_lands_in_the_same_place(
+    ctx: AppContext, workdir: str
+) -> None:
+    """``exports`` / ``data/exports`` 都指向 ``<home>/data/exports`` —— 审批卡显示的就是这个路径。
+
+    这条缺陷的现场是**审批卡**：模型读到的描述说"相对 data/"，于是它照抄 ``data/exports``，
+    旧实现把它拼成 ``<home>/data/data/exports`` 并写进 ``data.workdir``，用户看到的是一个
+    根本不存在、也不该被写的位置。
+    """
+    result = py_exec(_ctx(ctx), code=EDIT_SNIPPET, workdir=workdir)
+
+    data = result["data"]
+    assert data["kind"] == "needs_approval"
+    # Windows 路径大小写不敏感：`Data/Exports` 落到的就是同一个目录，只比大小写以外的东西
+    assert data["workdir"].lower() == "data/exports"
+    assert "data/data" not in data["workdir"].lower()
+
+
+def test_data_prefixed_workdir_runs_in_data_exports_and_creates_no_data_data(
+    ctx: AppContext, tmp_path: Path
+) -> None:
+    """真跑一次：文件落在 ``data/exports``（不在 ``data/data/exports``），且没有多出来的 ``data/data``。"""
+    result = py_exec(_ctx(ctx), code=EDIT_SNIPPET, workdir="data/exports", approval="once")
+
+    assert result["ok"] is True
+    assert result["data"]["workdir"] == "data/exports"
+    assert (_exports(tmp_path) / "out.txt").read_text(encoding="utf-8") == "hi"
+    assert not (tmp_path / "data" / "data").exists()
+
+
+def test_absolute_workdir_under_data_is_accepted_as_is(ctx: AppContext, tmp_path: Path) -> None:
+    """绝对路径按现有规则处理（落在 ``data/`` 下就接受），不报错、不做前缀剥离。"""
+    result = py_exec(_ctx(ctx), code=EDIT_SNIPPET, workdir=str(_exports(tmp_path)))
+
+    assert result["ok"] is False  # 还没审批，不是失败
+    assert result["data"]["kind"] == "needs_approval"
+    assert result["data"]["workdir"] == "data/exports"
