@@ -85,6 +85,12 @@ def _chat_repl(db_path: Path | None, toolsets: tuple[str, ...]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # stdio 编码先钉死（`python -m scholarscout` 与渠道子进程走的是这条入口，
+    # 不经过 `scripts/scout.py`）。理由与实现在 `scholarscout/stdio.py`。
+    from scholarscout.stdio import force_utf8_stdio
+
+    force_utf8_stdio()
+
     args = build_parser().parse_args(argv)
     # 打包后**双击 exe 就是不带参数**：那就直接开界面（"点开即用"）。
     # 源码运行时保持打印用法 —— 免得误伤脚本调用与排障习惯。

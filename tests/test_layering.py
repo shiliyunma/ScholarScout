@@ -61,6 +61,8 @@ RULES: dict[str, tuple[str, ...]] = {
     "app": (),
     "__main__": (),
     "paths": (),
+    # 标准流编码：纯标准库叶子（sys/io），被入口与 rpc 调用，谁都能用、它不依赖任何人
+    "stdio": (),
     # 基础设施叶子：日志落盘只依赖 paths 与 config（三枚 `runtime.log_*` 默认值只存一份），
     # 谁都可以调它（不能反过来依赖任何上层）
     "logging_setup": (),

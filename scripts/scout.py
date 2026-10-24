@@ -23,6 +23,14 @@ def main() -> int:
     if str(SRC) not in sys.path:
         sys.path.insert(0, str(SRC))
 
+    # 编码统一**必须排在最前**：打包版（PyInstaller）的管道默认是系统 ANSI 代码页
+    # （中文 Windows 上是 cp936），`PYTHONUTF8`/`PYTHONIOENCODING` 对冻结进程不生效，
+    # 于是管道里一来中文就 UnicodeEncodeError（stdout 崩在写结果、stdin 的孤代理崩在请求体）。
+    # 这里是源码与打包共用的唯一入口，所以改这一处两条运行方式一起生效。
+    from scholarscout.stdio import force_utf8_stdio
+
+    force_utf8_stdio()
+
     # 日志落盘**必须在任何业务 import/日志之前**：本启动器是打包版与脚本调用的统一入口，
     # 起不来的时候没有终端，`run/logs/scout.log` 是唯一的现场。setup_logging 幂等，
     # 所以 `scholarscout.__main__.main()` 里那次调用不会写出两份。

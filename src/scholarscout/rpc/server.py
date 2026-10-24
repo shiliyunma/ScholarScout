@@ -14,6 +14,7 @@ from typing import Any, TextIO
 
 from scholarscout.rpc.errors import Code, RpcError, from_exception
 from scholarscout.rpc.methods import AppContext, dispatch
+from scholarscout.stdio import force_utf8_stream
 
 Emitter = Callable[[str, dict[str, Any]], None]
 
@@ -141,6 +142,10 @@ def serve(
     """
     input_stream = stdin if stdin is not None else sys.stdin
     output = stdout if stdout is not None else sys.stdout
+    # 帧读写统一 UTF-8（`rpc/server.py` 的传输声明）：入口已经重设过标准流，
+    # 这里再对**传进来的**流补一次 —— 发布包里 skip 任何一个入口都不会退回 cp936。
+    force_utf8_stream(input_stream)
+    force_utf8_stream(output)
     raw_write = make_writer(output)
     write_lock = threading.Lock()
 
