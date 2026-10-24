@@ -44,9 +44,13 @@ TURN = "trn_1"
 
 #: 引入 D-3 **之前**（HEAD 6a163dd）的对外契约指纹。``prompts.py`` 与工具声明在本批里
 #: 一行都没改，所以这三个值就是"没变"的证据；改了它们 = 换了实验条件，必须显式改这里并写理由。
-GOLDEN_PARAMETERS_SHA256 = "11e4d85e83153695781140fbdf12acee7947331fb109ba31700aa268b8982a26"
-GOLDEN_DESCRIPTION_SHA256 = "dc67f09324a9da9de6d6a310e54a8be3224d16ea3b6423fcf8feaa4851f144a9"
-GOLDEN_WIRE_SHA256 = "98486611147a98362abecc9ac644a42a0303a3e53c6e476c236cb07967873016"
+#: 2026-10-24 重基线：**新增 5 个免 key 来源**（crossref / datacite / doaj / europe_pmc /
+#: hn_algolia）是有意识的契约变更 —— ``sources`` 枚举随 ``KNOWN`` 自动扩展，``DESCRIPTION``
+#: 也把新来源写进去了（否则模型不会用它们）。系统提示哈希 ``GOLDEN_PROMPT_HASH`` **未变**，
+#: 所以"偏好位/提示词零变更"的结论仍成立；变的只有工具声明这三枚指纹。
+GOLDEN_PARAMETERS_SHA256 = "269bf0ccb31194df44ae04d429b6fa9403da18c059f8db2349d098058ff31dff"
+GOLDEN_DESCRIPTION_SHA256 = "e5853b928f6342a57c6ba6c5bb57858d09991274d31e6424ab9135bc9d94e495"
+GOLDEN_WIRE_SHA256 = "f57bd277287b70f6bae36d3909cb2afa4a736af68579de50945b8ae6e2493504"
 #: ``system_prompt_hash(build_system_prompt(toolsets=["research"]))``（同 HEAD 基线）
 #: 历史值：`b9ac0c043bf2`（2026-10-22 加 `PY_EXEC_RULE` 那一版，工具集 8 → 9）。
 #: 2026-10-22 再更新：**新增 `skill.list` / `skill.load`**（工具集 9 → 11）带来 `SKILL_RULE`，

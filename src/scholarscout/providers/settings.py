@@ -31,7 +31,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 #: 免 key 来源（github 未认证也能用：Search API 10 次/分钟；openalex 免 key 可用）
-KEYLESS = ("arxiv", "openalex", "github", "bing", "duckduckgo", "searxng")
+#: 后四个学术源 + 技术社区源也是免 key 的官方 JSON 接口（真机各打过一次，见 docs/25）
+KEYLESS = (
+    "arxiv",
+    "openalex",
+    "crossref",
+    "datacite",
+    "doaj",
+    "europe_pmc",
+    "github",
+    "hn_algolia",
+    "bing",
+    "duckduckgo",
+    "searxng",
+)
 #: **可选**密钥 → 环境变量：没有也能用，只是额度更低/间隔更长
 OPTIONAL_TOKENS = {"github": "GITHUB_TOKEN"}
 #: 商用来源 → 密钥环境变量名
@@ -44,7 +57,7 @@ COMMERCIAL_KEYS = {
     "semantic_scholar": "S2_API_KEY",
 }
 #: 本版真正实现了的来源
-IMPLEMENTED = ("arxiv", "openalex", "github", "bing", "duckduckgo", "searxng", *COMMERCIAL_KEYS)
+IMPLEMENTED = (*KEYLESS, *COMMERCIAL_KEYS)
 #: 配置里允许写的来源名（= 已实现 + auto；不再有"配置写了但没实现"的占位）
 KNOWN = (*IMPLEMENTED, "auto")
 
@@ -56,7 +69,12 @@ DEFAULT_PROVIDERS = ("auto",)
 AUTO_ORDER = (
     "arxiv",
     "openalex",
+    "crossref",
+    "datacite",
+    "doaj",
+    "europe_pmc",
     "github",
+    "hn_algolia",
     "searxng",
     "google_cse",
     "brave",
@@ -78,6 +96,11 @@ DEFAULT_MIN_INTERVAL = {
     "brave": 1.0,
     "google_cse": 0.5,
     "openalex": 0.5,
+    "crossref": 0.5,  # 官方礼貌池：带 mailto 时建议 <=50 次/秒，0.5s 远低于上限
+    "datacite": 0.5,
+    "doaj": 0.5,  # 官方限 2 次/秒 —— 0.5s 正好贴着上限，**不许再调低**
+    "europe_pmc": 0.5,
+    "hn_algolia": 0.2,  # Algolia 公共检索压力小，但仍留间隔不连打
     "semantic_scholar": 1.5,
     # 注意：**故意不写 github** —— 它的间隔取决于有没有配 token
     # （未认证 Search API 10 次/分钟 → 6s；认证 30 次/分钟 → 2s），
@@ -178,8 +201,13 @@ class SearchSettings:
 DISPLAY_ORDER = (
     "arxiv",
     "openalex",
+    "crossref",
+    "datacite",
+    "doaj",
+    "europe_pmc",
     "semantic_scholar",
     "github",
+    "hn_algolia",
     "searxng",
     "tavily",
     "serper",
@@ -193,8 +221,13 @@ DISPLAY_ORDER = (
 KIND_LABEL = {
     "arxiv": "学术",
     "openalex": "学术",
+    "crossref": "学术",
+    "datacite": "学术",
+    "doaj": "学术",
+    "europe_pmc": "学术",
     "semantic_scholar": "学术",
     "github": "代码与教程",
+    "hn_algolia": "技术社区",
     "searxng": "通用检索",
     "tavily": "商用检索",
     "serper": "商用检索",
@@ -208,6 +241,11 @@ KIND_LABEL = {
 NOTE = {
     "arxiv": "免 key；只索引英文、≥3s 限速",
     "openalex": "免 key；本机实测常返 429，配「联系邮箱」可走礼貌池",
+    "crossref": "免 key；全学科 DOI 底座（期刊/会议版），「联系邮箱」同样用于礼貌池",
+    "datacite": "免 key；数据集/软件/预注册的 DOI（Zenodo、Dryad、Figshare 都在这）",
+    "doaj": "免 key；只收同行评议开放获取期刊（官方限 2 次/秒）",
+    "europe_pmc": "免 key；生命科学与医学文献（PubMed + PMC 全文的统一检索口）",
+    "hn_algolia": "免 key；Hacker News 讨论（社区口碑，可当经验证据、不能当权威结论）",
     "semantic_scholar": "无 key 恒 429（实测）；填 key 后可用",
     "github": "免 key 也能用（10 次/分钟）；填 Token 提到 30 次/分钟",
     "searxng": "自建实例，免 key：`scripts/searxng_up.py` 一键起（Docker）",

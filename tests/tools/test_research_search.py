@@ -42,6 +42,49 @@ def test_spec_shape() -> None:
     assert registry.get_spec("research.search") is not None
 
 
+def test_sources_enum_lists_the_five_new_keyless_json_sources() -> None:
+    """新增来源必须同时进 ``sources`` 枚举与描述 —— 否则模型永远点不到它们。
+
+    枚举是 ``settings.KNOWN`` 的直接投影（不加手写副本，避免两处漂移）。
+    """
+    from scholarscout.providers.settings import KNOWN
+
+    enum = PARAMETERS["properties"]["sources"]["items"]["enum"]
+    assert enum == list(KNOWN)
+    for name in ("crossref", "datacite", "doaj", "europe_pmc", "hn_algolia"):
+        assert name in enum, name
+        assert name in SPEC.description, f"{name} 没写进工具描述，模型会以为没有这个来源"
+
+
+def test_search_dispatches_to_crossref_and_reports_ok(ctx: AppContext) -> None:
+    """端到端接缝：点名 crossref 时必须真的打到 Crossref 的 URL 并入库。"""
+    payload = {
+        "message": {
+            "items": [
+                {
+                    "DOI": "10.1145/3569576",
+                    "URL": "https://doi.org/10.1145/3569576",
+                    "title": ["Knowledge Tracing: A Survey"],
+                    "issued": {"date-parts": [[2022, 1, 1]]},
+                }
+            ]
+        }
+    }
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=payload)
+
+    result = research_search(_tool_ctx(ctx, handler), "knowledge tracing", sources=["crossref"])
+    assert "api.crossref.org/works" in seen["url"]
+    assert result["data"]["provider_status"] == [
+        {"provider": "crossref", "ok": True, "n": 1, "interval_s": 0.5}
+    ]
+    assert [item["source_type"] for item in result["data"]["items"]] == ["crossref"]
+    assert ctx.db.scalar_int("SELECT count(*) FROM sources") == 1
+
+
 def test_search_ingests_sources_and_returns_ids(ctx: AppContext) -> None:
     xml = FIXTURE.read_text(encoding="utf-8")
 
@@ -69,9 +112,10 @@ def test_search_reports_unknown_provider_name(ctx: AppContext) -> None:
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - 不应被调用
         raise AssertionError("未知来源不应发起请求")
 
-    result = research_search(_tool_ctx(ctx, handler), "x", sources=["crossref"])
+    # 注意：名字要用**真不存在**的（crossref 本版已接入，拿它当"未知"会假绿）
+    result = research_search(_tool_ctx(ctx, handler), "x", sources=["crossreff"])
     status = result["data"]["provider_status"]
-    assert status == [{"provider": "crossref", "ok": False, "n": 0, "error": "unknown_provider"}]
+    assert status == [{"provider": "crossreff", "ok": False, "n": 0, "error": "unknown_provider"}]
     assert result["data"]["items"] == []
     assert result["refs"]["source_ids"] == []
 
@@ -156,11 +200,21 @@ def test_auto_only_includes_usable_providers(monkeypatch) -> None:
     ):
         monkeypatch.delenv(env, raising=False)
 
-    # openalex 免 key 且真机可用 → 默认就在 auto 里（学术索引那一层）
-    assert SearchSettings().auto_names() == ("arxiv", "openalex", "github")
+    # 免 key 且真机可用的来源 → 默认就在 auto 里（学术索引/代码/技术社区那一层）
+    keyless = (
+        "arxiv",
+        "openalex",
+        "crossref",
+        "datacite",
+        "doaj",
+        "europe_pmc",
+        "github",
+        "hn_algolia",
+    )
+    assert SearchSettings().auto_names() == keyless
 
     monkeypatch.setenv("TAVILY_API_KEY", "k")
-    assert SearchSettings().auto_names() == ("arxiv", "openalex", "github", "tavily")
+    assert SearchSettings().auto_names() == (*keyless, "tavily")
     assert "bing" not in SearchSettings().auto_names()
     assert "duckduckgo" not in SearchSettings().auto_names()
 
@@ -170,12 +224,7 @@ def test_auto_only_includes_usable_providers(monkeypatch) -> None:
     assert "semantic_scholar" in SearchSettings().auto_names()
 
     configured = SearchSettings(searxng_base_url="https://searx.mine.org")
-    assert configured.auto_names(key_lookup=lambda _name: None) == (
-        "arxiv",
-        "openalex",
-        "github",
-        "searxng",
-    )
+    assert configured.auto_names(key_lookup=lambda _name: None) == (*keyless, "searxng")
 
     # google_cse 要 key + cx 两样齐全才进 auto
     monkeypatch.setenv("GOOGLE_CSE_KEY", "k")

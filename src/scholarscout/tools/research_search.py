@@ -15,9 +15,14 @@ from scholarscout.providers.arxiv import ArxivProvider
 from scholarscout.providers.base import dedupe_cards
 from scholarscout.providers.bing import BingProvider
 from scholarscout.providers.brave import BraveProvider
+from scholarscout.providers.crossref import CrossrefProvider
+from scholarscout.providers.datacite import DataCiteProvider
+from scholarscout.providers.doaj import DoajProvider
 from scholarscout.providers.duckduckgo import DuckDuckGoProvider
+from scholarscout.providers.europe_pmc import EuropePmcProvider
 from scholarscout.providers.github import GithubProvider
 from scholarscout.providers.google_cse import GoogleCseProvider
+from scholarscout.providers.hn_algolia import HnAlgoliaProvider
 from scholarscout.providers.openalex import OpenAlexProvider
 from scholarscout.providers.searxng import SearxngProvider
 from scholarscout.providers.semantic_scholar import SemanticScholarProvider
@@ -40,9 +45,11 @@ from scholarscout.tools.envelope import ToolResult, fail, ok
 DESCRIPTION = (
     "在多个来源里检索资料并入库，返回带 source_id 的结果，"
     "并在 provider_status 里报告每个来源的成败。用于回答“这个方向有哪些资料/该怎么入门”。"
-    "来源：arxiv（预印本）；openalex（期刊/会议论文与综述，带引用数）；"
-    "github（仓库/官方实现/教程，星星多的排前）；searxng（自建通用检索）；"
-    "bing / duckduckgo（抓结果页，默认关）；"
+    "来源（免 key）：arxiv（预印本）；openalex（期刊/会议论文与综述，带引用数）；"
+    "crossref（全学科 DOI 底座：卷期/出版社/被引数）；datacite（数据集/软件 DOI）；"
+    "doaj（同行评议开放获取期刊）；europe_pmc（生命科学与医学）；"
+    "github（仓库/官方实现/教程，星星多的排前）；hn_algolia（Hacker News 讨论，社区口碑）；"
+    "searxng（自建通用检索）；bing / duckduckgo（抓结果页，默认关）；"
     "tavily / serper / brave / google_cse / semantic_scholar（需在 .env 配 key，"
     "未配置时如实报告 missing_api_key）。"
 )
@@ -72,7 +79,9 @@ PARAMETERS: dict[str, Any] = {
 def available_providers(ctx: ToolContext) -> dict[str, Any]:
     """本版所有**可直接用**的来源。
 
-    - 学术：``arxiv``
+    - 学术（免 key）：``arxiv`` / ``openalex`` / ``crossref`` / ``datacite`` / ``doaj``
+      / ``europe_pmc``；社区口碑：``hn_algolia``
+    - 代码（免 key）：``github``
     - 通用（免 key）：``searxng``（配了实例地址才有）、``bing``/``duckduckgo``
       （**仅当** ``search.allow_searchpage_scraping`` 打开才装配 —— Bing robots 禁止 /search）
     - 商用（需 key）：``tavily`` / ``serper`` / ``brave`` / ``google_cse``（后者还要 ``cx``）
@@ -83,6 +92,13 @@ def available_providers(ctx: ToolContext) -> dict[str, Any]:
     providers: dict[str, Any] = {
         "arxiv": ArxivProvider(http),
         "openalex": OpenAlexProvider(http, mailto=settings.openalex_mailto or None),
+        # 五个免 key 的 JSON 源：**默认装配**（不需要任何配置就能用），间隔取
+        # settings.DEFAULT_MIN_INTERVAL（与 provider 自身默认值一致，配置可覆盖）
+        "crossref": CrossrefProvider(http, mailto=settings.openalex_mailto or None),
+        "datacite": DataCiteProvider(http),
+        "doaj": DoajProvider(http),
+        "europe_pmc": EuropePmcProvider(http),
+        "hn_algolia": HnAlgoliaProvider(http),
         "github": GithubProvider(http, token=optional_token("github")),
     }
     if settings.allow_searchpage_scraping:

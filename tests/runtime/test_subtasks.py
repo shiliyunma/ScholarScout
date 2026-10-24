@@ -211,10 +211,12 @@ def test_empty_wanted_returns_empty() -> None:
 
 
 def test_missing_and_unknown_providers_are_reported_without_network() -> None:
+    # 名字故意用 KNOWN 里没有的：``crossref`` 曾经是"没实现"的替身，现在已是真来源，
+    # 它未装配时按契约报 ``unavailable``（known 但没装配），与 unknown 是两回事。
     outcomes = fetch_many(
         _ctx(),
         {},
-        wanted=["arxiv", "crossref"],
+        wanted=["arxiv", "no_such_source"],
         query="q",
         per_provider=1,
         missing={"arxiv": "missing_api_key: X"},
@@ -222,7 +224,7 @@ def test_missing_and_unknown_providers_are_reported_without_network() -> None:
     by = {o.provider: o for o in outcomes}
     assert by["arxiv"].ok is False and by["arxiv"].error == "missing_api_key: X"
     assert by["arxiv"].n == 0
-    assert by["crossref"].error == "unknown_provider"
+    assert by["no_such_source"].error == "unknown_provider"
 
 
 def test_as_status_keys_match_the_old_contract() -> None:

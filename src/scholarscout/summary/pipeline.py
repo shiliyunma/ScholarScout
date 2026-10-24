@@ -23,8 +23,13 @@ from scholarscout.summary.settings import SummarySettings
 KIND_BY_SOURCE_TYPE = {
     "arxiv": "paper",
     "openalex": "paper",
+    "crossref": "paper",
+    "datacite": "paper",
+    "doaj": "paper",
+    "europe_pmc": "paper",
     "semantic_scholar": "paper",
     "github": "repo",
+    "hn_algolia": "doc",  # 讨论帖是"文档体裁"，不是论文
     "web": "doc",
     "official": "doc",
 }

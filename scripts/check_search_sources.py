@@ -27,7 +27,19 @@ from scholarscout.providers.base import Query  # noqa: E402
 from scholarscout.providers.settings import COMMERCIAL_KEYS, IMPLEMENTED, api_key_for  # noqa: E402
 from scholarscout.tools.research_search import resolve_wanted  # noqa: E402
 
-KEYLESS = ("arxiv", "github", "bing", "duckduckgo", "searxng")
+KEYLESS = (
+    "arxiv",
+    "openalex",
+    "crossref",
+    "datacite",
+    "doaj",
+    "europe_pmc",
+    "github",
+    "hn_algolia",
+    "bing",
+    "duckduckgo",
+    "searxng",
+)
 #: 需要梯子/需显式开关的来源：不可用属预期，不算失败
 CONDITIONAL = ("bing", "duckduckgo")
 
@@ -37,6 +49,30 @@ def build(name: str, http: HttpClient, searxng_base_url: str):
         from scholarscout.providers.arxiv import ArxivProvider
 
         return ArxivProvider(http)
+    if name == "openalex":
+        from scholarscout.providers.openalex import OpenAlexProvider
+
+        return OpenAlexProvider(http)
+    if name == "crossref":
+        from scholarscout.providers.crossref import CrossrefProvider
+
+        return CrossrefProvider(http)
+    if name == "datacite":
+        from scholarscout.providers.datacite import DataCiteProvider
+
+        return DataCiteProvider(http)
+    if name == "doaj":
+        from scholarscout.providers.doaj import DoajProvider
+
+        return DoajProvider(http)
+    if name == "europe_pmc":
+        from scholarscout.providers.europe_pmc import EuropePmcProvider
+
+        return EuropePmcProvider(http)
+    if name == "hn_algolia":
+        from scholarscout.providers.hn_algolia import HnAlgoliaProvider
+
+        return HnAlgoliaProvider(http)
     if name == "bing":
         from scholarscout.providers.bing import BingProvider
 

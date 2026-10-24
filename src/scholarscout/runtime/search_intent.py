@@ -70,9 +70,18 @@ PREFERENCE_TURN_KEY = "search_preference_turn"
 INTENT_KEY = "search_intent"
 
 #: 来源族：偏好 → 该查哪些 provider（``other`` 不在表里 = 全量）
-PAPER_PROVIDERS: tuple[str, ...] = ("arxiv", "openalex", "semantic_scholar")
+PAPER_PROVIDERS: tuple[str, ...] = (
+    "arxiv",
+    "openalex",
+    "crossref",
+    "datacite",
+    "doaj",
+    "europe_pmc",
+    "semantic_scholar",
+)
 CODE_PROVIDERS: tuple[str, ...] = ("github",)
 WEB_PROVIDERS: tuple[str, ...] = (
+    "hn_algolia",  # 技术社区讨论：属于"经验/教程"那一层，不是论文
     "searxng",
     "tavily",
     "serper",

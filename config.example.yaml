@@ -116,8 +116,8 @@ summary:
 # ===== 检索来源（学术 / 通用 / 商用，三层）=====
 search:
   # 默认来源：auto = 只带"现在真能用的"来源
-  #   arxiv + openalex（都免 key）+ 已配实例的 searxng + 已配 key 的商用来源
-  #   （tavily/serper/brave/google_cse/semantic_scholar）
+  #   免 key：arxiv + openalex + crossref + datacite + doaj + europe_pmc + github + hn_algolia
+  #   条件：已配实例的 searxng + 已配 key 的商用来源（tavily/serper/brave/google_cse/semantic_scholar）
   #   抓取类来源（bing/duckduckgo）不进 auto：一个 robots 禁、一个需梯子，带上就每次撞墙
   providers: ["auto"]
   default_limit: 10
@@ -136,6 +136,11 @@ search:
   min_interval_s:                 # 限速：每个 provider 的最小请求间隔
     arxiv: 3.0                    # 踩过的坑：arXiv 连续请求会被 406 限速
     openalex: 0.5                 # 官方建议 ≤10 次/秒，留余量
+    crossref: 0.5                 # 礼貌池（邮件邮箱 openalex_mailto 会一并带上）
+    datacite: 0.5
+    doaj: 0.5                     # 官方限 2 次/秒 —— 不许再调低
+    europe_pmc: 0.5
+    hn_algolia: 0.2               # Algolia 公共检索压力小，但仍不连打
     semantic_scholar: 1.5
     bing: 1.0
     duckduckgo: 1.5
@@ -224,6 +229,11 @@ features:
   # 关着时这个工具不注册（模型清单里没有它）；开启后第一次检索才建索引
   # （data/cache/kb-fts.sqlite3：正文只进这份可删可重建的缓存，资料库 run/state.db 里没有）。
   enable_kb: false
+  # 只读文件工具（file.list / file.read，docs/01 §3.16）：**默认关**。
+  # 关着时这两个工具不注册、files 工具集被摘掉、提示词也不加那一段（默认路径的
+  # system_prompt_hash 不变）；开启后可以只读地列目录 / 读正文（文本/PDF/Office/HTML/电子书/RTF），
+  # 读文件不必再走 py.exec 的审批。只允许 data/、data/exports/ 与会话工作目录之下。
+  enable_files: false
 
 # ===== 生成策略 =====
 generation:
