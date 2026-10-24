@@ -1759,6 +1759,209 @@ async function renderSandboxRules(body) {
 }
 
 
+/* ------------------------------------------------------- 渠道与群（每群绑模块） */
+
+/*: `chat_id` 很长（飞书 `oc_` 开头 32+ 位），整条显示会把右栏的「当前模块」挤掉。
+ *  只**缩短显示**，完整值留在 `title` 与 `data-chat-key` 上 —— 截断只是排版，
+ *  不是把数据改短（保存时用的永远是原值）。 */
+function chatShortId(chatId) {
+  var text = String(chatId || "");
+  if (text.length <= 18) return text;
+  return text.slice(0, 10) + "…" + text.slice(-6);
+}
+
+
+/** 模块名 → 展示名。**清单来自 `channel.list_chats` 的 `modules`**（不是前端写死的）。 */
+function chatModuleLabels(modules) {
+  var labels = {};
+  (modules || []).forEach(function (item) {
+    if (item && item.name) labels[String(item.name)] = String(item.label || item.name);
+  });
+  return labels;
+}
+
+
+/** 一行 = 一个群/会话：渠道 · chat_id、当前模块、下拉（真实可用模块）+ 保存 / 恢复默认。
+ *
+ *  `binding` 是这个行自己的状态（`null` = 从没绑过；`"default"` = 显式跟全局走）。
+ *  它**只在保存真的成功之后**才变 —— 失败时下拉回滚、文案不动，界面上不能出现
+ *  "看起来绑上了、其实库里没变"这种假象。
+ */
+function chatModuleRow(chat, modules, defaultName) {
+  var labels = chatModuleLabels(modules);
+  var binding = chat.module ? String(chat.module) : null;
+  var fallbackLabel = labels[defaultName] || "默认（跟随全局）";
+
+  function labelOf(name) {
+    if (!name || name === defaultName) return fallbackLabel;
+    return labels[name] || name; // 认不出的名字原样显示，不猜成"其它"
+  }
+
+  var row = document.createElement("div");
+  row.className = "set-row channel-chat-row";
+  row.setAttribute("data-chat-key", String(chat.channel || "") + "/" + String(chat.chat_id || ""));
+  row.setAttribute("data-chat-module", binding || "");
+
+  var left = document.createElement("div");
+  left.className = "channel-chat-left";
+  var title = document.createElement("div");
+  title.className = "channel-chat-title";
+  title.textContent = (chat.label || chat.channel || "") + " · " + chatShortId(chat.chat_id);
+  title.title = String(chat.channel || "") + " / " + String(chat.chat_id || "");
+  left.appendChild(title);
+  var meta = document.createElement("div");
+  meta.className = "hint channel-chat-meta";
+  /* 「当前模块」与「会话」各占一行：左列只有 ~300px，挤成一行时汉字会在词组中间断开
+     （实测断出「（未绑／定）」「·RAG 评测」），两块信息各自成行才稳。 */
+  var metaModule = document.createElement("div");
+  metaModule.className = "channel-chat-mod";
+  var metaChat = document.createElement("div");
+  metaChat.className = "channel-chat-session";
+  meta.appendChild(metaModule);
+  meta.appendChild(metaChat);
+  left.appendChild(meta);
+  var status = document.createElement("div");
+  status.className = "hint channel-chat-status";
+  left.appendChild(status);
+  row.appendChild(left);
+
+  var select = document.createElement("select");
+  select.className = "channel-chat-select";
+  modules.forEach(function (item) {
+    var option = document.createElement("option");
+    option.value = String(item.name);
+    option.textContent = String(item.label || item.name);
+    select.appendChild(option);
+  });
+  /* 绑在一个**当前不可用**的模块上（典型：绑过 `kb`，后来 `features.enable_kb` 关了）：
+     下拉里没有这一项，`select.value = "kb"` 会落空、整个下拉变成空白 —— 用户看不出
+     "这个群现在到底走什么"。把这一项补进去并标明不可用：显示的是库里的真值，
+     不是替它改成默认（改了就是"界面说 A、这条路走 B"）。 */
+  if (binding && !modules.some(function (item) { return String(item.name) === binding; })) {
+    var stale = document.createElement("option");
+    stale.value = binding;
+    stale.textContent = labelOf(binding) + "（当前不可用）";
+    select.insertBefore(stale, select.firstChild);
+  }
+
+  var actions = document.createElement("div");
+  actions.className = "set-seg channel-chat-actions";
+  var saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.className = "ghost";
+  saveButton.textContent = "保存";
+  var resetButton = document.createElement("button");
+  resetButton.type = "button";
+  resetButton.className = "ghost";
+  resetButton.textContent = "恢复默认";
+  resetButton.title = "清掉这个群的绑定，回到全局默认模块";
+  actions.appendChild(select);
+  actions.appendChild(saveButton);
+  actions.appendChild(resetButton);
+  row.appendChild(actions);
+
+  function paint() {
+    metaModule.textContent =
+      "当前模块：" + labelOf(binding) + (binding ? "" : "（未绑定）");
+    metaChat.textContent = chat.title ? "会话：" + String(chat.title) : "";
+    metaChat.hidden = !chat.title;
+    select.value = binding || defaultName;
+    row.setAttribute("data-chat-module", binding || "");
+    // 已经是默认/未绑时没有"可恢复"的东西 —— 按钮消失，不留一个点了不动的控件
+    resetButton.hidden = !binding || binding === defaultName;
+  }
+
+  async function save(moduleName) {
+    saveButton.disabled = true;
+    resetButton.disabled = true;
+    status.textContent = "正在保存…";
+    status.className = "hint channel-chat-status";
+    var before = binding;
+    try {
+      await scout.call("channel.set_module", {
+        channel: chat.channel,
+        chat_id: chat.chat_id,
+        module: moduleName,
+      });
+    } catch (error) {
+      // 失败：下拉回到库里的值、当前模块文案**一个字都不改**，只把错误说在行内
+      select.value = before || defaultName;
+      status.textContent = "保存失败：" + error.message + "（当前仍是 " + labelOf(before) + "）";
+      status.className = "hint set-bad channel-chat-status";
+      saveButton.disabled = false;
+      resetButton.disabled = false;
+      return;
+    }
+    binding = moduleName;
+    paint();
+    status.textContent = "已保存：" + labelOf(binding) + "（这个群的下一条消息生效）";
+    status.className = "hint set-ok channel-chat-status";
+    saveButton.disabled = false;
+    resetButton.disabled = false;
+  }
+
+  saveButton.addEventListener("click", function () {
+    save(String(select.value || defaultName));
+  });
+  resetButton.addEventListener("click", function () {
+    save(defaultName);
+  });
+  paint();
+  return row;
+}
+
+
+/** 「渠道与群」：列出**已知的** (channel, chat_id)，每行可选真实模块并保存。
+ *
+ *  为什么挂在「渠道」分类里、不新开一格：五分类是既有导航（`SETTINGS_CATEGORIES`），
+ *  加一格就动了几何基线；而这条内容是"某个群走哪个模块"的渠道侧路由，与飞书卡片、
+ *  渠道中心卡片是同一件事的三个面（接入 → 运行 → 分流），放在它们后面。
+ *  数据只来自一条 RPC（`channel.list_chats`）：群清单、当前绑定、**可绑模块**同一份真源，
+ *  前端不写死模块清单 —— 写死一份，关掉 `kb` 之后还能选中它，绑完这一轮用不了。
+ */
+async function renderChatModules(body) {
+  var group = document.createElement("div");
+  group.className = "set-group";
+  var head = document.createElement("h4");
+  head.textContent = "渠道与群";
+  group.appendChild(head);
+  group.appendChild(
+    plainHint(
+      "同一个机器人服务多个群，但每个群可以走不同的模块。这里列的是**已知的群/会话**" +
+        "（渠道收到过消息的，加上已经绑过的）；没绑过的显示「默认（跟随全局）」。",
+    ),
+  );
+  var listBox = document.createElement("div");
+  listBox.className = "sandbox-rules channel-chats";
+  group.appendChild(listBox);
+
+  var listing;
+  try {
+    listing = await scout.call("channel.list_chats", {});
+  } catch (error) {
+    listBox.appendChild(plainHint("读不到群列表：" + error.message));
+    body.appendChild(group);
+    return;
+  }
+  var chats = (listing && listing.chats) || [];
+  var modules = (listing && listing.modules) || [];
+  var defaultName = String((listing && listing.default) || "default");
+  if (!modules.length) {
+    // 后端一个模块都没给 = 没法选（宁可说清楚，也不显示一个空下拉）
+    listBox.appendChild(plainHint("没有可用模块：先确认工具集配置（features.enable_kb 等）。"));
+  } else if (!chats.length) {
+    listBox.appendChild(
+      plainHint("还没有已知的群/会话：对应渠道收到第一条消息（或先绑一次）之后才会出现在这里。"),
+    );
+  } else {
+    chats.forEach(function (chat) {
+      listBox.appendChild(chatModuleRow(chat, modules, defaultName));
+    });
+  }
+  body.appendChild(group);
+}
+
+
 async function openSettings() {
   var payload = await scout.call("settings.get", {});
   var values = payload.values || {};
@@ -1820,6 +2023,9 @@ async function openSettings() {
   await renderFeishuCard(panels.channel);
 
   await renderChannelCard(panels.channel);
+
+  // 渠道与群（同一个「渠道」分类里、渠道中心卡片之后）：每群绑哪个模块。
+  await renderChatModules(panels.channel);
 
   // MinerU：开关开着但没配 token —— 现在**不是错误**（扫描版走免 Token 的预签名直传也能用），
   // 但要说清能力边界：免 Token 的 Agent 通道限 ≤10MB / ≤20 页，更大或要更高精度才需要 Token。

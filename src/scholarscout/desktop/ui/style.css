@@ -7765,6 +7765,30 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 /* 撤销钮贴在行尾（左对齐时它悬在中间，看着像另一列的输入框） */
 .sandbox-rules .set-seg { justify-content: flex-end; }
 
+/* 渠道与群（每群绑模块）：一行 = 一个群。右侧有「下拉 + 保存 + 恢复默认」三个控件，
+   默认的 1fr/1.4fr 两列会把下拉挤成十几像素，所以这一组自己给列宽；
+   左列的三行（渠道·chat_id / 当前模块 / 行内状态）要能跟着最长的那个收缩。 */
+.channel-chats .set-row.channel-chat-row {
+  grid-template-columns: minmax(150px, 1fr) minmax(230px, 1.25fr);
+  align-items: start;
+}
+.channel-chat-title { font-size: 12.5px; }
+.channel-chat-meta,
+.channel-chat-status {
+  margin: 2px 0 0;
+  padding: 0;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+/* 空状态那一句不该顶到列宽边界（它自己就是整行） */
+.channel-chat-status:empty { display: none; }
+.channel-chat-actions { align-items: center; }
+.channel-chat-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.channel-chat-actions button { flex: 0 0 auto; }
+
 /* ------------------------------------------------- 输入框 `/` 技能菜单（本轮） */
 /* 用户原话：「添加 `/` 命令，可以引用根目录中 skills 下面的 skill，要求扫描读取，
    并支持字符匹配，以及渐进式披露」。
