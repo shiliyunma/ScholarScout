@@ -1,6 +1,6 @@
 [project]
 name = "scholarscout"
-version = "0.0.1"
+version = "0.1.0"
 description = "开放世界学术调研与学习辅助智能体（本科毕业设计）"
 requires-python = ">=3.11,<3.13"
 dependencies = [
