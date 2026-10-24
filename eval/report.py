@@ -8,7 +8,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+
+def resolve_report_paths(out: str | Path, stem: str) -> tuple[Path, Path]:
+    """把 `--out` 解析成要写的 `(json 路径, md 路径)`，并建好父目录。
+
+    - 以 `.json` 结尾 → **文件路径**：就写到这个文件，`.md` 是同名换后缀
+      （踩过：当成目录时会建出 `xxx.json/` 目录，报告路径与预期不符、外部脚本读不到、
+      目录里还堆一串重复副本）。
+    - 否则 → **目录/前缀**：`<out>/<stem>.{json,md}`（既有用法，保持兼容）。
+    """
+    target = Path(out)
+    json_path = target if target.suffix.lower() == ".json" else target / f"{stem}.json"
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    return json_path, json_path.with_suffix(".md")
 
 
 def _pct(value: float | None, digits: int = 1) -> str:

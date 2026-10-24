@@ -34,6 +34,7 @@ for candidate in (ROOT / "src", ROOT):
         sys.path.insert(0, str(candidate))
 
 from eval import dialogue_metrics as dm  # noqa: E402
+from eval import report  # noqa: E402
 
 SETS_DIR = Path(__file__).resolve().parent / "sets"
 #: 每个对话的产物下限（code-based 的目标验收，不请模型判）—— 数据源：题目的 artifact_min
@@ -253,7 +254,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--plan", action="store_true", help="只看题面与 gold，不跑模型")
     ap.add_argument("--limit", type=int, default=None, help="最多跑前 N 个对话")
     ap.add_argument("--only", default=None, help="只跑这些对话 id（逗号分隔，如 c4,c5）")
-    ap.add_argument("--out", default="eval/reports")
+    ap.add_argument(
+        "--out",
+        default="eval/reports",
+        help="报告输出位置：以 .json 结尾＝文件路径（同名 .md 并列）；否则＝目录",
+    )
     args = ap.parse_args(argv)
 
     rows = load_dialogues()
@@ -263,13 +268,12 @@ def main(argv: list[str] | None = None) -> int:
         if not rows:
             print("--only 没匹配到任何对话 id")
             return 1
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     if args.plan or not args.live:
         res = run_plan(rows)
-        _write_reports(res, out_dir, stamp)
+        written = _write_reports(res, out, stamp)
     else:
         import tempfile
         from dataclasses import replace
@@ -293,9 +297,9 @@ def main(argv: list[str] | None = None) -> int:
                 # （关库失败不该盖掉上面的评分结果，所以只抑制、不抛）
                 with contextlib.suppress(Exception):
                     ctx.db.close()
-            _write_reports(res, out_dir, stamp)
+            written = _write_reports(res, out, stamp)
 
-    print(f"写出 {out_dir}/{stamp}-e4dialogues.{{json,md}}")
+    print(f"写出 {written[0].resolve()} / {written[1].resolve()}")
     if res["mode"] == "live":
         for k, v in res["summary"].items():
             print(f"  {k} = {_fmt(v)}")
@@ -304,11 +308,14 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _write_reports(res: dict[str, Any], out_dir: Path, stamp: str) -> None:
-    """落盘 json + md（与 run_eval.py 的产物命名一致：`<时间戳>-<集名>.{json,md}`）。"""
-    (out_dir / f"{stamp}-e4dialogues.json").write_text(
-        json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+def _write_reports(res: dict[str, Any], out: Path, stamp: str) -> tuple[Path, Path]:
+    """落盘 json + md，返回**实际写出的两个路径**（调用方据此打印，别自己拼路径猜）。
+
+    `--out` 的解析在 `report.resolve_report_paths`：以 `.json` 结尾就是文件路径
+    （`.md` 同名换后缀），否则按目录处理（`<out>/<时间戳>-<集名>.{json,md}`）。
+    """
+    json_path, md_path = report.resolve_report_paths(out, f"{stamp}-e4dialogues")
+    json_path.write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
 
     lines = [f"# E4 六对话过程评分（{stamp}）", ""]
     if res["mode"] == "plan":
@@ -375,7 +382,8 @@ def _write_reports(res: dict[str, Any], out_dir: Path, stamp: str) -> None:
                     f"{_fmt(t['tool_usage'])} | {t['redundant']} |"
                 )
             lines.append("")
-    (out_dir / f"{stamp}-e4dialogues.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return json_path, md_path
 
 
 def _fmt(v: Any) -> str:
