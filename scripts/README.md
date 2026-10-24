@@ -57,7 +57,8 @@
   先做前提自检（SDK 装没装 / 凭据有没有 / 出站开关开没开），再装配长连接客户端并**阻塞**收包；`--check` 只自检不起连接。
   退出码 **0 正常（含 Ctrl-C）/ 2 前提没满足 / 3 起连接失败**。**首次 `import lark_oapi` 本机约 116 秒**（脚本会先打这句提示）。
 - **`searxng_up.py [--status] [--query Q]`**、**`build_exe.py [--out-dir D] [--diagnose]`**、
-  **`build_bundle.py [--with-config] [--with-secrets] [--name N] [--dist-dir D]`**（默认只带 `.env.example`；
+  **`build_bundle.py [--with-secrets] [--name N] [--dist-dir D]`**（默认只带 `.env.example` +
+  `config.example.yaml` + `skills/` + `QUICKSTART.md`；**本机 `config.yaml` 永不进包** —— 应用读不到它就用默认值；
   真 `.env` 要 `--with-secrets`，且打完自检会因"包里有非空密钥"直接失败）、**`make_icon.py [--src --out]`**、
   **`diagnose_grounding.py --task/--limit`**、**`diagnose_turns.py [--db --limit]`**、
   **`verify_multiturn.py [--goal --follow]`**（会花真钱）：参数与用法以各文件头部 docstring 为准。

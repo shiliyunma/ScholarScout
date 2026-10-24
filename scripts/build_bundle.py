@@ -17,7 +17,10 @@
 - **界面资源**：`src/scholarscout/desktop/ui/*`（无构建前端，直接带上）；
 - **提示词**：`prompts/*.md` 放到 exe 旁边 —— 提示词是"可改的资产"，放外面用户还能自己调
   （打包后 `paths.home()` 指向 exe 所在目录，`summary.prompts_dir` 默认就是 `<exe 旁>/prompts`）；
-- `README.md`、`AGENTS.md`、`deps-allowlist.txt`（给人看"这是什么、依赖经过审批"）。
+- **技能库**：仓库 `skills/` 拷到 exe 旁边的 `skills/`（同上：`paths.skills_dir()` 冻结后指向
+  exe 所在目录）。不放进去的表现是 `/` 技能菜单在发布包里**是死的** —— 索引扫不到任何 `SKILL.md`；
+- `README.md`、`AGENTS.md`、`deps-allowlist.txt`、`QUICKSTART.md`、`config.example.yaml`
+  （给人看"这是什么、依赖经过审批、怎么跑起来、配置长什么样"）。
 
 ## 特意**不**打进去的
 
@@ -25,16 +28,26 @@
   一起拷，必须显式加 `--with-secrets`，而且打完的**自检会直接失败**（见下）——
   这条不是多余的：上一轮用 `--with-config` 把真密钥打进了 `ScholarScout-Portable/`，
   这种包发给任何人就是泄密，而它在目录里看起来和别的东西一模一样。
+- **`config.yaml`**：它是**本机运行状态**，不是模板。`load_config()` 读不到文件就全用默认值
+  （`config.py`：`if target.is_file(): … else: raw = {}`），设置面板改任何一项会由
+  `settings_io._atomic_write_yaml()` 在 exe 旁边自动建出来 —— 所以分发包里**不需要**它。
+  这也是 `--with-config` 被删掉的原因：那个开关唯一的用途就是把这台机器的模型选择/窗口几何/
+  飞书配对用户（`feishu.paired_users` 的值就是 open_id）一起发出去。
 - `data/`、`run/`（用户的资料与账本）。首次运行会在 exe 旁边自动建出来。
 
 ## 打完自检（`assert_bundle_no_secrets`）
 
-产物里只要有 `.env` 且其中**任一值非空** → 打印键名（**不打印值**）并以非 0 退出。
-所以"带真密钥的包"不可能被这个脚本静默产出来；`.env.example`（值全空）不触发。
+对着**产物目录**验三件事，任一不过就打印具体原因并以非 0 退出：
+
+1. 包内 `.env` 若有**任一非空值** → 打印键名（**不打印值**）；
+2. 包内 `.env.example` 的**每个键都必须是空值**（模板漏填 = 把某台机器的配置发出去）；
+3. 包内 `config.yaml` 若存在，必须与 `config.example.yaml` **逐键同值**（只许差注释/顺序）——
+   运行期状态键（`feishu.paired_users`、`ui.window`、`llm.chat.available_models` …）一旦漂出来就拦下。
+
+所以"带真密钥/带本机配置的包"不可能被这个脚本静默产出来。
 
 用法：
-    python scripts/build_bundle.py                # → ScholarScout-Portable/（只带 .env.example）
-    python scripts/build_bundle.py --with-config  # 再带上 config.yaml（**不含密钥**）
+    python scripts/build_bundle.py                # → ScholarScout-Portable/（.env.example + 模板 + skills/）
     python scripts/build_bundle.py --with-secrets # 再带上真 .env —— 会被自检拦下，仅排障用
     python scripts/build_bundle.py --name MyBuild --dist-dir D:/out
 """
@@ -46,7 +59,10 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "scripts" / "scout.py"
@@ -54,13 +70,43 @@ ICON = ROOT / "assets" / "icon.ico"
 UI_DIR = ROOT / "src" / "scholarscout" / "desktop" / "ui"
 MIGRATIONS_DIR = ROOT / "src" / "scholarscout" / "state" / "migrations"
 
+#: 打包 `skills/` 时跳过的名字 —— 与仓库 `.gitignore` 的 `skills/.*` + `__pycache__/` **同一份口径**
+#: （`skills/index.py` 也按"路径里任一段以点开头就跳过"扫目录：三处一致，包里的技能库就是入库的那份）。
+SKILL_EXCLUDED_NAMES: frozenset[str] = frozenset(
+    {".archive", ".hub", ".curator_backups", "__pycache__"}
+)
+SKILL_FILE = "SKILL.md"
+CONFIG_TEMPLATE = "config.example.yaml"
+QUICKSTART_NAME = "QUICKSTART.md"
+
 #: 打包后要**放在 exe 旁边**的东西（相对项目根 -> 目标文件名）
 SIDE_FILES: tuple[str, ...] = (
     "README.md",
     "AGENTS.md",
     "deps-allowlist.txt",
     ".env.example",  # 别人拿到包时照着填密钥（**不含真密钥**）
+    CONFIG_TEMPLATE,  # 只是模板；应用读不到 config.yaml 时全用默认值，不用它也能跑
 )
+
+QUICKSTART_TEXT = """\
+# ScholarScout 便携包 —— 三步跑起来
+
+1. **填密钥**：把 API Key 写进本目录的 `.env`（模板见 `.env.example`；密钥只放这一处，不进 config.yaml）。
+2. **改配置（可选，不复制也能跑）**：本包**不带** `config.yaml`。启动时读不到它，全部用内置默认值；
+   之后在设置面板里改任何一项，会自动在本目录生成 `config.yaml`。
+   想对着注释逐条改，就先复制模板：`copy config.example.yaml config.yaml`。
+3. **双击** `{exe}`（界面资源、提示词、`skills/` 都在这个目录里，整个目录一起拷走即可）。
+
+## 关于本机数据
+
+`data/`（抓到的资料）、`run/`（库与账本）、`config.yaml`（本机设置）、`.env`（密钥）
+都是**运行时自己建**的，属于本机数据：备份要整个目录一起拷，分发给别人前请删掉它们。
+
+## 关于 skills/
+
+`skills/` 就在 exe 旁边，**可以自己增删**：放一个带 frontmatter 的 `SKILL.md` 进去，
+`/` 技能菜单下次启动就能看到。删掉 `skills/` 也不影响主流程，只是技能菜单会空。
+"""
 
 
 def _pyinstaller_args(name: str, dist_dir: Path, work_dir: Path, spec_dir: Path) -> list[str]:
@@ -116,29 +162,143 @@ def leaked_env_keys(env_path: Path) -> list[str]:
     return keys
 
 
-def assert_bundle_no_secrets(target: Path) -> None:
-    """打包后自检：产物里不许有**带非空值**的 `.env`（有就非 0 退出）。
+def _flatten(node: object, prefix: str = "") -> dict[str, object]:
+    """把 YAML 树摊成 `a.b.c -> 叶子值`，用来**逐键**比对（注释与顺序自然被忽略）。"""
+    if isinstance(node, dict):
+        flat: dict[str, object] = {}
+        for key, value in node.items():
+            flat.update(_flatten(value, f"{prefix}.{key}" if prefix else str(key)))
+        return flat
+    return {prefix: node}
 
-    为什么是"打完再查"而不是"拷之前判断"：拷贝路径有三条（`--with-config` 的历史行为、
-    `--with-secrets`、将来别的地方顺手 `copy2`），只盯住其中一条迟早漏；查产物目录才是
-    对着"要送出去的那个东西"验收。`.env.example` 值全空，不触发。
+
+_MISSING = object()
+
+
+def config_drift(target: Path) -> list[str]:
+    """包内 `config.yaml` 与 `config.example.yaml` 的**键路径**差异（空列表 = 只差注释/顺序）。
+
+    只回键路径、**不回值**：`feishu.paired_users` / `feishu.*open_id` 这类键的值本身就是
+    用户的 open_id，打进日志等于把要藏的东西写出来。
     """
+    cfg = target / "config.yaml"
+    if not cfg.is_file():
+        return []
+    template = target / CONFIG_TEMPLATE
+    if not template.is_file():
+        template = ROOT / CONFIG_TEMPLATE
+    if not template.is_file():
+        return ["<找不到 config.example.yaml，无法核对>"]
+    try:
+        shipped = yaml.safe_load(cfg.read_text(encoding="utf-8", errors="replace"))
+        expected = yaml.safe_load(template.read_text(encoding="utf-8", errors="replace"))
+    except yaml.YAMLError:
+        return ["<config.yaml 不是合法 YAML>"]
+    if shipped is None:
+        shipped = {}
+    if expected is None:
+        expected = {}
+    if not isinstance(shipped, dict) or not isinstance(expected, dict):
+        return ["<config.yaml 或 config.example.yaml 的顶层不是映射>"]
+    here = _flatten(shipped)
+    there = _flatten(expected)
+    return sorted(
+        key for key in set(here) | set(there) if here.get(key, _MISSING) != there.get(key, _MISSING)
+    )
+
+
+def assert_bundle_no_secrets(target: Path) -> None:
+    """打包后自检：产物里不许有真密钥、不许有本机 `config.yaml`（任一违反就非 0 退出）。
+
+    为什么是"打完再查"而不是"拷之前判断"：拷贝路径有好几条（`--with-secrets`、将来的顺手
+    `copy2`、手工往目录里放文件），只盯住其中一条迟早漏；查产物目录才是对着"要送出去的那个
+    东西"验收。三项检查各自独立收集、最后一起报，免得"改了一个再发现另一个"来回打三次包。
+    """
+    failures: list[str] = []
+
     env = target / ".env"
-    if not env.is_file():
-        return
-    keys = leaked_env_keys(env)
-    if keys:
-        raise SystemExit(
-            f"打包自检失败：{env} 里有非空值（{', '.join(keys)}）—— 分发件不能带真密钥。\n"
-            f"  处理：删掉 {env}（模板 .env.example 已随包），或去掉 --with-secrets 重新打包。"
+    if env.is_file():
+        keys = leaked_env_keys(env)
+        if keys:
+            failures.append(
+                f"包内 .env 有非空值（{', '.join(keys)}）—— 分发件不能带真密钥。\n"
+                f"    处理：删掉 {env}（模板 .env.example 已随包），或去掉 --with-secrets 重新打包。"
+            )
+
+    example = target / ".env.example"
+    if example.is_file():
+        filled = leaked_env_keys(example)
+        if filled:
+            failures.append(
+                f"包内 .env.example 有非空值（{', '.join(filled)}）—— 模板每个键都必须是空值。\n"
+                "    真值只该进 .env；模板漏填空值，等于把某台机器的配置一起发出去。"
+            )
+
+    drift = config_drift(target)
+    if drift:
+        failures.append(
+            f"包内 config.yaml 与 {CONFIG_TEMPLATE} 不一致（{'、'.join(drift)}）。\n"
+            "    这些多是应用**运行时自己写回**的状态（模型选择、窗口几何、飞书配对用户…），\n"
+            "    属于打包这台机器的本机状态，分发件只许带模板。\n"
+            f"    处理：删掉 {target / 'config.yaml'}，保留 {CONFIG_TEMPLATE}；"
+            "应用读不到 config.yaml 会全用默认值，不用它也能跑。"
         )
-    print("     自检：包内 .env 没有非空值（只有模板/空值）")
+
+    if failures:
+        raise SystemExit("打包自检失败：\n  - " + "\n  - ".join(failures))
+    print("     自检：.env 无真密钥、.env.example 值全空、包内无本机 config.yaml")
 
 
-def stage_files(target: Path, *, with_config: bool, with_secrets: bool) -> None:
-    """把「exe 旁边该有的东西」放进产物目录（提示词、说明文件、配置模板）。
+def _skill_copy_ignore(directory: str, names: list[str]) -> set[str]:
+    """`copytree` 的排除名单：点号条目（`.archive`/`.hub`/`.curator_*`）+ `__pycache__`。"""
+    del directory
+    return {name for name in names if name.startswith(".") or name in SKILL_EXCLUDED_NAMES}
 
-    分级很清楚：模板永远带；`config.yaml` 要 `--with-config`；**真 `.env` 要 `--with-secrets`**。
+
+def skills_source() -> Path:
+    """仓库技能库的位置。**用函数而不是常量**：`ROOT` 在测试里会被指到假项目，
+    常量在 import 时就定死了（第一版就是这么漏的：假项目里的 `skills/` 根本没被读到）。"""
+    return ROOT / "skills"
+
+
+def count_skill_files(target: Path) -> int:
+    """包里 `skills/` 下有多少篇 `SKILL.md`（`/` 技能菜单能不能用的唯一判据）。"""
+    skills = target / "skills"
+    return sum(1 for _ in skills.rglob(SKILL_FILE)) if skills.is_dir() else 0
+
+
+def stage_skills(target: Path) -> int:
+    """把仓库 `skills/` 拷到 **exe 旁边**的 `skills/`，返回拷进去的 `SKILL.md` 篇数。
+
+    放 exe 同级（而不是塞进 PyInstaller 包内）有两个理由：`paths.skills_dir()` 冻结后指向
+    exe 所在目录；技能是"可改的资产"，用户在包里自己增删一篇就能用（和提示词同一个道理）。
+    一篇都没拷进去 = 发布包的技能菜单是死的，所以这里直接失败，不留给用户发现。
+    """
+    source = skills_source()
+    if not source.is_dir():
+        raise SystemExit(f"仓库里没有 {source} —— 发布包的 `/` 技能菜单会是空的，先确认技能库还在")
+    shutil.copytree(source, target / "skills", dirs_exist_ok=True, ignore=_skill_copy_ignore)
+    count = count_skill_files(target)
+    if count == 0:
+        raise SystemExit(
+            f"拷完 skills/ 一篇 {SKILL_FILE} 都没有（排除名单把内容全滤掉了？）—— 发布包不能这么发"
+        )
+    print(f"     skills/：{count} 篇 {SKILL_FILE}（已排除点号目录与 __pycache__）")
+    return count
+
+
+def _write_quickstart(target: Path) -> None:
+    """写 `QUICKSTART.md`：怎么填密钥、为什么包里没有 `config.yaml`、`skills/` 可以自己改。"""
+    exes = sorted(path.name for path in target.glob("*.exe"))
+    text = QUICKSTART_TEXT.replace("{exe}", exes[0] if exes else "ScholarScout.exe")
+    (target / QUICKSTART_NAME).write_text(text, encoding="utf-8")
+
+
+def stage_files(target: Path, *, with_secrets: bool) -> None:
+    """把「exe 旁边该有的东西」放进产物目录（提示词、技能库、说明文件、配置模板）。
+
+    分级很清楚：提示词/技能/说明/`config.example.yaml` **永远带**；真 `.env` 要
+    `--with-secrets`；`config.yaml` **永远不带**（它是本机状态，由应用自己生成）。
     """
     prompts_src = ROOT / "prompts"
     if prompts_src.is_dir():
@@ -147,15 +307,8 @@ def stage_files(target: Path, *, with_config: bool, with_secrets: bool) -> None:
         source = ROOT / name_only
         if source.exists():
             shutil.copy2(source, target / name_only)
-    example = ROOT / "config.example.yaml"
-    if example.exists() and not (target / "config.yaml").exists():
-        shutil.copy2(example, target / "config.yaml")
-
-    if with_config:
-        print("     带上本机的 config.yaml（不含密钥，但可能含本地路径/模型名；默认不带）…")
-        source = ROOT / "config.yaml"
-        if source.exists():
-            shutil.copy2(source, target / "config.yaml")
+    stage_skills(target)
+    _write_quickstart(target)
 
     if with_secrets:
         print("     " + "!" * 62)
@@ -169,40 +322,64 @@ def stage_files(target: Path, *, with_config: bool, with_secrets: bool) -> None:
             print("     （项目根没有 .env，没东西可拷）")
 
 
-def build(name: str, dist_dir: Path, *, with_config: bool, with_secrets: bool = False) -> Path:
+def install_built(built: Path, target: Path) -> None:
+    """把 PyInstaller 的产出铺进 `target`（**不**多套一层同名子目录，双击更好找）。
+
+    为什么要显式覆盖而不是直接 `mv built/* target/`：`--dist-dir` 默认就指向**最终目录本身**，
+    上一版的"抹平那层子目录"于是往已经存在的 `_internal/` 里又挪进一个 `_internal/`
+    （真机表现：`ScholarScout-Portable/_internal/_internal` + 一个残留的 `ScholarScout/`，
+    第二次打包直接 `shutil.Error: Destination path already exists`）。
+    现在只覆盖**本包自己的产出**（exe 与 `_internal/`），用户放在目录里的
+    `.env` / `data/` / 自己的 `skills/` 不动。
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    # 旧版"抹平"逻辑留下的同名子目录：扁平包里它本不该存在，顺手清掉（否则白白多占一倍体积）
+    stale = target / built.name
+    if stale.is_dir():
+        shutil.rmtree(stale)
+    for child in list(built.iterdir()):
+        dest = target / child.name
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        elif dest.exists():
+            dest.unlink()
+        shutil.move(str(child), str(dest))
+
+
+def build(name: str, dist_dir: Path, *, with_secrets: bool = False) -> Path:
     work_dir = ROOT / "build" / "bundle"
     spec_dir = ROOT / "build" / "spec"
+    staging = work_dir / "dist"
     spec_dir.mkdir(parents=True, exist_ok=True)
-    # 先清掉上次的产物目录，否则 --noconfirm 之外还可能有残留旧文件混在里面
-    target = dist_dir / name
-    if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
 
     command = [
         sys.executable,
         "-m",
         "PyInstaller",
-        *_pyinstaller_args(name, dist_dir, work_dir, spec_dir),
+        *_pyinstaller_args(name, staging, work_dir, spec_dir),
     ]
     print("[1/3] 打包（PyInstaller，首次约 1-3 分钟）…")
     result = subprocess.run(command, cwd=ROOT, check=False)
     if result.returncode != 0:
         raise SystemExit(f"PyInstaller 失败，退出码 {result.returncode}")
-    exe = target / f"{name}.exe"
+    built = staging / name
+    exe = built / f"{name}.exe"
     if not exe.exists():
         raise SystemExit(f"没找到产物 {exe}")
 
-    # 入口要放在最显眼处：把 PyInstaller 多套的那层同名子目录抹平，
-    # 于是产物就是 `ScholarScout-Portable/ScholarScout.exe`（少一层，双击更好找）
-    if target != dist_dir:
-        for child in list(target.iterdir()):
-            shutil.move(str(child), str(dist_dir / child.name))
-        target.rmdir()
-        target = dist_dir
-        exe = target / f"{name}.exe"
+    # PyInstaller 的 onedir 产出永远多一层 `<name>/`：抹平它，产物就是
+    # `ScholarScout-Portable/ScholarScout.exe`；同时保证重复打包不会越套越深
+    target = dist_dir
+    install_built(built, target)
+    shutil.rmtree(staging, ignore_errors=True)
+    exe = target / f"{name}.exe"
+    if not exe.exists():
+        raise SystemExit(f"铺进 {target} 之后没找到 {exe}")
 
-    print("[2/3] 放上「旁边要有的东西」（提示词、说明文件、配置模板）…")
-    stage_files(target, with_config=with_config, with_secrets=with_secrets)
+    print("[2/3] 放上「旁边要有的东西」（提示词、技能库、说明文件、配置模板）…")
+    stage_files(target, with_secrets=with_secrets)
     # 自检放在拷完之后：验收的是"要送出去的那个目录"，不是"我以为拷了什么"
     assert_bundle_no_secrets(target)
 
@@ -211,12 +388,14 @@ def build(name: str, dist_dir: Path, *, with_config: bool, with_secrets: bool = 
     print(f"     目录：{target}")
     print(f"     入口：{exe}")
     print(f"     体积：{size / 1024 / 1024:.1f} MB")
-    if not with_config:
-        print("     下一步：把 LLM 密钥写进该目录的 .env（模板见 .env.example）")
+    print(
+        "     下一步：把 LLM 密钥写进该目录的 .env（模板见 .env.example）；"
+        f"要改配置就 copy {CONFIG_TEMPLATE} config.yaml"
+    )
     return exe
 
 
-def main() -> int:
+def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="打自包含 Windows 包（PyInstaller）")
     parser.add_argument("--name", default="ScholarScout", help="产物名（默认 ScholarScout）")
     parser.add_argument(
@@ -225,20 +404,12 @@ def main() -> int:
         help="产物目录（默认 项目根/ScholarScout-Portable，最外层最顺手）",
     )
     parser.add_argument(
-        "--with-config", action="store_true", help="连 config.yaml 一起拷（不含密钥）"
-    )
-    parser.add_argument(
         "--with-secrets",
         action="store_true",
         help="连真 .env（含 API 密钥）一起拷；打完自检会失败，仅自己排障用",
     )
-    args = parser.parse_args()
-    build(
-        args.name,
-        Path(args.dist_dir),
-        with_config=args.with_config,
-        with_secrets=args.with_secrets,
-    )
+    args = parser.parse_args(None if argv is None else list(argv))
+    build(args.name, Path(args.dist_dir), with_secrets=args.with_secrets)
     return 0
 
 
