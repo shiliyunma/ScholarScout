@@ -1,0 +1,995 @@
+{
+  "mode": "live",
+  "_note": "自 eval/reports/20261024-130257-e4dialogues.json 裁剪（去掉 session_id/artifact，保留 per_turn 的 actual/gold 与旧口径存值），供 tests/eval/test_dialogue_metrics_traj.py 做旧字段回归用。eval/reports/ 被 .gitignore 忽略，所以回归金标必须放这里。",
+  "dialogues": [
+    {
+      "id": "c1",
+      "topic": "Agentic RAG",
+      "trajectory_exact_match": false,
+      "trajectory_inclusion": 1.0,
+      "goal_accuracy": true,
+      "per_turn": [
+        {
+          "i": 1,
+          "user": "帮我调研一下 Agentic RAG 最近有什么进展，重点找综述",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "Agentic Retrieval-Augmented Generation survey",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 20,
+                "sort": "relevance",
+                "year_from": 2024
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "agentic RAG benchmark evaluation multi-agent iterative retrieval framework",
+                "sources": [
+                  "openalex",
+                  "github"
+                ],
+                "limit": 20,
+                "sort": "relevance",
+                "year_from": 2024
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_66xe7jfz"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_t4fggda7"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_qbah9ggq"
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "Agentic RAG survey",
+                "sort": "relevance"
+              }
+            }
+          ],
+          "redundant": 4,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.33333333333333337,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 2,
+          "user": "刚检索到的这些，哪些来源权威？帮我判一下",
+          "actual": [
+            {
+              "name": "source.grade",
+              "args": {
+                "source_ids": [
+                  "src_66xe7jfz",
+                  "src_t4fggda7",
+                  "src_qbah9ggq"
+                ],
+                "topic": "Agentic RAG survey: architectures, reasoning paradigms, evaluation benchmarks",
+                "use_model": true
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "agentic RAG framework implementation",
+                "sources": [
+                  "github"
+                ],
+                "limit": 8
+              }
+            },
+            {
+              "name": "source.grade",
+              "args": {
+                "topic": "Agentic RAG survey architectures reasoning evaluation benchmarks",
+                "urls": [
+                  "https://arxiv.org/abs/2501.09136",
+                  "https://arxiv.org/abs/2506.10408",
+                  "https://arxiv.org/abs/2602.19127",
+                  "https://github.com/sonysaada/openai-agent-rag",
+                  "https://github.com/ItMeDiaTech/rag-cli"
+                ]
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "source.grade",
+              "args": {
+                "topic": "Agentic RAG"
+              }
+            }
+          ],
+          "redundant": 2,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.5,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 3,
+          "user": "把这些方案的异同整理成一张知识地图",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "agentic RAG challenges limitations open problems future directions",
+                "limit": 10,
+                "year_from": 2024
+              }
+            },
+            {
+              "name": "topic.build_map",
+              "args": {
+                "topic": "Agentic RAG 的方案异同：架构分类、推理范式、评测与实现",
+                "source_ids": [
+                  "src_66xe7jfz",
+                  "src_t4fggda7",
+                  "src_qbah9ggq",
+                  "src_ne9tca7x",
+                  "src_26q42h7a"
+                ],
+                "max_nodes": 22
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "topic.build_map",
+              "args": {
+                "topic": "Agentic RAG"
+              }
+            }
+          ],
+          "redundant": 1,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.6666666666666666,
+          "tool_usage": 1.0
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "topic": "LLM Agents for Education",
+      "trajectory_exact_match": false,
+      "trajectory_inclusion": 0.3333333333333333,
+      "goal_accuracy": false,
+      "per_turn": [
+        {
+          "i": 1,
+          "user": "帮我找 LLM Agents for Education 这条线的入门资料",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "LLM agents for education survey",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 10
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "LLM agent education framework implementation",
+                "sources": [
+                  "github"
+                ],
+                "limit": 10
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 10,
+                "query": "large language model agents in education survey",
+                "sources": [
+                  "arxiv"
+                ]
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 10,
+                "query": "LLM agent tutoring system open source",
+                "sources": [
+                  "openalex"
+                ]
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "LLM agents for education"
+              }
+            }
+          ],
+          "redundant": 3,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.4,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 2,
+          "user": "用这些资料给我排一条 4 周学习路线，每周 6 小时，入门水平",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "LLM agents for education survey",
+                "sources": [
+                  "arxiv",
+                  "openalex",
+                  "github"
+                ],
+                "limit": 15
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "route.plan",
+              "args": {
+                "topic": "LLM Agents for Education",
+                "level": "入门",
+                "weeks": 4,
+                "weekly_hours": 6
+              }
+            }
+          ],
+          "redundant": 0,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.0,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 3,
+          "user": "把第 2 周时长改成 10 小时，再给第 3 周加一条动手练习",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "LLM agents for education survey",
+                "sources": [
+                  "arxiv",
+                  "openalex",
+                  "github"
+                ],
+                "limit": 10
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "route.revise",
+              "args": {
+                "route_id": "$turn2.output.route_id",
+                "instruction": "第 2 周时长改成 10 小时；给第 3 周加一条动手练习"
+              }
+            }
+          ],
+          "redundant": 0,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.0,
+          "tool_usage": 1.0
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "topic": "System-One 模型做知识追踪",
+      "trajectory_exact_match": false,
+      "trajectory_inclusion": 1.0,
+      "goal_accuracy": true,
+      "per_turn": [
+        {
+          "i": 1,
+          "user": "调研一下用 System-One 类模型做知识追踪这条线",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "System-1 system-1 reasoning knowledge tracing dual process fast thinking model",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 15
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "deep knowledge tracing DKT SAKT AKT benchmark evaluation ASSISTments EdNet comparison",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 15
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 15,
+                "query": "fast and slow thinking dual process large language model knowledge tracing student simulation",
+                "sources": [
+                  "arxiv"
+                ]
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 12,
+                "query": "knowledge tracing pytorch implementation ASSISTments EdNet dataset benchmark repository",
+                "sources": [
+                  "github"
+                ]
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_jjmcvpjn"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_rksk3cvj"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_heufu34h"
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 10,
+                "query": "System-1 turning instruction-tuned LLMs into reasoning models short chain-of-thought",
+                "sources": [
+                  "arxiv"
+                ]
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "System-One LLM knowledge tracing"
+              }
+            }
+          ],
+          "redundant": 7,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.2222222222222222,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 2,
+          "user": "这个和我之前看的 JEV 决策模型是什么关系？",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "JEV decision model expected value judgment under risk",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 10
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "JEV 决策模型 期望价值 判断",
+                "sources": [
+                  "searxng",
+                  "bing",
+                  "duckduckgo"
+                ],
+                "limit": 10
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_ppvm47xz"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_sm4q3dxx"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_h8zkaq9h"
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "JEV decision model knowledge tracing"
+              }
+            }
+          ],
+          "redundant": 4,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.33333333333333337,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 3,
+          "user": "把这两者的关系记成一条笔记",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "Jev System One decision model Open-Jev implementation",
+                "sources": [
+                  "github"
+                ],
+                "limit": 10
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_mg3cqw6s"
+              }
+            },
+            {
+              "name": "note.save",
+              "args": {
+                "kind": "note",
+                "title": "JEV（Jev / System-One 决策模型）与知识追踪的关系 — 现状记录",
+                "tags": [
+                  "System-One",
+                  "Jev",
+                  "知识追踪",
+                  "KT",
+                  "LLM-Agents-for-Education",
+                  "研究缺口"
+                ],
+                "content": "## 一句话\n\n**JEV 不是知识追踪（KT）的另一条竞争路线，而是“System-One 类模型”这一族的原型模型；两者的关系是「模型族 ↔ 任务」，而这条交集线在本轮所有检索里（3 个角度 + 1 次 GitHub 维度）都没有取到任何直接文献。**\n\n---\n\n## 1. 术语先对齐（这是此前搜空的真正原因）\n\n| 说法 | 指什么 | 证据 |\n|---|---|---|\n| **Jev** | 一个**具体模型**，被明确称作 \"the System One Model Jev\" | *Evaluating and Benchmarking the System One Model Jev*（`src_ppvm47xz`，arXiv 预印本源） |\n| **System-One 类模型** | 以 Jev 为原型的**一族**，有基线、有改进版、有变体 | *General Decision Models: Benchmarking and Insights Beyond Jev*（`src_h8zkaq9h`）；\"Jev-like models\" 作为分类词见 `src_sm4q3dxx` |\n| **知识追踪（KT）** | 一个**任务**：按学生历史交互序列，预测下一步作答 | DKT2 摘要中的任务设定（`src_heufu34h` / `doc_b6hgp9j6`） |\n\n> 之前两轮我把检索词写成抽象类别词 \"System-1\" + knowledge tracing，arXiv 侧 0 条。真正的原因是**这条线以具体模型名 Jev 流通，而不是以类别名流通**。这是一次术语缺口，不是文献不存在。\n\n## 2. Jev 族到底长什么样（按标题与检索片段，未取到正文）\n\n- **形式**：Jev 是**类型化决策模型（typed decision model）**——\"对输入的固定问题，返回若干**调用方自定义选项**各自的概率；每个选项带一个短标签和一段书面定义\"。→ 检索片段，`src_mg3cqw6s`\n- **特征词**：**one-pass / 一次通过**。*What Can't Jev Decide? Probing the Limits of One-Pass Decision Models*（`src_njuaadew`）把\"一次通过\"写在标题里，是这族模型的核心卖点。\n- **已扩散到的领域**（都不含教育/KT）：医学决策 `src_sm4q3dxx`、网络入侵检测 `src_2dxxyw7d`、情感分类 `src_d3zm9246`、移动 GUI Agent `src_dju9qj7h`、中文任务 `src_6gazez8y`。\n- **与大模型的关系**：*LLM-as-Jev: LLMs Are Already Jev-Style Decision Models — When and How to Fine-Tune Them*（`src_apmjmard`）——即\"LLM 本身就是 Jev 式模型，问题只在何时/如何微调\"，而不是\"用大模型替代 Jev\"。\n- **开源形态**：*Releasing the Inner Jev: A Simple Recipe for Open Decision Models*（`src_wndvhxgs`）、*Open-Jev small language model*（`src_b3v3nf3u`）。**均未核实为可运行仓库**（GitHub 维度未查到）。\n\n## 3. 与 KT 的关系：一个结构性假设 + 一个硬缺口\n\n**结构性假设（本人推理，无出处）**：Jev 的输出形式是\"对若干候选选项给概率\"，KT 的输出形式是\"对下一题的作答给概率\"——两者在**接口形状上是可对齐的**。所以理论上可以把 Jev 式一次通过模型当作 KT 的**预测头**，而不是拿它去做\"学生模拟/慢思考标注\"。相反方向（把 KT 的状态累积塞进一次通过模型）在形式上是冲突的。\n\n**硬缺口（必须照实说）**：\n- 5 个 KT 子问题**全部仍然 open**；\n- 已搜过的 6 组查询里**没有任何一条**把 Jev/System-One 与 knowledge tracing 连起来；\n- JEV 一族原文**四次抓取全部 20s timeout**（`src_ppvm47xz`、`src_sm4q3dxx`、`src_h8zkaq9h`、`src_mg3cqw6s`），故其**训练目标、评测指标、性能数值一概未知**——这些正是子问题 2 要的东西，一条都不能编。\n\n## 4. KT 主线唯一的可读锚点\n\n**DKT2**（`src_heufu34h` / `doc_b6hgp9j6`，arXiv 2501.14256，一手预印本层）摘要可支撑的全部内容：\n- 核心架构 **xLSTM**；输入侧用 **Rasch 模型**处理历史交互；输出侧引入 **IRT**，使学到的知识可分解为\"熟悉 / 不熟悉\"两部分；\n- **三套大规模数据集**、多种预测任务，优于 **18 个基线**；代码与数据集已公开。\n- ⚠️ 摘要**未点名**数据集（ASSISTments / EdNet 属通用知识，不是这里的证据），也**未给出任何指标数值**。\n\n**这说明 KT 主线当前的走向是「序列架构升级 + 输出侧可解释性（IRT）」，而不是双过程分解**——Jev 若要进入 KT，插入点是\"输出头/一次通过预测\"，而非\"补齐 KT 缺的认知理论\"。\n\n## 5. 噪声提示\n\nJEV 这个缩写在检索里会撞上 **Jevons paradox**（`src_6ecgsk9u`）。后续检索务必带 `System One` / `one-pass decision` 做消歧。\n\n## 6. 下一步可走的三条路（择一）\n\n1. **换来源族**：ACL Anthology、LAK / EDM / AIED 论文集——KT 的主战场在这里，不在 arXiv；\n2. **换叫法**：KT 侧对应\"经济型预测\"的词是 *efficient / lightweight KT*、*reactive prediction*；双过程侧对应 *dual-process*、*deliberative*、*LLM-as-student-simulator*；\n3. **补基础**：先把 DKT → SAKT → AKT → DKT2 读顺（目前仅 DKT2 有正文），再判断 Jev 能插在哪一环。\n",
+                "refs": {
+                  "source_ids": [
+                    "src_ppvm47xz",
+                    "src_h8zkaq9h",
+                    "src_sm4q3dxx",
+                    "src_b3v3nf3u",
+                    "src_mg3cqw6s",
+                    "src_wndvhxgs",
+                    "src_apmjmard",
+                    "src_njuaadew",
+                    "src_dju9qj7h",
+                    "src_6gazez8y",
+                    "src_d3zm9246",
+                    "src_2dxxyw7d",
+                    "src_heufu34h",
+                    "src_6ecgsk9u"
+                  ],
+                  "doc_ids": [
+                    "doc_b6hgp9j6"
+                  ]
+                }
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "note.save",
+              "args": {
+                "kind": "note",
+                "title": "System-One / JEV 与知识追踪的关系"
+              }
+            }
+          ],
+          "redundant": 2,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.5,
+          "tool_usage": 1.0
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "topic": "GraphRAG 与普通 RAG 的区别",
+      "trajectory_exact_match": false,
+      "trajectory_inclusion": 1.0,
+      "goal_accuracy": true,
+      "per_turn": [
+        {
+          "i": 1,
+          "user": "GraphRAG 和普通 RAG 到底差在哪，帮我搞清楚",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "GraphRAG knowledge graph community detection summarization retrieval-augmented generation survey",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 12
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "GraphRAG versus naive RAG evaluation multi-hop global question answering cost comparison",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 12
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_sa6h58c5"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_eqp5gnr3"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_mkvzdgg7"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "url": "https://arxiv.org/abs/2404.16130"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "url": "https://arxiv.org/abs/2410.05779"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "url": "https://arxiv.org/abs/2506.02404"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "url": "https://export.arxiv.org/abs/2404.16130"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "url": "https://export.arxiv.org/abs/2501.00309"
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "GraphRAG vs vanilla RAG"
+              }
+            }
+          ],
+          "redundant": 9,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.18181818181818182,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 2,
+          "user": "把最相关的那篇 PDF 抓下来存到本地",
+          "actual": [
+            {
+              "name": "source.fetch",
+              "args": {
+                "url": "https://arxiv.org/pdf/2404.16130",
+                "force": true
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "$turn1.output.sources[0].source_id"
+              }
+            }
+          ],
+          "redundant": 0,
+          "tca_both": 0.0,
+          "tca_name": 1.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 1.0,
+          "tool_usage": 1.0
+        }
+      ]
+    },
+    {
+      "id": "c5",
+      "topic": "RAG 的安全与鲁棒性",
+      "trajectory_exact_match": false,
+      "trajectory_inclusion": 0.5,
+      "goal_accuracy": false,
+      "per_turn": [
+        {
+          "i": 1,
+          "user": "检索一下 RAG 的安全和鲁棒性问题，都有哪些攻击手法",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "RAG security attacks taxonomy poisoning prompt injection survey",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 12,
+                "year_from": 2023
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "knowledge poisoning attack retrieval augmented generation adversarial passages",
+                "sources": [
+                  "arxiv",
+                  "openalex"
+                ],
+                "limit": 12,
+                "year_from": 2023
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 12,
+                "query": "indirect prompt injection through retrieved documents PoisonedRAG black-box knowledge base attack",
+                "sources": [
+                  "arxiv"
+                ],
+                "year_from": 2023
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_wpjquavc"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_mbnj6jh4"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_agejck2w"
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "RAG security robustness attacks"
+              }
+            }
+          ],
+          "redundant": 5,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.2857142857142857,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 2,
+          "user": "把这些攻击手法做成抽背卡",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "RAG poisoning prompt injection attack benchmark implementation code repository",
+                "sources": [
+                  "github"
+                ],
+                "limit": 10
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 10,
+                "query": "PoisonedRAG github repository code for RAG attack defense evaluation",
+                "sources": [
+                  "searxng"
+                ]
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "note.save",
+              "args": {
+                "kind": "card"
+              }
+            }
+          ],
+          "redundant": 1,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.0,
+          "tool_usage": 1.0
+        }
+      ]
+    },
+    {
+      "id": "c6",
+      "topic": "LLM 知识追踪",
+      "trajectory_exact_match": false,
+      "trajectory_inclusion": 1.0,
+      "goal_accuracy": true,
+      "per_turn": [
+        {
+          "i": 1,
+          "user": "这个方向有点大，派子Agent分头查：LLM 知识追踪的主流方法、常用数据集",
+          "actual": [
+            {
+              "name": "research.delegate",
+              "args": {
+                "goals": [
+                  "LLM 知识追踪的主流方法有哪些类别（提示工程、监督微调、检索增强、生成式建模、智能体框架等），各类的代表论文与做法是什么？",
+                  "LLM 知识追踪常用数据集有哪些（ASSISTments2009/2012/2017、EdNet、Junyi Academy、KDD Cup 2010、MOOCRadar 等），各自规模、字段与适用场景？",
+                  "LLM 知识追踪模型通常用哪些评价指标（AUC/ACC/RMSE）与数据划分方式（冷启动、跨数据集）？"
+                ]
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "large language model knowledge tracing methods survey",
+                "sources": [
+                  "arxiv"
+                ],
+                "limit": 12,
+                "sort": "relevance"
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "knowledge tracing datasets benchmark ASSISTments EdNet Junyi evaluation protocol",
+                "sources": [
+                  "openalex",
+                  "searxng"
+                ],
+                "limit": 12
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "knowledge tracing with large language models student knowledge state prediction",
+                "sources": [
+                  "arxiv",
+                  "github"
+                ],
+                "year_from": 2023,
+                "limit": 15,
+                "sort": "relevance"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_vtcyq3pk"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_j4yhyygh"
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "research.delegate",
+              "args": {
+                "goals": [
+                  "LLM 知识追踪的主流方法",
+                  "LLM 知识追踪常用数据集"
+                ]
+              }
+            }
+          ],
+          "redundant": 5,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.2857142857142857,
+          "tool_usage": 1.0
+        },
+        {
+          "i": 2,
+          "user": "排一条三周路线，要偏动手实现，进阶水平",
+          "actual": [
+            {
+              "name": "research.search",
+              "args": {
+                "query": "knowledge tracing implementation toolkit pyKT benchmark DKT AKT SAKT",
+                "sources": [
+                  "github"
+                ],
+                "limit": 15
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "query": "LLM knowledge tracing fine-tuning tutorial code repository",
+                "sources": [
+                  "github",
+                  "searxng"
+                ],
+                "limit": 15
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 15,
+                "query": "knowledge tracing",
+                "sources": [
+                  "github"
+                ]
+              }
+            },
+            {
+              "name": "research.search",
+              "args": {
+                "limit": 10,
+                "query": "deep learning based knowledge tracing survey models datasets evaluation",
+                "sources": [
+                  "openalex"
+                ],
+                "year_from": 2023
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_axcrksdr"
+              }
+            },
+            {
+              "name": "source.fetch",
+              "args": {
+                "source_id": "src_hmqymxyh"
+              }
+            },
+            {
+              "name": "route.plan",
+              "args": {
+                "topic": "LLM 知识追踪（Knowledge Tracing）的动手实现：从 pyKT 基准跑通到 LLM 混合建模复现",
+                "level": "进阶",
+                "weeks": 3,
+                "weekly_hours": 6,
+                "source_ids": [
+                  "src_axcrksdr",
+                  "src_wkcq5e78",
+                  "src_hmqymxyh",
+                  "src_avj9ucq9",
+                  "src_j4yhyygh",
+                  "src_dc37bc4x",
+                  "src_vtcyq3pk"
+                ]
+              }
+            }
+          ],
+          "gold": [
+            {
+              "name": "route.plan",
+              "args": {
+                "topic": "LLM 知识追踪",
+                "level": "进阶",
+                "weeks": 3
+              }
+            }
+          ],
+          "redundant": 6,
+          "tca_both": 0.0,
+          "tca_name": 0.0,
+          "tc_f1_both": 0.0,
+          "tc_f1_name": 0.25,
+          "tool_usage": 1.0
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "n_dialogues": 6,
+    "n_turns": 15,
+    "n_calls_actual": 64,
+    "n_calls_gold": 15,
+    "redundant_calls": 49,
+    "tool_call_accuracy_both": 0.0,
+    "tool_call_accuracy_name": 0.06666666666666667,
+    "tool_call_f1_both": 0.0,
+    "tool_call_f1_name": 0.3305868205868206,
+    "tool_usage_mean": 1.0,
+    "trajectory_exact_match_rate": 0.0,
+    "trajectory_inclusion_mean": 0.8055555555555555,
+    "agent_goal_accuracy": 0.6666666666666666
+  }
+}

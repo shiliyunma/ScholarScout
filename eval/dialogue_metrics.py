@@ -27,21 +27,43 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 __all__ = [
+    "TRAJ_FETCH_K",
+    "TRAJ_STAGE_BUDGET",
     "arg_valid",
     "goal_accuracy",
+    "is_retrieval_turn",
     "normalize_call",
     "pass_hat_k",
     "tool_call_accuracy",
+    "tool_call_accuracy_traj",
     "tool_call_f1",
     "tool_usage_rate",
     "topic_adherence",
+    "traj_turn_excess",
     "trajectory_exact_match",
     "trajectory_inclusion",
 ]
+
+# --------------------------------------------------------------------------- 轨迹口径（第二把尺子）
+
+#: 轨迹口径的抓取上限 K。**为什么是 3**：E4 的六道题面里，一次「找资料」最多要求覆盖
+#: 2–3 个不同来源（``eval/sets/e4_dialogues.jsonl`` 的 gold 与 artifact_min 都按这个量级写），
+#: 3 次抓取足够「检索 → 判权 → 抓到可用全文」这条链路走完；取 5 或 10 会让口径退化成
+#: 「几乎不判冗余」，取 1 又把正常的多来源比较判成冗余。**这是预先定死的常量，不按模型表现调。**
+TRAJ_FETCH_K: int = 3
+
+#: 轨迹口径的每轮阶段预算：1 次 ``research.search`` + 1 次 ``source.grade`` + 最多 ``K`` 次 ``source.fetch``。
+#: 三个工具名之外的一律算「非检索工具」，仍按 gold 逐名比对（不在本口径里被放宽）。
+TRAJ_STAGE_BUDGET: dict[str, int] = {
+    "research.search": 1,
+    "source.grade": 1,
+    "source.fetch": TRAJ_FETCH_K,
+}
 
 #: 每个工具的必填参数（口径来源：``src/scholarscout/tools/*.py`` 的 ``PARAMETERS.required``）
 REQUIRED_ARGS: dict[str, tuple[str, ...]] = {
@@ -172,8 +194,6 @@ def tool_call_f1(
     if not act or not ref:
         return 0.0
     # 多重集合交（同一调用重复出现要计次）
-    from collections import Counter
-
     ca, cr = Counter(act), Counter(ref)
     overlap = sum((ca & cr).values())
     precision = overlap / len(act)
@@ -349,3 +369,86 @@ def goal_accuracy(judgements: Iterable[bool]) -> float | None:
     if not items:
         return None
     return sum(1 for x in items if x) / len(items)
+
+
+# --------------------------------------------------------------------------- 第二把尺子：最小充分轨迹
+
+
+def is_retrieval_turn(actual: Sequence[Mapping[str, Any]]) -> bool:
+    """这一轮**实际**是否做了检索/判权/抓取（三个阶段任一被调用 → True）。
+
+    用途：轨迹口径只接管这类轮；其余轮（gold 本来就不是检索类，如 ``note.save``/``route.plan``）
+    两个口径下**都按原 gold 算**，不改写。
+    """
+    return any(normalize_call(c)[0] in TRAJ_STAGE_BUDGET for c in actual)
+
+
+def _stage_excess(counts: Counter[str]) -> int:
+    """超出阶段预算的部分（只算**多出来的**，预算内的调用不算冗余）。"""
+    return sum(max(0, counts[name] - budget) for name, budget in TRAJ_STAGE_BUDGET.items())
+
+
+def _non_retrieval_counts(calls: Sequence[Mapping[str, Any]]) -> Counter[str]:
+    """非检索工具的调用计数（按工具名）。"""
+    return Counter(
+        normalize_call(c)[0] for c in calls if normalize_call(c)[0] not in TRAJ_STAGE_BUDGET
+    )
+
+
+def traj_turn_excess(
+    actual: Sequence[Mapping[str, Any]],
+    gold: Sequence[Mapping[str, Any]],
+) -> int:
+    """轨迹口径的**单轮冗余**：按「最小充分轨迹」为基准，而不是按 gold 的 1 次调用。
+
+    机械规则（对所有对话完全相同，**不看模型实际行为来调参数**）：
+
+    * 检索类轮（实际调过 search/grade/fetch 任一）：基准 = 1 次 ``research.search``
+      + 1 次 ``source.grade`` + 最多 ``TRAJ_FETCH_K`` 次 ``source.fetch``；
+      冗余 = 各阶段**超出预算**的调用数之和 + 非检索工具超出 gold 的部分。
+      即：预算内的检索/判权/抓取**一律不算冗余**（gold 只标了每轮第一步，不该拿它当上限）。
+    * 非检索类轮：与原口径一致 —— ``max(0, 实际 − gold)``（gold 在这里是完整标注）。
+
+    为什么仍然不是 0：多出来的搜索（同一轮搜 4 次）、抓取超过 K 次，仍是真冗余；
+    这条口径只免掉「设计上就该做的那几步」。
+    """
+    counts = Counter(normalize_call(c)[0] for c in actual)
+    if not is_retrieval_turn(actual):
+        return max(0, len(actual) - len(gold))
+    other_actual = _non_retrieval_counts(actual)
+    other_gold = _non_retrieval_counts(gold)
+    other_excess = max(0, sum(other_actual.values()) - sum(other_gold.values()))
+    return _stage_excess(counts) + other_excess
+
+
+def tool_call_accuracy_traj(
+    actual: Sequence[Mapping[str, Any]],
+    gold: Sequence[Mapping[str, Any]],
+) -> float | None:
+    """轨迹口径的 ``ToolCallAccuracy``（**名字级**）：这一轮是否落在最小充分轨迹内。
+
+    检索类轮判 1.0 需同时满足三条：
+    ① 各阶段不超预算（search ≤ 1、grade ≤ 1、fetch ≤ ``TRAJ_FETCH_K``）；
+    ② gold 点名的检索阶段都至少调了一次（gold 只标第一步，标到的必须做）；
+    ③ 非检索工具与 gold **逐名对上**（一个不少、也没多）—— 工具选错不会被本口径放过。
+
+    非检索类轮：直接沿用原口径的名字级 TCA（``tool_call_accuracy(..., match="name")``）。
+
+    与 ``tool_call_accuracy`` 的差别只在**检索类轮的基准**：原口径要求「与 gold 逐项完全相同」，
+    而 gold 只有 1 次 ``research.search``，所以只要系统真去抓了资料就必然判 0；
+    本口径量的是「有没有做成一趟最小充分轨迹」，两把尺子量的不是同一件事。
+    """
+    if not gold:
+        return None
+    if not is_retrieval_turn(actual):
+        return tool_call_accuracy(actual, gold, match="name")
+    counts = Counter(normalize_call(c)[0] for c in actual)
+    gold_counts = Counter(normalize_call(c)[0] for c in gold)
+    for name, budget in TRAJ_STAGE_BUDGET.items():
+        if counts[name] > budget:
+            return 0.0
+        if gold_counts[name] and not counts[name]:
+            return 0.0
+    if _non_retrieval_counts(actual) != _non_retrieval_counts(gold):
+        return 0.0
+    return 1.0

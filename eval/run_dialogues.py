@@ -172,6 +172,10 @@ def run_live(ctx: Any, rows: list[dict[str, Any]], *, limit: int | None = None) 
                     "tool_usage": dm.tool_usage_rate(actual),
                     # TRAJECT-Bench 的第三类失败模式「冗余调用」：实际调用数 − gold 调用数
                     "redundant": max(0, len(plain) - len(ref)),
+                    # 第二把尺子：以「最小充分轨迹」为基准（1 search + 1 grade + ≤K fetch）。
+                    # 只增字段，上面的原口径字段一个不改。
+                    "redundant_traj": dm.traj_turn_excess(plain, ref),
+                    "tca_traj": dm.tool_call_accuracy_traj(plain, ref),
                     "errors": [c["_error"] for c in actual if c["_error"]],
                 }
             )
@@ -210,6 +214,9 @@ def run_live(ctx: Any, rows: list[dict[str, Any]], *, limit: int | None = None) 
                 "artifact": artifact,
                 "artifact_min": need,
                 "goal_accuracy": goal_ok,
+                # --- 第二把尺子（轨迹口径）：与原口径并列，不影响上面任何字段 ---
+                "redundant_calls_traj": sum(t["redundant_traj"] for t in per_turn),
+                "tca_traj_mean": _mean([x["tca_traj"] for x in per_turn]),
             }
         )
     return {"mode": "live", "dialogues": results}
@@ -245,7 +252,166 @@ def summarize(res: dict[str, Any]) -> dict[str, Any]:
         ),
         "trajectory_inclusion_mean": _mean([d["trajectory_inclusion"] for d in ds]),
         "agent_goal_accuracy": _mean([1.0 if d["goal_accuracy"] else 0.0 for d in ds]),
+        # --- 第二把尺子（轨迹口径，1 search + 1 grade + ≤K fetch）：只在末尾追加 ---
+        "redundant_calls_traj": sum(d["redundant_calls_traj"] for d in ds),
+        "tool_call_accuracy_traj": _mean([t["tca_traj"] for t in turns]),
     }
+
+
+def rescore(src_json: Path) -> dict[str, Any]:
+    """从**已有报告**的 ``per_turn`` 重算两个口径 —— **零成本**：不建上下文、不发请求、不读库。
+
+    只读 ``per_turn[].actual`` / ``per_turn[].gold``；旧口径的每个数也在此**重算一遍**
+    并与报告里存的值逐字段比对（``old_mismatch`` 必须为 0），用来证明"改代码没动旧指标"。
+    """
+    src = json.loads(src_json.read_text(encoding="utf-8"))
+    if src.get("mode") != "live":
+        raise ValueError(f"只能重算 live 报告（这份的 mode={src.get('mode')!r}）")
+    old_mismatch: list[str] = []
+    rows: list[dict[str, Any]] = []
+    all_turns: list[dict[str, Any]] = []
+    for d in src["dialogues"]:
+        per_turn: list[dict[str, Any]] = []
+        for t in d["per_turn"]:
+            actual = [{"name": c["name"], "args": c.get("args") or {}} for c in t["actual"]]
+            gold = [{"name": c["name"], "args": c.get("args") or {}} for c in t["gold"]]
+            row: dict[str, Any] = {
+                "i": t["i"],
+                "user": t["user"],
+                "gold": [c["name"] for c in gold],
+                "actual": [c["name"] for c in actual],
+                "redundant": max(0, len(actual) - len(gold)),
+                "tca_both": dm.tool_call_accuracy(actual, gold),
+                "tca_name": dm.tool_call_accuracy(actual, gold, match="name"),
+                "tc_f1_both": dm.tool_call_f1(actual, gold),
+                "tc_f1_name": dm.tool_call_f1(actual, gold, match="name"),
+                "redundant_traj": dm.traj_turn_excess(actual, gold),
+                "tca_traj": dm.tool_call_accuracy_traj(actual, gold),
+            }
+            for key in ("redundant", "tca_both", "tca_name", "tc_f1_both", "tc_f1_name"):
+                if t.get(key) != row[key]:
+                    old_mismatch.append(
+                        f"{d['id']}/t{t['i']}:{key} 存={t.get(key)!r} 算={row[key]!r}"
+                    )
+            per_turn.append(row)
+        all_turns.extend(per_turn)
+        rows.append(
+            {
+                "id": d["id"],
+                "topic": d["topic"],
+                "n_turns": len(per_turn),
+                "n_calls_actual": len([c for t in per_turn for c in t["actual"]]),
+                "n_calls_gold": len([c for t in per_turn for c in t["gold"]]),
+                "redundant_calls": sum(t["redundant"] for t in per_turn),
+                "redundant_calls_traj": sum(t["redundant_traj"] for t in per_turn),
+                "tca_name_mean": _mean([t["tca_name"] for t in per_turn]),
+                "tca_traj_mean": _mean([t["tca_traj"] for t in per_turn]),
+                "trajectory_exact_match": d.get("trajectory_exact_match"),
+                "trajectory_inclusion": d.get("trajectory_inclusion"),
+                "goal_accuracy": d.get("goal_accuracy"),
+                "per_turn": per_turn,
+            }
+        )
+    summary = {
+        "n_dialogues": len(rows),
+        "n_turns": len(all_turns),
+        "n_calls_actual": sum(r["n_calls_actual"] for r in rows),
+        "n_calls_gold": sum(r["n_calls_gold"] for r in rows),
+        "redundant_calls": sum(r["redundant_calls"] for r in rows),
+        "tool_call_accuracy_both": _mean([t["tca_both"] for t in all_turns]),
+        "tool_call_accuracy_name": _mean([t["tca_name"] for t in all_turns]),
+        "tool_call_f1_both": _mean([t["tc_f1_both"] for t in all_turns]),
+        "tool_call_f1_name": _mean([t["tc_f1_name"] for t in all_turns]),
+        "tool_usage_mean": src.get("summary", {}).get("tool_usage_mean"),
+        "trajectory_exact_match_rate": _mean(
+            [1.0 if r["trajectory_exact_match"] else 0.0 for r in rows]
+        ),
+        "trajectory_inclusion_mean": _mean([r["trajectory_inclusion"] for r in rows]),
+        "agent_goal_accuracy": _mean([1.0 if r["goal_accuracy"] else 0.0 for r in rows]),
+        "redundant_calls_traj": sum(r["redundant_calls_traj"] for r in rows),
+        "tool_call_accuracy_traj": _mean([t["tca_traj"] for t in all_turns]),
+    }
+    stored = src.get("summary") or {}
+    for key, value in summary.items():
+        if key in stored and stored[key] != value:
+            old_mismatch.append(f"summary:{key} 存={stored[key]!r} 算={value!r}")
+    return {
+        "mode": "rescore",
+        "source": str(src_json),
+        "source_summary": stored,
+        "summary": summary,
+        "dialogues": rows,
+        "old_mismatch": old_mismatch,
+    }
+
+
+def write_two_scales(res: dict[str, Any], src_json: Path) -> tuple[Path, Path]:
+    """把两把尺子并排写成 ``<原报告名>-two-scales.{json,md}``（**不覆盖**原报告）。"""
+    stem = src_json.name[: -len(".json")] if src_json.name.endswith(".json") else src_json.name
+    json_path = src_json.with_name(f"{stem}-two-scales.json")
+    md_path = src_json.with_name(f"{stem}-two-scales.md")
+    json_path.write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    s = res["summary"]
+    old_mismatch = res["old_mismatch"]
+    lines = [
+        f"# E4 两个口径并排（源报告 {src_json.name}）",
+        "",
+        "> **零成本重算**：本文件由 `python eval/run_dialogues.py --rescore "
+        f"{src_json.as_posix()}` 从源报告的 `per_turn[].actual` 直接重算，"
+        "**未调用模型、未读库**。原报告一个字节未动。",
+        ">",
+        f"> 旧字段重算比对：`{len(old_mismatch)}` 处不一致"
+        + ("（与源报告逐字段相同）" if not old_mismatch else f"：{old_mismatch}"),
+        "",
+        f"## 总计（{s['n_dialogues']} 对话 / {s['n_turns']} 轮，"
+        f"实际 {s['n_calls_actual']} 次调用 / gold {s['n_calls_gold']} 次）",
+        "",
+        "| 口径 | 冗余 | TCA(名字) | 说明 |",
+        "|---|---|---|---|",
+        f"| 原口径（gold 即上限） | {s['redundant_calls']} | {_fmt(s['tool_call_accuracy_name'])} | "
+        "冗余 = 实际调用数 − gold 调用数；gold **只标了每轮第一步**（1 次 `research.search`） |",
+        f"| **轨迹口径**（1 search + 1 grade + ≤{dm.TRAJ_FETCH_K} fetch） | "
+        f"**{s['redundant_calls_traj']}** | **{_fmt(s['tool_call_accuracy_traj'])}** | "
+        "冗余只数**超出阶段预算**的调用；预算内的检索/判权/抓取不算冗余 |",
+        "",
+        "**两句必读**：",
+        "",
+        "1. **两种尺子量的是不同东西**：原口径量「与 gold 标注的吻合度」，轨迹口径量"
+        "「一趟最小充分轨迹有没有被撑爆」。前者不是系统做错了，而是 gold 只标了第一步 —— "
+        "拿 gold 当上限，任何认真做事的系统都必然 3~5 倍冗余。",
+        "2. 轨迹口径**不是给系统开脱**：同一批对话仍有 "
+        f"{s['redundant_calls_traj']} 次超额调用（同一轮搜 4~5 次、抓取超 {dm.TRAJ_FETCH_K} 次），"
+        "这部分是真冗余，两条口径都算在账上。",
+        "",
+        "## 逐对话",
+        "",
+        "| 对话 | 轮数 | 实际/gold | 原口径冗余 | 轨迹口径冗余 | 原 TCA(名) | 轨迹 TCA(名) |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for d in res["dialogues"]:
+        lines.append(
+            f"| {d['id']} | {d['n_turns']} | {d['n_calls_actual']}/{d['n_calls_gold']} | "
+            f"{d['redundant_calls']} | {d['redundant_calls_traj']} | "
+            f"{_fmt(d['tca_name_mean'])} | {_fmt(d['tca_traj_mean'])} |"
+        )
+    lines += ["", "## 逐轮（重算明细）", ""]
+    for d in res["dialogues"]:
+        lines += [
+            f"### {d['id']} · {d['topic']}",
+            "",
+            "| 轮 | 用户 | gold | 实际 | 原冗余 | 轨迹冗余 | 原 TCA(名) | 轨迹 TCA(名) |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for t in d["per_turn"]:
+            lines.append(
+                f"| {t['i']} | {t['user']} | {_names(t['gold'])} | "
+                f"{_names(t['actual']) or '（无调用）'} | {t['redundant']} | "
+                f"{t['redundant_traj']} | {_fmt(t['tca_name'])} | {_fmt(t['tca_traj'])} |"
+            )
+        lines.append("")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return json_path, md_path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -255,11 +421,29 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=None, help="最多跑前 N 个对话")
     ap.add_argument("--only", default=None, help="只跑这些对话 id（逗号分隔，如 c4,c5）")
     ap.add_argument(
+        "--rescore",
+        default=None,
+        metavar="报告.json",
+        help="不跑模型：从已有报告的 per_turn 重算轨迹口径，写 <同名>-two-scales.{md,json}",
+    )
+    ap.add_argument(
         "--out",
         default="eval/reports",
         help="报告输出位置：以 .json 结尾＝文件路径（同名 .md 并列）；否则＝目录",
     )
     args = ap.parse_args(argv)
+
+    if args.rescore:
+        src = Path(args.rescore)
+        res = rescore(src)
+        written = write_two_scales(res, src)
+        print(f"写出 {written[0].resolve()} / {written[1].resolve()}")
+        print(f"  旧字段重算不一致 {len(res['old_mismatch'])} 处")
+        for k in ("redundant_calls", "redundant_calls_traj"):
+            print(f"  {k} = {res['summary'][k]}")
+        for k in ("tool_call_accuracy_name", "tool_call_accuracy_traj"):
+            print(f"  {k} = {_fmt(res['summary'][k])}")
+        return 0
 
     rows = load_dialogues()
     if args.only:
@@ -388,6 +572,11 @@ def _write_reports(res: dict[str, Any], out: Path, stamp: str) -> tuple[Path, Pa
 
 def _fmt(v: Any) -> str:
     return "—" if v is None else (f"{v:.3f}" if isinstance(v, float) else str(v))
+
+
+def _names(names: list[str]) -> str:
+    """把工具名列表渲染成「每个名各包一层反引号、空格分隔」，表格里不会粘成一串。"""
+    return " ".join(f"`{n}`" for n in names)
 
 
 if __name__ == "__main__":  # pragma: no cover
