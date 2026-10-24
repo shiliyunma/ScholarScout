@@ -1,0 +1,54 @@
+# ScholarScout 的容器编排：一个无界面 agent 服务 +（可选）自建 SearxNG。
+#
+#   docker compose up -d --build        # 起 agent（默认跑 --chat，需要 TTY）
+#   docker compose run --rm scout --help
+#   docker compose run --rm scout --initdb
+#   docker compose --profile search up -d searxng   # 顺带起 SearxNG（给 research.search 用）
+#
+# **容器内没有 GUI**：只有 CLI / JSON-RPC / 飞书机器人，`--desktop` 在这里不可用
+# （镜像故意不装 pywebview，见 Dockerfile 顶部说明）。
+name: scholarscout
+
+services:
+  scout:
+    build:
+      context: .
+      args:
+        # 国内拉不动 docker.io 时：SCS_PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim
+        PYTHON_IMAGE: ${SCS_PYTHON_IMAGE:-python:3.11-slim}
+    image: scholarscout:dev
+    # 密钥走 .env（未准备也不挡启动：没 key 时模型不可用，界面/建库照常）。
+    # 挂到 /data/.env 而不是只在环境里：容器内的 load_dotenv() 读的是 <home>/.env。
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SCHOLARSCOUT_HOME: /data
+    volumes:
+      # 资料库/数据库/日志一个卷装完：/data/data、/data/run
+      - scout-data:/data
+      # 设置进 config.yaml（可选，没有则全用默认值）
+      - ./config.yaml:/data/config.yaml:ro
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    command: ["--chat"]
+
+  # 通用检索（可选）：`research.search` 的 searxng 来源需要一个能返回 JSON 的实例。
+  # 用 profile 隔开，默认 `docker compose up` 不会启动它。
+  searxng:
+    profiles: ["search"]
+    image: ${SCS_SEARXNG_IMAGE:-searxng/searxng:latest}
+    container_name: scholarscout-searxng
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      # 容器之间用服务名互访：在 config.yaml 里写 searxng_base_url: http://searxng:8080
+      SEARXNG_BASE_URL: http://localhost:8080/
+      SEARXNG_SECRET: scholarscout-local-only-change-me
+    restart: unless-stopped
+
+volumes:
+  scout-data:

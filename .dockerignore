@@ -1,0 +1,52 @@
+# 构建上下文只留运行需要的东西。镜像里没有资料库、没有密钥、没有虚拟环境。
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# 用户数据与运行产物（绝不进镜像）
+data/
+run/
+*.db
+*.db-wal
+*.db-shm
+.env
+*.env
+!.env.example
+config.yaml
+
+# 虚拟环境与缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# 打包/构建产物（几十~几百 MB）
+build/
+dist/
+ScholarScout-Portable/
+*.spec
+*.exe
+*.dll
+*.zip
+launcher-diagnose.txt
+ScholarScout.launcher.ini
+
+# 技能库的点号记账（.archive / .hub 索引缓存一个文件就 49MB）；skills/ 本身要留
+skills/.*
+
+# 用不着的东西
+_wip/
+eval/reports/
+docs/
+assets/
+*.docx
+*.pdf
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
