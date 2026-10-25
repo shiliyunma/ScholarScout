@@ -72,9 +72,17 @@ def build_context(
         )
 
     # 工具集在这里收敛（**唯一实现**：`runtime/registry.enabled_toolsets`）：
-    # `features.enable_kb` 关着时 `kb` 被摘掉，开着时自动补上。
-    enabled_toolsets = registry.enabled_toolsets(toolsets, enable_kb=cfg.features.enable_kb)
-    register_tools(enable_kb=cfg.features.enable_kb)
+    # `features.enable_kb` 关着时 `kb` 被摘掉，开着时自动补上；`files` 同理（enable_files）。
+    enabled_toolsets = registry.enabled_toolsets(
+        toolsets,
+        enable_kb=cfg.features.enable_kb,
+        enable_files=cfg.features.enable_files,
+    )
+    register_tools(
+        enable_kb=cfg.features.enable_kb,
+        enable_files=cfg.features.enable_files,
+        enable_tool_disclosure=cfg.features.enable_tool_disclosure,
+    )
     return AppContext(
         config=cfg,
         db=db,

@@ -159,6 +159,93 @@ KB_RULE = """\
    中文按子串命中 —— 这种时候必须用 `source.fetch` 核实原文。"""
 
 
+#: 只读文件工具的用法（`file.list` / `file.read`，docs/01 §3.16）：**只在 `files` 工具集开着时**
+#: 才加进提示词 —— 与 `KB_RULE` 同一个理由：关着时模型根本调不到这两个工具，一段「有个工具你不用」
+#: 的说明只会污染提示词并让 `system_prompt_hash` 白白换掉（默认关时哈希**必须**逐字节不变）。
+FILES_RULE = """\
+## 什么时候用只读文件工具（`file.list` / `file.read`）
+
+1. **读文件先用它，不要用 `py.exec`**：`py.exec` 每次都要用户点一次确认，读一份材料就弹一次
+   审批会把用户的注意力耗光。要"看看这个目录有什么""把这份 md/pdf/docx 的正文读出来"，
+   直接 `file.list` / `file.read` —— 它们是**只读**的，不写、不建、不改。
+2. **引用原文带行号**：`file.read` 回的 `data.lines` 每行都有 `n`（**文件里的绝对行号**）。
+   转述或引用原文时写行号（如"第 42 行"），用户才能核对；不要凭记忆改写句子。
+3. **长文件要接着读**：`truncated=true` 时回包给 `next_offset`，用 `offset=next_offset` 续读；
+   不要把截断处当成文件结尾，更不要因为没读完就下结论。
+4. **越界就停**：只允许 `data/`（含 `data/exports/`）与会话工作目录之下。回
+   `outside_allowed_root` 说明这条路径不该读 —— 不要换 `..`、绝对路径或符号链接再试，
+   也不要改用 `py.exec` 绕过；如实告诉用户"这个位置不在可读范围内"。
+5. **不支持的类型如实说**：回 `unsupported_type` 时看 `data.groups` 里已支持的组
+   （文本/PDF/Office/HTML/电子书/RTF）。音视频与压缩包不抽正文 —— 需要别的手段就用别的工具，
+   不要假装读到了。"""
+
+
+#: 渐进披露档的流程（`features.enable_tool_disclosure`，docs/01 §3.17）。**与默认档的关键差别**：
+#: 只写核心三件（`research.search` / `source.fetch` / `note.save`）的名字，其余能力一律用
+#: 「tool.search 找 → tool.describe 取参数」表达。理由不是文风：披露开着时那些工具的 schema
+#: **不在 payload 里**，提示词里写死名字只会让模型去调一个它没有参数定义的工具（→ tool_not_loaded）。
+DISCLOSURE_PIPELINE_PROMPT = """
+调研流程（跟用户要的东西走，不要反复回到第一步）：
+1. **检索**：调 research.search。**最多 2-3 次**，换个角度也够了；检索关键词用英文（arXiv 只索引英文），中文只用于主题与摘要。
+2. **取原文**：对最有价值的 **2-3 条**调 source.fetch，拿到摘要与要点即可，不要逐条抓完所有结果。
+3. **把回答讲清楚**：哪些结论来自哪些资料、哪些是通用知识、缺口在哪里 —— **这才是用户这条消息要的东西**。
+4. **把产物的选择权交给用户**（这一步是硬规则）：
+   - 用户**在这条消息里明确要了**知识地图 / 学习路线 / 抽背卡 → 先用 tool.search（关键词 map / route / note）
+     找到对应工具、tool.describe 取回参数定义，再调它；方向型提问先做知识地图再出路线。
+   - **否则不要产出任何产物**。把回答给全之后，用**一句话**问用户要不要生成，
+     说清各自能拿到什么（例如："要不要我把这个方向整理成知识地图和 4 周学习路线？"）。
+   - **不许"顺手"多做一件**，也不要在用户没要的时候写"产物预览"之类的空话。用户说"要"的时候你再做。
+
+**预算纪律**：检索与抓取合计 **4-5 次**就够（检索 2-3 次、抓取 2-3 条），
+剩下的一次都先别花 —— **等用户点单再花**。某个方向资料稀少时，就带着已有资料把回答讲清楚并说明资料有限。"""
+
+#: 披露档 + `generation.auto_artifacts: true`：每轮都要自动产出「主题图 + 路线」（对照臂）。
+DISCLOSURE_AUTO_PIPELINE_PROMPT = """
+调研流程（按顺序走，不要反复回到第一步）：
+1. **检索**：调 research.search。**最多 2-3 次**，换个角度也够了；检索关键词用英文（arXiv 只索引英文），中文只用于主题与摘要。
+2. **取原文**：对最有价值的 **2-3 条**调 source.fetch，拿到摘要与要点即可，不要逐条抓完所有结果。
+3. **出产物**：这是用户真正要的东西，**必须做** —— 先用 tool.search（关键词 map / route）找到主题图与
+   学习路线这两个工具，tool.describe 取回参数定义，然后**两件都做**（先主题图，它出路线的依据）。
+   要总结或抽背卡再 tool.search 找 note 类工具。
+4. 最后用自然语言把结果讲清楚，指出哪些结论来自哪些资料。
+
+**预算纪律**：一共大约 10 次工具调用。检索与抓取合计不要超过 5 次，
+把剩下的留给第 3 步的产物 —— **用户要的是路线和地图，不是一长串链接**。"""
+
+#: 披露档的核心规矩：**工具是先查后用的**。这一段替代了默认档里逐工具写的
+#: `DELEGATE_RULE` / `PY_EXEC_RULE` / `SKILL_RULE` —— 那些段落都在写"某个工具什么时候用"，
+#: 而披露档的前提是"模型手上没有它的参数定义"，逐个写名字等于给了一张过期的清单。
+DISCLOSURE_RULE = """\
+## 工具是先查后用的（常驻只有三件）
+
+1. **常驻工具**：检索（research.search）、取原文（source.fetch）、存笔记（note.save），
+   加上两个元工具 tool.search / tool.describe。**别的能力都不在你手上的参数定义里**。
+2. **用之前两步**：先 tool.search（`query` 用能力关键词，如 map / route / grade / 代码 / 技能 / 文件 / 委派），
+   它只回名字与一句话；再 tool.describe（`names` 一次最多 3 个）拿回完整 parameters。
+   **describe 之后本会话内就能直接调用**，新会话不继承，需要时再 describe。
+3. **没 describe 就直调会回 `tool_not_loaded`**：那不是"工具坏了"，是提醒你先 describe。
+   照它的话做，**不要换个名字重试，也不要假装调用成功**。
+4. **别一口气把目录全拉回来**：一次只加载这一轮真正缺的那一到两个能力。
+5. 工具描述里写的能力边界照样成立（默认关、要用户确认、只能读某个范围之下的路径…），
+   看到 `ok=false` 就按它说的办，不要绕。"""
+
+#: 披露档的能力纪律（默认档里这些是逐工具段落，这里压成不带名字的条目 ——
+#: 名字让模型自己去 tool.search 查，这样提示词里不会出现任何未加载的工具名）。
+DISCLOSURE_DISCIPLINE = """\
+## 几类能力的用法纪律（名字要靠 tool.search 查，不要凭印象编）
+
+1. **要用户确认的执行类工具**（改 docx/xlsx/pdf、批量改文件名、跑脚本）：第一次**不要自己填 `approval`** ——
+   把 `data.risks` 交给用户看，用户点完系统会带着 `approval` 重新调用；被拒就停，
+   不要换写法重试、也不要换条路达成同一目的。**能靠文字说清的回答不要用它**。
+2. **两段式的技能库**（先列后读）：清单不在提示词里。当用户的要求像是"某个现成工作流"而你手上没有做法时，
+   先按任务实词搜，再加载那一篇；不要凭印象编一个名字去读。
+3. **本机知识库**：查的是你自己收过的东西；空结果就是结论，不要换个词反复重查，更不要假装本地有。
+4. **只读文件工具**：读本地 md / pdf / docx 的正文用它（不弹审批），不要为了读文件去调要确认的执行工具；
+   引原文要带行号；只允许项目 `data/` 与会话工作目录之下 —— 回 `outside_allowed_root` 说明不该读那里，**就停**。
+5. **并行子任务**：只在"2-3 个互不依赖的子问题 + 本轮还有预算"时用；它的消耗从本轮额度里扣，
+   回"额度不足"就换主流程自己做，不要反复重试。"""
+
+
 #: 人格/风格档（D4）。**默认档是空串** —— 这样"没改过设置"的提示词与本功能上线前**逐字节相同**，
 #: 实验臂哈希不变、E3 那批数字仍然可比。改风格＝改实验臂，报告里必须写明用了哪一档。
 STYLE_PROMPTS: dict[str, str] = {
@@ -201,13 +288,36 @@ def build_system_prompt(
     allow_clarify: bool = True,
     auto_artifacts: bool = False,
     style: str = "default",
+    disclosure: bool = False,
 ) -> str:
     """组装系统提示词。
 
     ``auto_artifacts`` 决定用哪一档流程（默认按需）。这两个开关都会进哈希，
     所以"自动档 / 按需档 / 各风格档"跑出来的结果在报告里能分清出处。
+
+    ``disclosure`` 决定用不用**渐进披露档**（`features.enable_tool_disclosure`，docs/01 §3.17）：
+    开着时换成一份**不写未加载工具名**的流程 —— 因为那时那些工具的 schema 不在 payload 里，
+    提示词写死名字只会让模型去调一个它没有参数定义的工具。默认 ``False`` 表示**默认臂**，
+    拼装顺序与文本一字不动，`GOLDEN_ON_DEMAND_HASH` 因此仍然成立（换哈希＝换实验臂，
+    没有实验理由不许动）。
     """
     chosen = normalize_style(style)
+    if disclosure:
+        parts = [
+            BASE_PROMPT,
+            DISCLOSURE_AUTO_PIPELINE_PROMPT if auto_artifacts else DISCLOSURE_PIPELINE_PROMPT,
+        ]
+        if allow_clarify:
+            parts.append(CLARIFY_RULE)
+        parts.append(RESEARCH_STATE_RULE)
+        parts.append(DISCLOSURE_RULE)
+        parts.append(DISCLOSURE_DISCIPLINE)
+        if STYLE_PROMPTS[chosen]:
+            parts.append(STYLE_PROMPTS[chosen])
+        active = ", ".join(toolsets or ["research"])
+        parts.append(f"\n当前可用工具集：{active}。工具未注册时不要假装调用它，直接说明能力边界。")
+        return "\n".join(parts).strip()
+
     parts = [BASE_PROMPT, PIPELINE_PROMPT if auto_artifacts else ON_DEMAND_PIPELINE_PROMPT]
     if allow_clarify:
         parts.append(CLARIFY_RULE)
@@ -222,6 +332,10 @@ def build_system_prompt(
     # 本地知识库规矩：**只在 kb 工具集开着时**加（关着时模型调不到它，加了只是污染提示词）
     if "kb" in (toolsets or []):
         parts.append(KB_RULE)
+    # 只读文件工具规矩：**只在 files 工具集开着时**加 —— 默认关，所以默认路径的提示词
+    # 与引入本功能前逐字节相同（`system_prompt_hash` 不变，历史实验数字仍可比）
+    if "files" in (toolsets or []):
+        parts.append(FILES_RULE)
     if STYLE_PROMPTS[chosen]:
         parts.append(STYLE_PROMPTS[chosen])
     active = ", ".join(toolsets or ["research"])

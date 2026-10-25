@@ -22,6 +22,7 @@ from scholarscout.providers.llm import ChatReply, ToolCall
 from scholarscout.runtime import (
     compaction,
     context_budget,
+    disclosure,
     memory,
     registry,
     research_state,
@@ -219,6 +220,33 @@ def execute_tool(
             ok=False,
             args=call.arguments,
             error="tool_not_registered",
+        )
+        emit_event(
+            emit,
+            "chat.tool_result",
+            {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
+        )
+        return message, {}, canonical, False
+
+    # ---- 渐进披露的闸（docs/01 §3.17）：**没 describe 过的工具不许直接调**。
+    # 为什么做在这一层而不是"只在 payload 里不给它"：模型完全可以凭旧记忆/提示词里的名字
+    # 硬调一个没声明的工具（E4 的错选就是这么来的）。只在 payload 里省掉，等于假设模型不会绕；
+    # 真绕了就会**静默执行**，比报错更糟 —— 它会以为自己"确认过"这个工具的参数。
+    # **只在 `features.enable_tool_disclosure` 开着时生效**：关着时（产品默认）11 个工具
+    # 全部常驻、全部可直接调，与引入本功能前逐字一致 —— 否则默认臂会被这条闸静默弄坏。
+    if ctx.config.features.enable_tool_disclosure and not disclosure.is_available(
+        canonical, session_id=session_id
+    ):
+        message = disclosure.not_loaded_message(canonical)
+        traces.record_trace(
+            ctx.db,
+            session_id=session_id,
+            turn_id=turn_id,
+            step=step,
+            tool_name=canonical,
+            ok=False,
+            args=call.arguments,
+            error="tool_not_loaded",
         )
         emit_event(
             emit,

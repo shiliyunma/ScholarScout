@@ -15,9 +15,15 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-#: 工具集白名单（docs/01 §5.0）。`kb` **只在 `features.enable_kb` 开着时**才生效 ——
+#: 工具集白名单（docs/01 §5.0）。`kb` **只在 `features.enable_kb` 开着时**、`files` **只在
+#: `features.enable_files` 开着时**才生效 —— 两者都是"默认关的独立工具集"，
 #: 收敛逻辑只有一处：:func:`enabled_toolsets`（工具注册与提示词都从它取）。
-TOOLSETS = ("research", "kb")
+TOOLSETS = ("research", "kb", "files")
+
+#: 受特性开关控制、**默认不在**会话里的工具集。写在这张名单里的名字会被 :func:`enabled_toolsets`
+#: 无条件摘掉，只有对应开关打开时才补回来 —— 这样"会话显式要它"也绕不过开关
+#: （RPC 的 `toolsets` 参数来自前端，不可信）。
+GATED_TOOLSETS: tuple[str, ...] = ("kb", "files")
 
 #: API 允许的工具名字符集（DeepSeek / OpenAI 同款校验）
 _WIRE_SAFE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -117,21 +123,32 @@ def get_spec(name: str) -> ToolSpec | None:
     return _REGISTRY.get(name) or _REGISTRY.get(canonical_name(name))
 
 
-def enabled_toolsets(requested: Sequence[str] | None = None, *, enable_kb: bool) -> tuple[str, ...]:
-    """把请求的工具集按**特性开关**收敛 —— 这是 `kb` 门控的唯一实现处。
+def enabled_toolsets(
+    requested: Sequence[str] | None = None,
+    *,
+    enable_kb: bool,
+    enable_files: bool = False,
+) -> tuple[str, ...]:
+    """把请求的工具集按**特性开关**收敛 —— 这是 `kb` / `files` 门控的唯一实现处。
 
     - `enable_kb=False`：从请求里**摘掉** `kb`（会话显式要它也不行：RPC 的 `toolsets`
-      参数来自前端，不可信）；
-    - `enable_kb=True`：请求里没有 `kb` 也**补上**（开关的语义是「开了就有这个工具」，
+      参数来自前端，不可信）；`enable_files` 对 `files` 同理；
+    - 开关打开：请求里没有也**补上**（开关的语义是「开了就有这个工具」，
       而不是「开了还得再手工指定一遍」）。
 
     为什么不留一个 `features` 参数给 `get_tools()`：那会让「开关过滤」散在注册表里，
     调用方越多漏一次就多一条静默失效的路径。收敛成纯函数之后，
     `app.build_context` / `loop` / `TurnContext.tools` 三处都调它，谁都不许自己判断。
     """
-    kept = [name for name in (requested or ("research",)) if name in TOOLSETS and name != "kb"]
+    kept = [
+        name
+        for name in (requested or ("research",))
+        if name in TOOLSETS and name not in GATED_TOOLSETS
+    ]
     if enable_kb:
         kept.append("kb")
+    if enable_files:
+        kept.append("files")
     # 全都认不出来时退回默认工具集：空工具集会让模型以为「这轮不能调工具」
     return tuple(kept or ("research",))
 

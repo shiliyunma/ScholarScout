@@ -25,6 +25,7 @@ from scholarscout.runtime import (
 from scholarscout.runtime import (
     compaction,
     context_budget,
+    disclosure,
     registry,
     research_state,
 )
@@ -111,7 +112,13 @@ def _prompt_toolsets(toolsets: Sequence[str] | None, config: Config) -> list[str
     只在 `build_messages` / `mark_system_prompt` 用：`enable_kb` 关着时那行仍是 `research`，
     提示词因此与旧版**逐字节相同**（黄金哈希不变，历史实验数字仍可比）。
     """
-    return list(registry.enabled_toolsets(toolsets, enable_kb=config.features.enable_kb))
+    return list(
+        registry.enabled_toolsets(
+            toolsets,
+            enable_kb=config.features.enable_kb,
+            enable_files=config.features.enable_files,
+        )
+    )
 
 
 def build_messages(
@@ -127,6 +134,7 @@ def build_messages(
         allow_clarify=config.runtime.allow_clarify,
         auto_artifacts=config.generation.auto_artifacts,
         style=getattr(config.generation, "style", "default"),
+        disclosure=bool(config.features.enable_tool_disclosure),
     )
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     # D3：较早对话的提要固定在 system 之后、历史之前 —— 位置固定，服务端缓存才能在
@@ -166,10 +174,20 @@ def run_turn(
     sessions.append_message(ctx.db, session_id, role="user", content=text)
 
     specs = ctx.tools(toolsets)
+    # ---- 渐进披露（docs/01 §3.17）：只在 `features.enable_tool_disclosure` 开着时生效。
+    # 两件事必须同时做，缺一个就成了"半成品"：
+    # ① 登记本会话允许的工具全集（目录范围）—— `tool.search` / `tool.describe` 与直调闸
+    #    都从这里取，会话的 `toolsets` 可能来自前端，本模块拿不到，只能在取工具这一步顺手记；
+    # ② 把**发给模型的声明**裁到「核心 + 元工具 + 本会话已加载」—— 光有闸不裁声明，
+    #    模型会看到 11 个工具却只能调 3 个，比不披露更糟。
+    disclosure_on = bool(ctx.config.features.enable_tool_disclosure)
+    if disclosure_on:
+        disclosure.remember_universe(session_id, [spec.name for spec in specs])
+    declared = disclosure.declared_specs(specs, session_id=session_id) if disclosure_on else specs
     # ---- D3：历史超过阈值就先压一次（同一段只压一次；失败退回规则式裁剪，本轮照常）。
     maybe_compact(ctx, session_id=session_id, turn_id=turn_id)
     messages = build_messages(ctx.db, session_id, config=ctx.config, toolsets=toolsets)
-    tool_decls = registry.openai_tools(specs) or None
+    tool_decls = registry.openai_tools(declared) or None
 
     # ---- A1/A2：跨轮研究台账与本轮检索偏好位（详见 _prepare_research_state）。
     state = prepare_research_state(ctx, session_id=session_id, text=text, turn_id=turn_id)
@@ -482,6 +500,7 @@ def mark_system_prompt(
         allow_clarify=config.runtime.allow_clarify,
         auto_artifacts=config.generation.auto_artifacts,
         style=getattr(config.generation, "style", "default"),
+        disclosure=bool(config.features.enable_tool_disclosure),
     )
     value = system_prompt_hash(prompt)
     sessions.set_system_prompt_hash(db, session_id, value)

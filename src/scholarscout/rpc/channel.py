@@ -59,6 +59,7 @@ MODULES: tuple[str, ...] = (*tool_registry.TOOLSETS, MODULE_DEFAULT)
 MODULE_LABELS: dict[str, str] = {
     "research": "研究（检索 + 抓取 + 资料库）",
     "kb": "知识库（本地库问答）",
+    "files": "文件（只读目录与正文）",
     MODULE_DEFAULT: "默认（跟随全局）",
 }
 #: 平台 → 允许写入的凭据键（逻辑名 → `.env` 键名）。**白名单之外一律报错**。
@@ -539,13 +540,22 @@ def _enable_kb(ctx: AppContext) -> bool:
     return bool(ctx.config.features.enable_kb)
 
 
+def _enable_files(ctx: AppContext) -> bool:
+    return bool(ctx.config.features.enable_files)
+
+
 def _available_modules(ctx: AppContext) -> tuple[str, ...]:
-    """当前**真的能用**的模块：工具集白名单经特性开关收敛（`enable_kb` 关着就没有 `kb`）。
+    """当前**真的能用**的模块：工具集白名单经特性开关收敛（`enable_kb` 关着就没有 `kb`，
+    `enable_files` 关着就没有 `files`）。
 
     直接复用 `runtime/registry.enabled_toolsets` 而不是自己判断 —— 开关语义只存一份，
     否则"关着 kb 却把群绑到 kb"会变成一个静默无效的绑定。
     """
-    return tool_registry.enabled_toolsets(tool_registry.TOOLSETS, enable_kb=_enable_kb(ctx))
+    return tool_registry.enabled_toolsets(
+        tool_registry.TOOLSETS,
+        enable_kb=_enable_kb(ctx),
+        enable_files=_enable_files(ctx),
+    )
 
 
 def _global_default(ctx: AppContext) -> list[str]:
@@ -555,7 +565,13 @@ def _global_default(ctx: AppContext) -> list[str]:
     经 `enabled_toolsets` 收敛后顺便得到第三级兜底 —— 空/全不认识时它回 `("research",)`。
     """
     requested = [str(name) for name in ctx.toolsets if str(name).strip()]
-    return list(tool_registry.enabled_toolsets(requested or None, enable_kb=_enable_kb(ctx)))
+    return list(
+        tool_registry.enabled_toolsets(
+            requested or None,
+            enable_kb=_enable_kb(ctx),
+            enable_files=_enable_files(ctx),
+        )
+    )
 
 
 def _resolve(ctx: AppContext, channel: str, chat_id: str) -> dict[str, Any]:

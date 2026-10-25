@@ -367,6 +367,21 @@ class Features:
     #: 也不会出现「开关开了但什么都没发生」的假功能（那是 docs/23 记过的坑）。
     #: 开了之后第一次检索才建索引（`state/kb_index.py`，懒建，不阻塞启动）。
     enable_kb: bool = False
+    #: 只读文件工具（`file.list` / `file.read`，docs/01 §3.16）。**默认关**：关着时这两个工具
+    #: **根本不注册**、`files` 工具集也被 `enabled_toolsets` 摘掉，提示词里不会多出
+    #: `FILES_RULE` 那一段 —— 所以**默认路径的 `system_prompt_hash` 一个字符都不变**
+    #: （历史实验数字仍可比）。开了之后模型可以只读地列目录 / 读正文（文本/PDF/Office/HTML），
+    #: 读文件不必再走 `py.exec` 的审批（那是审批疲劳的来源）。
+    enable_files: bool = False
+    #: 工具**渐进披露**（`tool.search` / `tool.describe`，docs/01 §3.17）。**默认关**：关着时
+    #: 这两个元工具不注册、会话里 11 个工具的声明与提示词**逐字节不变**（契约清单与
+    #: `system_prompt_hash` 都不动，历史实验数字仍可比）。开着时：常驻的只有
+    #: `disclosure.CORE_TOOLS` + 这两个元工具，其余能力要模型先 `tool.search` 翻目录、
+    #: `tool.describe` 取 schema 之后才能在**本会话**里调用；没 describe 就直调回
+    #: `tool_not_loaded`（闸在 `runtime/turn_steps.execute_tool`）。
+    #: 为什么要这个开关而不是直接全量打开：E4 实测（docs/26）常驻 11 个声明时逐轮工具名
+    #: 准确率只有 0.067 —— 这是**实验臂**，得能和旧臂对比，不能悄悄替换默认行为。
+    enable_tool_disclosure: bool = False
 
 
 @dataclass(frozen=True)
@@ -617,6 +632,14 @@ def load_config(config_path: Path | None = None, *, load_env: bool = True) -> Co
             # 本地知识库检索（`kb.search`，docs/01 §5.8）。默认关；关着时工具根本不注册。
             # D3 同款坑：必须接这一行（`tests/test_config_runtime_keys.py` 会枚举 Features 字段）。
             enable_kb=bool(feature_section.get("enable_kb", False)),
+            # 只读文件工具（`file.list` / `file.read`，docs/01 §3.16）。默认关；
+            # 关着时两个工具都不注册、`files` 工具集被摘掉、提示词哈希不变。
+            # D3 同款坑：必须接这一行，否则 YAML 写了 enable_files 会被静默忽略。
+            enable_files=bool(feature_section.get("enable_files", False)),
+            # 工具渐进披露（`tool.search` / `tool.describe`，docs/01 §3.17）。默认关；
+            # 关着时元工具不注册、工具声明与提示词逐字节不变。
+            # D3 同款坑：必须接这一行，否则 YAML 写了 enable_tool_disclosure 会被静默忽略。
+            enable_tool_disclosure=bool(feature_section.get("enable_tool_disclosure", False)),
         ),
         data_dir=paths.data_dir(),
         db_path=paths.db_path(),
