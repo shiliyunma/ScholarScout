@@ -246,6 +246,8 @@ def run_turn(
             if ctx.is_cancelled(turn_id):
                 stop_reason = "cancelled"
                 break
+            #: 本轮是否已经"卡在等用户选"（见下面工具循环里的缺陷 3 检查点）
+            awaiting_choice = False
             tools_for_round = None if (stop_hinted or budget.remaining <= 0) else tool_decls
             # 预算检查点：已超则**当场收口** —— 只再给一次"不给工具"的总结机会，
             # 之后不再调模型（否则"封顶"每轮都还要再花一次钱，等于没封）。
@@ -307,6 +309,25 @@ def run_turn(
                 break
 
             for index, call in enumerate(reply.tool_calls):
+                # ---- 缺陷 3：**遇到选择请求就停手**（第一处检查点在"执行完这次"之后）。
+                # 为什么不能先跑完再看：选择卡是**轮次中途**由工具推上来的（``chat.needs_choice``），
+                # 那一刻用户还没点；同一 reply 里排在后面的调用若照跑（检索/抓取/子任务），
+                # 就成了"卡还没点、搜索已经发生"。已执行完的不回滚（回滚会造成更怪的不一致），
+                # 但**不再发起新的**。
+                if awaiting_choice:
+                    messages.extend(
+                        {
+                            "role": "tool",
+                            "content": (
+                                "未执行：本轮在等你选择检索方向（选择卡已发给用户），"
+                                "这一轮到此结束。用户点选后会在下一轮继续。"
+                            ),
+                            "tool_call_id": pending.id,
+                            "name": pending.name,
+                        }
+                        for pending in reply.tool_calls[index:]
+                    )
+                    break
                 # 会话级检查点（docs/20 §5.1）：**真正执行这一次调用之前**按会话累计判一次。
                 # 超限就**不执行**（一次都不再调），转入无工具收口 —— 已生成的正文不丢。
                 session_spent = (
@@ -338,7 +359,7 @@ def run_turn(
                     break
                 # 每执行一次工具就从本轮预算账里扣 1（子任务工具的额外消耗由 handler 自己回写）。
                 budget.spend(1)
-                result_text, tool_refs, canonical, tool_ok = execute_tool(
+                outcome = execute_tool(
                     ctx,
                     session_id,
                     turn_id,
@@ -347,6 +368,12 @@ def run_turn(
                     emit,
                     budget=budget,
                     seen_source_ids=seen_source_ids,
+                )
+                result_text, tool_refs, canonical, tool_ok = (
+                    outcome.text,
+                    outcome.refs,
+                    outcome.canonical,
+                    outcome.ok,
                 )
                 merge_refs(refs_total, tool_refs)
                 # ---- A1/A7：把这一批来源并进台账，看本轮到底有没有新东西
@@ -379,6 +406,17 @@ def run_turn(
                     tool_call_id=call.id,
                     name=call.name,
                 )
+                # ---- 缺陷 3 的**终点**：这一次调用让用户先选一次 → 本轮到此为止。
+                # 收口理由沿用 ``completed``：选择卡是这一轮**正常**的产出（用户点一下就能继续），
+                # 不是预算/上限/错误/取消，也不该让界面多维护一个 ``stop_reason`` 分支。
+                if outcome.needs_choice:
+                    stop_reason = "completed"
+                    awaiting_choice = True
+
+            # ---- 缺陷 3：这一批被选择请求截断了 —— 不再看"没新证据"的提示（那是给继续检索的
+            # 轮次用的），也不再调模型。本轮到此为止，等用户点选。
+            if awaiting_choice:
+                break
 
             # ---- A7：连续 N 次检索都拿不到新来源 → 明确叫停，让模型如实总结。
             # 为什么不直接断掉：断了就没有总结，用户只看到半句话。多花一次模型调用，

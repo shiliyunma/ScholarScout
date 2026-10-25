@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from scholarscout.providers.llm import ChatReply, ToolCall
 from scholarscout.runtime import (
@@ -44,12 +44,14 @@ logger = logging.getLogger(__name__)
 #: 上下文原语由 ``turn_context`` 定义、此处仅为向后兼容而重导出（见模块 docstring）。
 __all__ = [
     "Emitter",
+    "ToolOutcome",
     "TurnContext",
     "TurnResult",
     "account_tool_result",
     "accumulate_usage",
     "append_tool_call_request",
     "apply_coverage",
+    "awaits_user_choice",
     "bind_emitter",
     "call_model",
     "emit_event",
@@ -175,6 +177,37 @@ def query_from_arguments(arguments: str) -> str:
     return str(payload.get("query") or "").strip()
 
 
+class ToolOutcome(NamedTuple):
+    """一次工具执行的结果（喂回模型的文本 / refs / 规范名 / 是否成功 / 是否在等用户选）。
+
+    ``needs_choice`` 单独带出来是给主循环的**停手机制**用的：工具可以让用户先选一次
+    （``research.search`` 在"没说清要哪类资料"时就是这样），那种结果是**这一轮的终点**，
+    而不是"失败的调用"—— 后面排着的调用一次都不许再跑。
+    """
+
+    text: str
+    refs: dict[str, Any]
+    canonical: str
+    ok: bool
+    needs_choice: bool
+
+
+#: 为什么按**信封顶层键**判、不按工具名特判：``needs_choice`` / ``options`` 是 ``tools/envelope.py``
+#: 里的既有契约（前端 ``app.js::renderChoiceCard`` 也直接读它们）。按工具名写 ``if name ==
+#: "research.search"`` 会让"将来另一个工具也想问用户"变成又要改一次循环。
+def awaits_user_choice(result: Any) -> bool:
+    """这次工具结果是不是「让用户先选一下」（**有选项才算**）。
+
+    为什么要求 ``options`` 非空：界面渲染选择卡的唯一来源就是这份选项（无选项 → 不出卡）。
+    选项为空时停手，用户既没东西可点、这一轮也不再干活 —— 比继续跑更糟。所以只有
+    "卡片真能渲染出来"的选择请求才配叫停这一轮。
+    """
+    if not isinstance(result, dict) or not result.get("needs_choice"):
+        return False
+    options = result.get("options")
+    return isinstance(options, list) and bool(options)
+
+
 def execute_tool(
     ctx: TurnContext,
     session_id: str,
@@ -185,11 +218,14 @@ def execute_tool(
     *,
     budget: TurnBudget | None = None,
     seen_source_ids: set[str] | None = None,
-) -> tuple[str, dict[str, Any], str, bool]:
-    """执行一次工具调用，返回（喂回模型的文本, 该工具报出的 refs, 规范工具名, 是否成功）。
+) -> ToolOutcome:
+    """执行一次工具调用，返回 ``ToolOutcome``（喂回模型的文本 / refs / 规范名 / 成功 / 等用户选）。
 
     `ok` 单独带出来是给 A3 记账用的：工具**可以不抛异常而回"我失败了"**（例如所有检索来源都挂了），
     那种情况不该把查询记进台账（否则一次网络抖动就把这个方向永久锁死）。
+
+    `needs_choice` 是**停手信号**：工具让用户先选一次（``research.search`` 没说清要哪类资料时），
+    主循环读到它就不再执行同一 reply 里剩下的调用。
 
     失败也要如实回话并记 trace；规范名用于事件、轨迹与对外结果（线上名只在 API 报文里用）。
     """
@@ -231,7 +267,7 @@ def execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return message, {}, canonical, False
+        return ToolOutcome(message, {}, canonical, False, False)
 
     # ---- 渐进披露的闸（docs/01 §3.17）：**没 describe 过的工具不许直接调**。
     # 为什么做在这一层而不是"只在 payload 里不给它"：模型完全可以凭旧记忆/提示词里的名字
@@ -258,7 +294,7 @@ def execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return message, {}, canonical, False
+        return ToolOutcome(message, {}, canonical, False, False)
 
     import time
 
@@ -293,13 +329,14 @@ def execute_tool(
                 "refs": refs,
             },
         )
-        return (
+        return ToolOutcome(
             context_budget.project_tool_result(result, seen_source_ids=seen_source_ids),
             (refs if isinstance(refs, dict) else {}),
             canonical,
             # 工具可以不抛异常而回"我失败了"（例如所有检索来源都挂了）——
             # 判重记账必须按这个 ok 走，否则一次网络抖动就把某个方向永久锁死
             bool(result.get("ok", True)) if isinstance(result, dict) else True,
+            awaits_user_choice(result),
         )
     except Exception as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -320,11 +357,12 @@ def execute_tool(
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
         # 同上：工具名与异常类名只进 trace（上面那条），喂回模型的是人话 + 原始原因。
-        return (
+        return ToolOutcome(
             f"这一步没有成功：{exc}（如实说明哪一步没做成、大概为什么；"
             "不要把工具名、错误码或异常类名写进回答）",
             {},
             canonical,
+            False,
             False,
         )
 

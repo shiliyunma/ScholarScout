@@ -83,7 +83,7 @@ def _call(name: str, arguments: str = "{}") -> ToolCall:
 
 def _run(db: Database, config: Config, session_id: str, call: ToolCall) -> tuple[str, bool]:
     """跑一次 ``execute_tool``：``(喂回模型的文本, 是否成功)``。"""
-    message, _refs, _canonical, ok = execute_tool(
+    message, _refs, _canonical, ok, _needs_choice = execute_tool(
         _turn_ctx(db, config), session_id, f"trn_{session_id}", 1, call, None
     )
     return message, ok

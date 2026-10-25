@@ -57,7 +57,7 @@ def _execute(
     db: Database, config: Config, session_id: str, name: str, arguments: str = "{}"
 ) -> tuple[str, bool]:
     """跑一次 ``execute_tool``：``(喂回模型的文本, 是否成功)``。"""
-    message, _refs, _canonical, ok = execute_tool(
+    message, _refs, _canonical, ok, _needs_choice = execute_tool(
         _turn(db, config),
         session_id,
         f"trn_{session_id}",
