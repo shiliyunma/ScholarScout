@@ -131,7 +131,9 @@ def _map_view(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         kind = str(item.get("kind") or "concept")
         sources = item.get("source_ids")
-        node = {
+        # 显式标注：不标的话 mypy 会把字面量推成 dict[str, object]，
+        # 下面统计 kinds 时拿 object 当键就会报类型错。
+        node: dict[str, Any] = {
             "id": node_id,
             "label": str(item.get("label") or node_id),
             "kind": kind if kind in MAP_NODE_KINDS else "concept",
