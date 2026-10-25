@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -439,15 +440,32 @@ class _GoalLlm:
         return reply(f"ok:{goal}")
 
 
-def test_one_failing_subtask_does_not_block_the_others(config, db) -> None:
+def test_one_failing_subtask_does_not_block_the_others(config, db, caplog) -> None:
+    """一个子任务炸了不影响其它；给用户看的文案不留内部标识，原始异常只进日志。"""
+    caplog.set_level(logging.WARNING, logger="scholarscout.runtime.subtasks")
     session_id = sessions.create_session(db, model="stub-model")
 
     results = run_subtasks(
         _tool_ctx(config, db, _GoalLlm(), session_id=session_id), ["g1", "bad", "g2"]
     )
 
-    assert [r.text for r in results] == ["ok:g1", "子任务模型调用失败：server: 炸了", "ok:g2"]
+    # `LlmError` 走的是"模型服务这一侧"那条文案（`except LlmError` 比 `except Exception` 先命中）
+    assert [r.text for r in results] == [
+        "ok:g1",
+        "子任务没有跑完：模型服务这一侧出错（原因已记进日志）。",
+        "ok:g2",
+    ]
     assert [r.stop_reason for r in results] == ["completed", "error", "completed"]
+    # 双向验证（前一半）：`kind`（server）/ 异常类名 / 原始报文都不许出现在给用户看的 text 里
+    failed_text = results[1].text
+    assert "server" not in failed_text
+    assert "LlmError" not in failed_text
+    assert "炸了" not in failed_text
+    # 双向验证（后一半）：原始异常类名与 kind **仍留在日志**里 —— 剥掉的只是"给用户那份"，
+    # 不是诊断信息本身；日志里没有它就说明我们只是把错误静默吞了。
+    assert "LlmError" in caplog.text
+    assert "kind=server" in caplog.text
+    assert "炸了" in caplog.text
 
 
 # --------------------------------------------------------------- 4. 默认关

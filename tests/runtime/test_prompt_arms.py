@@ -191,7 +191,9 @@ def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
     assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V4, (
         "加入技能库规矩（skill.list / skill.load，工具数 9 → 11）又换了一次哈希，旧值要留痕"
     )
-    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V9, "加表达纪律（不许报内部标识）又换了一次，旧值要留痕"
+    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V9, (
+        "加表达纪律（不许报内部标识）又换了一次，旧值要留痕"
+    )
     assert system_prompt_hash(build_system_prompt(auto_artifacts=True)) == GOLDEN_AUTO_HASH
 
 

@@ -437,7 +437,11 @@ def run_subtask(
         # 内部标识（`exc.kind` / 异常类名）只进日志：子任务的 text 会被塞回主模型、
         # 也可能给用户看，写 `rate_limited: ...` 只会被原样转述出去（缺陷 4）。
         logger.warning(
-            "子任务模型调用失败：goal=%r kind=%s err=%s", goal_text, exc.kind, exc
+            "子任务模型调用失败：goal=%r exc=%s kind=%s err=%s",
+            goal_text,
+            type(exc).__name__,
+            exc.kind,
+            exc,
         )
         final_text = final_text or "子任务没有跑完：模型服务这一侧出错（原因已记进日志）。"
     except Exception as exc:

@@ -25,8 +25,12 @@ from scholarscout.settings_io import FIELDS, SettingsError
 #: 不是为凑绿改值；理由写在 `test_prompt_arms.py` 的钉值注释里。
 #: 2026-10-25 再更新（`20b7b97e452e` / `c21d781d15d5` → 现值）：只因为两档共用位置多了一条
 #: `SEARCH_PACE_RULE`（检索节制）。默认风格仍然**不加任何字符**，这条用例的语义没变。
-GOLDEN_ON_DEMAND_HASH = "07325099d9ac"
-GOLDEN_AUTO_HASH = "14ea4d9dd806"
+#: 2026-10-25 再更新（`07325099d9ac` / `14ea4d9dd806` → 现值）：两档共用位置又多了
+#: `USER_FACING_RULE`（回答里不许出现内部工具名 / 参数名 / 错误码 / 异常类名，缺陷 4）。
+#: 旧值留在 `test_prompt_arms.py` 的 `GOLDEN_ON_DEMAND_HASH_V9` / `GOLDEN_AUTO_HASH_V9`；
+#: 换哈希的理由是**提示词内容**变了（实验条件变了），不是格式化、也不是为凑绿。
+GOLDEN_ON_DEMAND_HASH = "43e654887606"
+GOLDEN_AUTO_HASH = "1326bbee1e3c"
 
 
 def test_style_choices_and_prompt_texts_do_not_drift() -> None:

@@ -55,10 +55,13 @@ GOLDEN_WIRE_SHA256 = "f57bd277287b70f6bae36d3909cb2afa4a736af68579de50945b8ae6e2
 #: 历史值：`b9ac0c043bf2`（2026-10-22 加 `PY_EXEC_RULE` 那一版，工具集 8 → 9）。
 #: 2026-10-22 再更新：**新增 `skill.list` / `skill.load`**（工具集 9 → 11）带来 `SKILL_RULE`，
 #: 这是**有意识的契约变更**，不是为凑绿改值；D-3 的四条路径本身一行未改。
-#: 2026-10-25 再更新（`20b7b97e452e` → 现值）：两档共用位置加了 `SEARCH_PACE_RULE`（检索节制）。
+#: 2026-10-25 再更新（`20b7b97e452e` → `07325099d9ac`）：两档共用位置加了 `SEARCH_PACE_RULE`（检索节制）。
 #: 本条用例要证明的仍是同一件事 —— **偏好位只进台账、不进系统提示**（提示词与「没点过任何偏好」
 #: 逐字节相同）；换哈希是被上游规则带的，不是 D-3 的代码动了。
-GOLDEN_PROMPT_HASH = "07325099d9ac"
+#: 2026-10-25 再更新（`07325099d9ac` → 现值）：两档共用位置又加了 `USER_FACING_RULE`
+#: （回答里不许出现内部工具名 / 参数名 / 错误码 / 异常类名，缺陷 4）；与
+#: `tests/runtime/test_prompt_arms.py::GOLDEN_ON_DEMAND_HASH` 同一次变更、同一个值。
+GOLDEN_PROMPT_HASH = "43e654887606"
 
 GITHUB_JSON = {
     "total_count": 1,
