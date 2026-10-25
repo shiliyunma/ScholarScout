@@ -104,6 +104,7 @@
       <nav class="tabs">
         <button class="tab is-active" type="button" data-tab="sources">资料库</button>
         <button class="tab" type="button" data-tab="routes">学习路线</button>
+        <button class="tab" type="button" data-tab="map">知识地图</button>
         <button class="tab" type="button" data-tab="notes">笔记</button>
         <button class="tab" type="button" data-tab="cards">抽背卡</button>
         <button class="tab" type="button" data-tab="board">研究看板</button>
@@ -132,6 +133,21 @@
         </div>
         <ul class="list" id="route-list"></ul>
         <div class="detail" id="route-detail"></div>
+      </div>
+
+      <div class="pane" id="pane-map">
+        <p class="hint">
+          本会话最新的一张知识地图：节点按类型着色、边按关系分线型。点「放大」可单独展开成浮层，
+          放大后能滚轮缩放、拖拽平移（与这里同一张图）。
+        </p>
+        <div class="actions">
+          <button type="button" id="btn-map-zoom">放大（单独窗口）</button>
+          <button type="button" id="btn-map-all" class="ghost" hidden>显示全部</button>
+        </div>
+        <div class="map-legend" id="map-legend"></div>
+        <div class="map-body" id="map-body"></div>
+        <p class="hint map-info" id="map-info" hidden></p>
+        <p class="hint" id="map-count"></p>
       </div>
 
       <div class="pane" id="pane-notes">
@@ -206,6 +222,17 @@
     </div>
   </div>
 
+  <div id="map-zoom" class="overlay" hidden>
+    <div class="sheet map-sheet">
+      <div class="sheet-head">
+        <strong>知识地图</strong>
+        <span class="hint">滚轮缩放、拖拽平移（与侧栏里是同一张图）</span>
+        <button id="btn-map-zoom-close" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="sheet-body map-zoom-body" id="map-zoom-body"></div>
+    </div>
+  </div>
+
   <div id="settings" class="overlay" hidden>
     <div class="sheet">
       <div class="sheet-head">
@@ -275,6 +302,7 @@
   <script src="api.js?v=2"></script>
   <script src="sources.js?v=2"></script>
   <script src="learning.js?v=2"></script>
+  <script src="map.js?v=2"></script>
   <script src="board.js?v=2"></script>
  
 

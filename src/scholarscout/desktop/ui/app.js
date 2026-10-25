@@ -1257,6 +1257,9 @@ async function openSession(sessionId) {
   await loadSessions();
   renderUnread();
   await refreshSessionUsage();  // 累计用量跟着会话走，不是全局
+  loadMapTab().catch(function () {
+    /* 地图刷不动不影响切会话（图是附产物，切会话本身必须成功） */
+  });
   syncSendState();
 }
 
@@ -1274,6 +1277,7 @@ async function refreshSide() {
   });
   const refs = collectRefs(payload.items || []);
   await renderRoutes(refs.route_ids || []);
+  await loadMapTab();
 }
 
 /* ------------------------------------------------- 研究看板（B2 证据表 / B4 时间线 / B7） */
@@ -1830,6 +1834,7 @@ function wire() {
         cards: loadCards,
         notes: loadNotes,
         board: loadBoard,
+        map: loadMapTab,
       };
       if (loaders[tab.dataset.tab]) loaders[tab.dataset.tab]();
     });

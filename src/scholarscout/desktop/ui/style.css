@@ -7874,3 +7874,186 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .composer-slash-empty.is-bad {
   color: var(--ui-red);
 }
+
+/* ───────────────────────── 知识地图（侧栏标签页 + 放大浮层）
+
+   纯 SVG，不引绘图库：颜色与线型全在这里定，节点/边的语义（kind / rel）由 map.js 写成
+   class（`kind-*` / `rel-*`）。六个标签挤在 380px 的右栏里 → tabs 允许换行，
+   否则最后一项会被压成两行字（右栏宽度本身不受影响，几何基线只量列宽）。 */
+.tabs {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 0 12px 4px;
+  font-size: 11.5px;
+  color: var(--ui-text-tertiary);
+}
+.map-legend-item,
+.map-legend-edge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.map-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--ui-accent);
+}
+.map-line {
+  width: 16px;
+  height: 0;
+  display: inline-block;
+  border-top: 2px solid var(--ui-text-tertiary);
+}
+.map-line.rel-prerequisite {
+  border-top-style: dashed;
+}
+.map-line.rel-variant {
+  border-top-style: dotted;
+}
+
+.map-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 8px;
+  overflow: hidden;
+  display: flex;
+}
+.map-svg {
+  width: 100%;
+  height: 100%;
+  min-height: 200px;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+.map-svg:active {
+  cursor: grabbing;
+}
+
+.map-svg .map-edge {
+  stroke: var(--ui-stroke-secondary);
+  stroke-width: 1.2;
+}
+.map-edge.rel-prerequisite {
+  stroke-dasharray: 6 4;
+}
+.map-edge.rel-variant {
+  stroke-dasharray: 2 4;
+}
+.map-edge.rel-evaluates {
+  stroke-dasharray: 9 3 2 3;
+}
+.map-edge.is-hot {
+  stroke: var(--ui-accent);
+  stroke-width: 2.2;
+}
+
+.map-node {
+  cursor: pointer;
+}
+.map-node .map-dot {
+  fill: var(--ui-accent);
+  stroke: var(--ui-bg-chrome);
+  stroke-width: 1.2;
+}
+.map-node .map-label {
+  font-size: 11px;
+  text-anchor: middle;
+  fill: var(--ui-text-secondary);
+  pointer-events: none;
+}
+.map-node.is-hot .map-dot {
+  stroke: var(--ui-text-primary);
+  stroke-width: 2.4;
+}
+.map-node.is-hot .map-label {
+  fill: var(--ui-text-primary);
+}
+
+/* 悬停/选中时压暗其余 —— 只在真有焦点时才生效（平时全亮，不牺牲可读性） */
+.map-svg.is-focusing .map-node {
+  opacity: 0.22;
+}
+.map-svg.is-focusing .map-node.is-hot,
+.map-svg.is-focusing .map-node.is-near {
+  opacity: 1;
+}
+.map-svg.is-focusing .map-edge {
+  opacity: 0.12;
+}
+.map-svg.is-focusing .map-edge.is-hot {
+  opacity: 1;
+}
+
+/* 节点类型配色：只用既有主题令牌（不新增 --ui-* 变量） */
+.map-node.kind-concept .map-dot,
+.map-swatch.kind-concept {
+  fill: var(--ui-accent);
+  background: var(--ui-accent);
+}
+.map-node.kind-method .map-dot,
+.map-swatch.kind-method {
+  fill: var(--ui-green);
+  background: var(--ui-green);
+}
+.map-node.kind-dataset .map-dot,
+.map-swatch.kind-dataset {
+  fill: var(--ui-orange);
+  background: var(--ui-orange);
+}
+.map-node.kind-tool .map-dot,
+.map-swatch.kind-tool {
+  fill: var(--ui-purple);
+  background: var(--ui-purple);
+}
+.map-node.kind-venue .map-dot,
+.map-swatch.kind-venue {
+  fill: var(--ui-yellow);
+  background: var(--ui-yellow);
+}
+.map-node.kind-source .map-dot,
+.map-swatch.kind-source {
+  fill: var(--ui-warm);
+  background: var(--ui-warm);
+}
+
+.map-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  font-size: 12.5px;
+  color: var(--ui-text-tertiary);
+}
+.map-empty p {
+  margin: 0;
+}
+
+.map-info {
+  padding: 0 12px;
+}
+
+/* 放大浮层：同一张图换个大盒子（不重取数、不重算布局） */
+.map-sheet {
+  width: min(1180px, 94vw);
+  height: min(820px, 90vh);
+}
+.map-zoom-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 10px 10px;
+  overflow: hidden;
+}
+.map-zoom-body .map-body {
+  height: 100%;
+  padding: 0;
+}
