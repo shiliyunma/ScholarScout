@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -306,3 +308,151 @@ def test_hidden_and_partial_files_are_skipped(ctx: AppContext, tmp_path: Path) -
     rows, _total = archive.list_documents(ctx.db)
     assert [row["raw_path"] for row in rows] == ["data/exports/report.xlsx"]
     assert paths.rel_to_home(exports / "report.xlsx") == "data/exports/report.xlsx"
+
+
+# --------------------------------------------------------------------------- #
+# ⑧ 幂等（sha 判据）：同字节重写只动 mtime → 不算变化、不发事件、不重写索引
+# --------------------------------------------------------------------------- #
+
+
+def _artifact_state(db: Any) -> Any:
+    """库里的产物那一行：``documents`` 的 sha/收藏时刻 + ``sources`` 的扫描水位。"""
+    return db.query_one(
+        """
+        SELECT d.sha256 AS sha256, d.fetched_at AS fetched_at, s.meta_json AS meta_json
+        FROM documents d JOIN sources s ON s.id = d.source_id
+        """
+    )
+
+
+def test_same_bytes_with_new_mtime_is_unchanged_and_emits_nothing(
+    ctx: AppContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """判据必须是**文件内容**，不是 mtime：同字节重写（编辑器保存/复制）不算\"更新\"。
+
+    只按 ``mtime_ns + size`` 判会把这种重写当成改动：每次重扫白写一行 + 多发一次
+    ``library.updated``，界面跟着白刷新一遍。修法是在算出 sha256 之后先跟库里比一次。
+    """
+    exports = _exports(tmp_path)
+    exports.mkdir(parents=True, exist_ok=True)
+    target = exports / "讲义.md"
+    body = "# 讲义\n同一份内容\n"
+    target.write_text(body, encoding="utf-8")
+    assert artifact_index.scan_artifacts(ctx.db, exports, session_id="ses_x")["added"] == 1
+
+    index_path = tmp_path / "data" / "library" / "index.md"
+    index_mtime = index_path.stat().st_mtime_ns
+    before = _artifact_state(ctx.db)
+    assert before is not None
+    old_level = json.loads(str(before["meta_json"]))["mtime_ns"]
+
+    # 同字节重写 + 把 mtime 挪开（内容一个字节都没变）
+    stat = target.stat()
+    target.write_text(body, encoding="utf-8")
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+    new_level = target.stat().st_mtime_ns
+    assert new_level != old_level
+
+    rewrites: list[Any] = []
+
+    def counting(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        rewrites.append(args)
+        return {"index_path": str(index_path)}
+
+    monkeypatch.setattr(artifact_index, "write_indexes", counting)
+    events: list[tuple[str, dict[str, Any]]] = []
+    result = artifact_index.refresh_after_write(
+        ctx.db,
+        exports,
+        session_id="ses_x",
+        emit=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    scan = result["artifact_scan"]
+    assert (scan["added"], scan["updated"], scan["unchanged"]) == (0, 0, 1)
+    assert scan["refreshed"] is False
+    assert rewrites == [], "内容没变就不该重写 index.md"
+    assert events == [], "没有新增/改动就不该发 library.updated"
+    assert index_path.stat().st_mtime_ns == index_mtime
+
+    after = _artifact_state(ctx.db)
+    assert after is not None
+    assert after["sha256"] == before["sha256"]
+    assert after["fetched_at"] == before["fetched_at"], "不算更新就不该动 documents.fetched_at"
+    assert json.loads(str(after["meta_json"]))["mtime_ns"] == new_level, (
+        "水位要跟着挪，否则每扫一次都会白算一遍 sha256"
+    )
+    assert ctx.db.scalar_int("SELECT count(*) FROM documents") == 1
+
+    # 水位已推进：紧接着再扫一次连哈希都不该算
+    hashed: list[Path] = []
+    real = artifact_index._sha256
+
+    def counting_hash(path: Path) -> str:
+        hashed.append(path)
+        return real(path)
+
+    monkeypatch.setattr(artifact_index, "_sha256", counting_hash)
+    again = artifact_index.scan_artifacts(ctx.db, exports, session_id="ses_x")
+    assert hashed == []
+    assert again["unchanged"] == 1 and again["updated"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# ⑨ 内容真变了：仍然就地更新那一行 + 发一次事件（修法不许把真变化一起吞掉）
+# --------------------------------------------------------------------------- #
+
+
+def test_real_content_change_updates_the_row_and_emits_library_updated(
+    ctx: AppContext, tmp_path: Path
+) -> None:
+    exports = _exports(tmp_path)
+    exports.mkdir(parents=True, exist_ok=True)
+    target = exports / "讲义.md"
+    target.write_text("# 讲义\n第一版\n", encoding="utf-8")
+    assert artifact_index.scan_artifacts(ctx.db, exports, session_id="ses_x")["added"] == 1
+    before = _artifact_state(ctx.db)
+    assert before is not None
+
+    target.write_text("# 讲义\n第二版（内容真的变了）\n", encoding="utf-8")
+    events: list[tuple[str, dict[str, Any]]] = []
+    result = artifact_index.refresh_after_write(
+        ctx.db,
+        exports,
+        session_id="ses_x",
+        emit=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    scan = result["artifact_scan"]
+    assert (scan["added"], scan["updated"], scan["unchanged"]) == (0, 1, 0)
+    assert scan["refreshed"] is True and result["indexed"] is True
+    assert result["artifacts"][0]["change"] == "updated"
+    assert [kind for kind, _ in events] == ["library.updated"]
+    assert events[0][1]["updated"] == 1 and events[0][1]["added"] == 0
+    assert events[0][1]["session_id"] == "ses_x"
+
+    after = _artifact_state(ctx.db)
+    assert after is not None
+    assert after["sha256"] != before["sha256"]
+    assert after["fetched_at"] != before["fetched_at"]
+    assert ctx.db.scalar_int("SELECT count(*) FROM documents") == 1, "同一个文件仍只有一行"
+
+
+# --------------------------------------------------------------------------- #
+# ⑩ 文件被删掉：扫描不报错，也不把已有的行抹掉
+# --------------------------------------------------------------------------- #
+
+
+def test_deleted_file_is_tolerated_by_the_next_scan(ctx: AppContext, tmp_path: Path) -> None:
+    exports = _exports(tmp_path)
+    exports.mkdir(parents=True, exist_ok=True)
+    target = exports / "讲义.md"
+    target.write_text("# 讲义\n", encoding="utf-8")
+    assert artifact_index.scan_artifacts(ctx.db, exports, session_id="ses_x")["added"] == 1
+
+    target.unlink()
+    scan = artifact_index.scan_artifacts(ctx.db, exports, session_id="ses_x")
+
+    assert scan["added"] == 0 and scan["updated"] == 0 and scan["unchanged"] == 0
+    assert scan["refreshed"] is False and scan["indexed"] is True
+    assert ctx.db.scalar_int("SELECT count(*) FROM documents") == 1

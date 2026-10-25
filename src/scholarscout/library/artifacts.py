@@ -247,7 +247,11 @@ def scan_artifacts(
             continue
         digest = _sha256(path)
         if row is not None and str(row["sha256"]) == digest:
-            # 内容没变，只是 mtime 动了（复制/触摸）：只挪水位，不算"更新"
+            # 内容没变，只是 mtime 动了（复制/触摸/编辑器重存）：只挪水位，不算"更新"。
+            # 为什么仍写一次库：不挪水位的话，每次扫描都会把这个文件的 sha256 重算一遍
+            # （大 docx/pdf 就是白白读一遍盘）。代价只有一条轻量 UPDATE（``sources.meta_json`` /
+            # ``last_seen_at``）—— 不动 ``documents``、不重写索引、不发 ``library.updated``。
+            # 取舍口径：幂等指"资料库看到的没有变化"，不是"一条 SQL 都不跑"。
             artifact_files.touch_artifact(
                 db, source_id=str(row["source_id"]), meta=_meta_for(rel, stat, digest)
             )
