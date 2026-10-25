@@ -33,10 +33,16 @@ from scholarscout.tools.py_exec import py_exec
 from ..conftest import insert_session, redirect_home
 
 #: 真写一个 docx 容器（zip + word/document.xml）：产物是二进制容器，不是 Markdown。
+#:
+#: **zip 条目时间戳必须钉死**：``ZipFile.writestr`` 不给 ``ZipInfo`` 时会把**当前本地时间**
+#: 写进 zip 头（DOS 时间只有 2 秒粒度）。同一份片段隔一次运行重写，字节就可能不同 ——
+#: sha256 变 → 增量扫描如实标成 ``updated``。幂等用例（"第二次扫不该新增"）就会随机翻红，
+#: 与产品行为无关，纯粹是夹具不确定。钉住 ``date_time`` 后，两次写出的字节逐字节相同。
 DOCX_SNIPPET = (
     "import zipfile\n"
+    "info = zipfile.ZipInfo('word/document.xml', date_time=(2026, 1, 1, 0, 0, 0))\n"
     "with zipfile.ZipFile('毕业论文.docx', 'w') as z:\n"
-    "    z.writestr('word/document.xml', '<w:document/>')\n"
+    "    z.writestr(info, '<w:document/>')\n"
     "print('wrote docx')\n"
 )
 #: 什么都不写的片段：用来证明「没有新文件 → 不重扫、不重写索引」。
