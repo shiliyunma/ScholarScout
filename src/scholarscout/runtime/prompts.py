@@ -69,6 +69,21 @@ CLARIFY_RULE = """
 不要连续追问，也不要把澄清当成不回答的借口。"""
 
 
+#: 检索的节奏（2026-10-25 加，两档都加）：E4 `--limit 2` 的 19 次调用里冗余几乎全是两件事 ——
+#: 同一轮连发几条不同措辞的检索、以及还没看结果就先抓正文。这不是文风要求，是**减少空转调用**
+#: 的主手段（治的是「逐轮工具名准确率 0.067」背后同一个毛病：一轮里塞太多动作、工具选择变糊）。
+#: **这一段进 `build_system_prompt` → 改它即改 `system_prompt_hash`**（换哈希＝换实验臂）。
+SEARCH_PACE_RULE = """\
+## 检索的节奏：一轮只走一步
+
+1. **先做一次检索，看结果再决定要不要抓正文**：拿到返回的标题 / 摘要 / 年份之后再挑条目，
+   **不要**在同一轮里同时发检索和抓取 —— 那时你手上还没有结果可挑，抓的只是猜出来的名字。
+2. **不要在同一轮里发多条不同措辞的检索**：换个说法搜同一件事不会带来新证据（工具也会拒绝
+   重复查询），只会把这一轮的预算烧在同义改写上。
+3. **需要换角度时，下一轮再发**：看到结果后确实缺一个维度（换来源族 / 换年份 / 换语种 /
+   换对照对象）时，下一轮再发那一条检索。一轮一个动作，比一轮发五条更快拿到能用的材料。"""
+
+
 #: A1/A2/A7 的规矩：把"继续搜索"从"换词重搜"变成"按缺口清单推进"。
 # 每轮消息末尾会注入一份研究台账（目标/子问题覆盖情况/已搜查询/缺口清单），本段说明怎么用它。
 RESEARCH_STATE_RULE = """\
@@ -216,9 +231,10 @@ DISCLOSURE_AUTO_PIPELINE_PROMPT = """
 #: `DELEGATE_RULE` / `PY_EXEC_RULE` / `SKILL_RULE` —— 那些段落都在写"某个工具什么时候用"，
 #: 而披露档的前提是"模型手上没有它的参数定义"，逐个写名字等于给了一张过期的清单。
 DISCLOSURE_RULE = """\
-## 工具是先查后用的（常驻只有三件）
+## 工具是先查后用的（常驻只有这几件）
 
 1. **常驻工具**：检索（research.search）、取原文（source.fetch）、存笔记（note.save），
+   以及只读本地文件的 file.list / file.read（`enable_files` 关掉时没有这两个），
    加上两个元工具 tool.search / tool.describe。**别的能力都不在你手上的参数定义里**。
 2. **用之前两步**：先 tool.search（`query` 用能力关键词，如 map / route / grade / 代码 / 技能 / 文件 / 委派），
    它只回名字与一句话；再 tool.describe（`names` 一次最多 3 个）拿回完整 parameters。
@@ -306,6 +322,8 @@ def build_system_prompt(
         parts = [
             BASE_PROMPT,
             DISCLOSURE_AUTO_PIPELINE_PROMPT if auto_artifacts else DISCLOSURE_PIPELINE_PROMPT,
+            # 检索节制：一轮只走一步（两档共用，治的是同义重搜与未看结果就抓取）
+            SEARCH_PACE_RULE,
         ]
         if allow_clarify:
             parts.append(CLARIFY_RULE)
@@ -319,6 +337,8 @@ def build_system_prompt(
         return "\n".join(parts).strip()
 
     parts = [BASE_PROMPT, PIPELINE_PROMPT if auto_artifacts else ON_DEMAND_PIPELINE_PROMPT]
+    # 检索节制：一轮只走一步（与披露档同一段 —— 两档的差别只该在"工具怎么找"，不该在"检索怎么走"）
+    parts.append(SEARCH_PACE_RULE)
     if allow_clarify:
         parts.append(CLARIFY_RULE)
     # A1/A2/A7：怎么用每轮注入的「研究台账」（放最后，作为本轮流程的补充说明）

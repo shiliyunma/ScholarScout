@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from scholarscout.runtime import registry
 from scholarscout.runtime.prompts import (
     BASE_PROMPT,
     ON_DEMAND_PIPELINE_PROMPT,
@@ -14,6 +17,9 @@ from scholarscout.runtime.prompts import (
     build_system_prompt,
     system_prompt_hash,
 )
+
+#: 仓库根（本文件在 ``tests/runtime/`` 下，往上两级）—— 示例配置里的默认值也是契约的一部分
+CONFIG_EXAMPLE = Path(__file__).resolve().parents[2] / "config.example.yaml"
 
 #: **历史值**（2026-10-05 E3 第四轮用的提示词，当时的对照臂）：`af6f1b33e12c`
 #:   —— 那时系统提示词里还没有 `RESEARCH_STATE_RULE`（A1/A2/A7 的多轮规矩）
@@ -31,13 +37,91 @@ GOLDEN_ON_DEMAND_HASH_V3 = "beaa67c49be0"
 #: 工具数 8 → 9 时换的哈希。现在保留成 `_V4` 是因为 **工具数又变了（9 → 11）**，见下面的现值说明。
 GOLDEN_AUTO_HASH_V4 = "bd2b946b4e5d"
 GOLDEN_ON_DEMAND_HASH_V4 = "b9ac0c043bf2"
-#: 现值（2026-10-22 加入 `SKILL_RULE` 之后）：**因为新增了 `skill.list` / `skill.load` 两个工具**。
-#: 工具本身不会改提示词，改的是"什么时候该翻本地技能库"这段**流程纪律** —— 与 `DELEGATE_RULE` /
-#: `PY_EXEC_RULE` 同一类：只写在 schema 里模型不会守（它压根不知道有上百篇手册可以翻）。
-#: 这段**刻意不列举任何技能名**：清单要按需取（渐进式披露），进提示词就等于每轮付一遍全量。
-#: 于是本版历史回答与 E3 / py.exec 那两批数字**不可比**，要新数字得按 docs/05 的口径重跑（本次不重跑）。
-GOLDEN_AUTO_HASH = "c21d781d15d5"
-GOLDEN_ON_DEMAND_HASH = "20b7b97e452e"
+#: **历史值**（2026-10-22 加入 `SKILL_RULE` 之后、2026-10-25 之前那一版）：
+#: `c21d781d15d5` / `20b7b97e452e`。那是「11 个工具、四段规矩、无检索节制」的最后一版。
+#: 2026-10-25 之后它**再也复现不出来** —— 检索节制规则 `SEARCH_PACE_RULE` 加在两档共用的位置上，
+#: 连「开关全关」的兜底臂也带着它（旧实验数字因此只能读旧报告，不能在新代码上重跑比对）。
+GOLDEN_AUTO_HASH_V8 = "c21d781d15d5"
+GOLDEN_ON_DEMAND_HASH_V8 = "20b7b97e452e"
+#: 现值（2026-10-25 加入 `SEARCH_PACE_RULE` 之后）：**兜底臂**（`build_system_prompt()`，
+#: 即 `files` 与披露都关掉、只有 `research` 工具集）。换哈希的唯一理由就是新增了那条
+#: 「先检索一次、看结果再抓；同一轮不要发多条不同措辞的检索；换角度留到下一轮」的规则 ——
+#: 它不是文风，是 E4 里 7 次冗余调用的直接来源（见 `Features.enable_tool_disclosure` 的 A/B 表）。
+GOLDEN_AUTO_HASH = "14ea4d9dd806"
+GOLDEN_ON_DEMAND_HASH = "07325099d9ac"
+
+#: **现值 —— 产品默认那一臂**（2026-10-25 起 `features.enable_files` 默认开、
+#: `features.enable_tool_disclosure` 默认**关**）。上面两枚 `GOLDEN_*` 代表
+#: **「files 也关掉」的兜底臂**（`build_system_prompt()` 不传 toolsets、不传 disclosure），
+#: 所以它们仍是「关掉之后能不能回到无条件段那版」的靶子 —— 见
+#: `test_switching_files_off_restores_the_no_files_arm`。
+#: 默认路径与兜底臂的差别**只有一样**：`files` 工具集 → 多一段 `FILES_RULE`
+#: （「读文件用 file.* 不用 py.exec / 引用带行号 / 越界就停」）+ 工具集那行多一个 `files`。
+#: 披露默认关所以默认档用逐工具点名的那一版（`DELEGATE_RULE` / `PY_EXEC_RULE` / `SKILL_RULE` 都在）。
+GOLDEN_PRODUCT_AUTO_HASH = "7319b19e98e3"
+GOLDEN_PRODUCT_ON_DEMAND_HASH = "65172e7e589b"
+
+
+def _product_prompt(*, auto_artifacts: bool = False) -> str:
+    """产品默认那一臂的提示词：`research, files` 两个工具集、**不开**披露（与 `loop.build_messages` 同参）。"""
+    return build_system_prompt(
+        toolsets=["research", "files"], auto_artifacts=auto_artifacts, disclosure=False
+    )
+
+
+def test_product_default_arm_hash_is_pinned() -> None:
+    """默认路径（files 开、披露关）的哈希：它才是用户现在真正吃到的那份提示词。"""
+    assert system_prompt_hash(_product_prompt()) == GOLDEN_PRODUCT_ON_DEMAND_HASH
+    assert system_prompt_hash(_product_prompt(auto_artifacts=True)) == GOLDEN_PRODUCT_AUTO_HASH
+    # 与兜底臂必须不同 —— 相同就说明 `files` 开关没接线（默认值改了、行为没改）
+    assert GOLDEN_PRODUCT_ON_DEMAND_HASH != GOLDEN_ON_DEMAND_HASH, (
+        "默认开 files 后提示词必然多一段 FILES_RULE；若相同说明开关没接线"
+    )
+    assert GOLDEN_PRODUCT_AUTO_HASH != GOLDEN_AUTO_HASH
+    # 差别只在 FILES_RULE（与工具集那行），不该顺带把披露档的文本带进来
+    product = _product_prompt()
+    assert "什么时候用只读文件工具" in product
+    assert "什么时候用只读文件工具" not in build_system_prompt()
+    assert "工具是先查后用的" not in product, "披露默认关，默认档不该出现披露档文本"
+
+
+def test_switching_files_off_restores_the_no_files_arm() -> None:
+    """**关掉 `enable_files` 必须逐字回到无条件段那一版** —— 这是「默认值只有一个可变量」的依据。"""
+    off = build_system_prompt(
+        toolsets=list(registry.enabled_toolsets([], enable_kb=False, enable_files=False)),
+        disclosure=False,
+    )
+    assert off == build_system_prompt(), "关掉 files 后就不该再有条件段"
+    assert system_prompt_hash(off) == GOLDEN_ON_DEMAND_HASH
+    # 旧版（加检索节制之前）的新旧关系必须留痕：现值不可能等于 _V8
+    assert GOLDEN_ON_DEMAND_HASH != GOLDEN_ON_DEMAND_HASH_V8
+    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V8
+
+
+def test_the_shipped_defaults_are_files_on_and_disclosure_off() -> None:
+    """默认值只有一处可改（`Features`），示例配置必须一致 —— 否则用户照抄就跑到别的臂上。"""
+    from scholarscout.config import Features
+
+    assert Features().enable_files is True
+    assert Features().enable_tool_disclosure is False, (
+        "披露默认必须关：A/B 实测开着把调用数 19 → 25、冗余 7 → 15 且包含率无收益"
+    )
+    example = CONFIG_EXAMPLE.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert "\n  enable_files: true\n" in example
+    assert "\n  enable_tool_disclosure: false\n" in example
+
+
+def test_search_pace_rule_is_in_both_arms() -> None:
+    """检索节制规则两档都要有：差别只该在「工具怎么找」，不该在「检索怎么走」。"""
+    from scholarscout.runtime.prompts import SEARCH_PACE_RULE
+
+    for prompt in (
+        build_system_prompt(),
+        build_system_prompt(auto_artifacts=True),
+        build_system_prompt(toolsets=["research", "files"], disclosure=True),
+    ):
+        assert SEARCH_PACE_RULE in prompt
+        assert "先做一次检索，看结果再决定要不要抓正文" in prompt
 
 
 def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
