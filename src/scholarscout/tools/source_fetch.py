@@ -37,6 +37,13 @@ from scholarscout.fetch.formats import (
 )
 from scholarscout.fetch.html_text import extract_html
 from scholarscout.fetch.http import FetchError, FetchResult
+
+#: 本地 PDF 抽正文（pymupdf）的**唯一实现**在 `fetch/pdf_text.py`（只读工具 `file.read` 也用同一份）。
+#: 这里留一个同名的**薄包装** `_pdf_text`：本模块内有调用点、`tests/tools/test_source_fetch.py`
+#: 直接取这个名字、也用它做 monkeypatch —— 名字与签名不改，口径一字不动。
+#: 包装只做一件事：把**本模块的** `time.monotonic` 注进去，于是 `monkeypatch.setattr(module, "time", ...)`
+#: 仍然能钉住"抽到一半超预算"那条分支（实现搬走后这层注入是唯一的接缝）。
+from scholarscout.fetch.pdf_text import pdf_text as _pdf_text_impl
 from scholarscout.fetch.throttle import interval_for_url
 from scholarscout.fetch.urls import guess_source_type, prefer_direct_file
 from scholarscout.library import naming
@@ -102,42 +109,15 @@ def _file_detail(size_bytes: int, *, kind: str) -> str:
 
 
 def _pdf_text(content: bytes, *, budget_s: float) -> tuple[str, str, str, str]:
-    """本地 PDF 抽正文（pymupdf）。抽不到文字时如实返回 ``no_text_layer``，由调用方决定是否走 MinerU。
+    """本地 PDF 抽正文（pymupdf）—— 转调 `fetch/pdf_text.pdf_text`，只补一个时钟。
 
-    ``budget_s`` 是**抽取阶段的墙钟预算**（分阶段超时里的"抽取"那一段）：逐页循环里检查，
-    超了就停下并标 ``extract_timeout`` —— 宁可这一条没摘要（如实标注），也不让整轮卡在本地解析上。
-    实测 arXiv 800KB / 54k 字符的 PDF 只要 0.07–0.2s，所以正常路径永远碰不到它。
+    行为与"实现还在这里"时逐字一致：实现搬去 `fetch/` 是因为 `file.read` 也要用同一份
+    （分层测试禁止 `fetch` 依赖 `tools`，`tools` 之间互相伸手也会把两个工具焊死）。
+    这里保留这个名字与签名，是因为本模块有调用点、测试也直接取用/替换它。
+    ``time.monotonic`` **在调用时**从本模块取，所以 `monkeypatch.setattr(module, "time", ...)`
+    仍然生效 —— "抽到一半超预算"那条分支靠这个假时钟才钉得住。
     """
-    try:
-        import pymupdf
-    except ImportError:
-        return "", "no_text_layer", "none", "pymupdf 未安装"
-    try:
-        document = pymupdf.open(stream=content, filetype="pdf")
-        try:
-            total = document.page_count
-            deadline = time.monotonic() + max(0.0, budget_s)
-            pages: list[str] = []
-            for index in range(total):
-                # ``>=`` 而不是 ``>``：Windows 上 ``time.monotonic()`` 走 GetTickCount64，
-                # 粒度约 15.6ms —— 同一刻度内两次读到**相等**的值，用 ``>`` 会让"预算已用尽"
-                # 变成漏判（预算 0 也照样把整份 PDF 抽完）。
-                if index and time.monotonic() >= deadline:
-                    return (
-                        "",
-                        "extract_timeout",
-                        "local",
-                        f"本地抽取超过 {budget_s:g}s（已抽 {index}/{total} 页）",
-                    )
-                pages.append(document.load_page(index).get_text())
-        finally:
-            document.close()
-    except Exception as exc:
-        return "", "no_text_layer", "local", f"pymupdf 打开失败：{type(exc).__name__}"
-    text = "\n".join(pages).strip()
-    if text:
-        return text, "ok", "local", ""
-    return "", "no_text_layer", "local", "没有文字层（多为扫描版）→ 交给 MinerU"
+    return _pdf_text_impl(content, budget_s=budget_s, clock=time.monotonic)
 
 
 def _meta_of(raw: Any) -> dict[str, Any]:
