@@ -84,6 +84,102 @@ def topic_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+@method("topic.get_map")
+def topic_get_map(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
+    """知识地图的**只读可视化视图**（`topic.get` 的图形化投影）。
+
+    为什么不让界面直接读 `topic.get`：`topic.get` 回的是落库原样
+    （`nid` / `src` / `dst` / `rel`，且没有度数）。画图要的是 `id/source/target/kind`
+    与**度数**（圆点大小、大图截断排序都靠它）；把这套归一规则放进界面层，
+    等于同一件事写第二份，迟早与后端漂移。这里只归一并算 `weight`，
+    **不重建图、不调模型**。
+    """
+    params = _params(params)
+    topic_id = _require(params, "topic_id")
+    payload = learning.get_topic_map(ctx.db, topic_id)
+    if payload is None:
+        raise RpcError(Code.NOT_FOUND, f"主题地图不存在：{topic_id}")
+    return _map_view(payload)
+
+
+#: 节点类型 / 关系类型：与 `tools/topic_map.py` 的 `ALLOWED_*` **同一口径**。
+#: 这里重写一份常量而不是 import 工具模块：RPC 层不该为了几个字符串把工具层
+#: （模型客户端、提示词包）一起拖进来。
+MAP_NODE_KINDS = ("concept", "method", "dataset", "tool", "venue", "source")
+MAP_EDGE_KINDS = ("prerequisite", "variant", "uses", "evaluates")
+
+
+def _map_view(payload: dict[str, Any]) -> dict[str, Any]:
+    """把 `graph_json` 归一成界面能直接画的图：节点带 `weight`（= 度数）、边两端是节点 id。
+
+    坏数据（手工改过库、写一半崩过）逐项跳过，**不整体抛错** —— 界面宁可少画几个点，
+    也不该整张图打不开（与 `learning.list_topic_maps` 的容错口径一致）。
+    """
+    graph = payload.get("graph")
+    if not isinstance(graph, dict):
+        graph = {}
+    raw_nodes = graph.get("nodes")
+    raw_edges = graph.get("edges")
+
+    nodes: list[dict[str, Any]] = []
+    index: dict[str, dict[str, Any]] = {}
+    for item in raw_nodes if isinstance(raw_nodes, list) else []:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("nid") or item.get("id") or "").strip()
+        if not node_id or node_id in index:
+            continue
+        kind = str(item.get("kind") or "concept")
+        sources = item.get("source_ids")
+        node = {
+            "id": node_id,
+            "label": str(item.get("label") or node_id),
+            "kind": kind if kind in MAP_NODE_KINDS else "concept",
+            "weight": 0,
+            "sources": [str(ref) for ref in sources if str(ref).strip()]
+            if isinstance(sources, list)
+            else [],
+        }
+        index[node_id] = node
+        nodes.append(node)
+
+    edges: list[dict[str, Any]] = []
+    for item in raw_edges if isinstance(raw_edges, list) else []:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("src") or item.get("source") or "").strip()
+        target = str(item.get("dst") or item.get("target") or "").strip()
+        # 端点不存在 / 自环：画不出来也不该画（与建图时的守卫同一口径）
+        if source == target or source not in index or target not in index:
+            continue
+        kind = str(item.get("rel") or item.get("kind") or "uses")
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "kind": kind if kind in MAP_EDGE_KINDS else "uses",
+            }
+        )
+        index[source]["weight"] += 1
+        index[target]["weight"] += 1
+
+    kinds: dict[str, int] = {}
+    for node in nodes:
+        kinds[node["kind"]] = kinds.get(node["kind"], 0) + 1
+
+    return {
+        "topic_id": payload.get("id"),
+        "session_id": payload.get("session_id"),
+        "topic": payload.get("topic"),
+        "created_at": payload.get("created_at"),
+        "mode": graph.get("mode"),
+        "mode_reason": graph.get("mode_reason"),
+        "nodes": nodes,
+        "edges": edges,
+        "counts": {"nodes": len(nodes), "edges": len(edges), "kinds": kinds},
+    }
+
+
 @method("research.board")
 def research_board(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     """研究看板（B2 证据表 + B4 时间线 + B7 看板）：**只读**，零模型调用。

@@ -163,6 +163,59 @@ def test_route_list_counts_entries_and_respects_limit(ctx: AppContext) -> None:
     assert [row["topic"] for row in limited] == ["C", "B"]
 
 
+def test_topic_get_map_normalizes_ids_and_degrees(ctx: AppContext) -> None:
+    """`topic.get_map` 是画图用的视图：id/source/target/kind 归一，weight = 度数。"""
+    graph = {
+        "nodes": [
+            {"nid": "a", "label": "RAG", "kind": "method", "source_ids": ["src_a"]},
+            {"nid": "b", "label": "检索", "kind": "concept", "source_ids": ["src_a", "src_b"]},
+            {"nid": "c", "label": "奇怪类型", "kind": "not-a-kind", "source_ids": []},
+        ],
+        "edges": [
+            {"src": "a", "dst": "b", "rel": "prerequisite"},
+            {"src": "b", "dst": "c", "rel": "rel-unknown"},
+        ],
+        "mode": "model",
+        "mode_reason": None,
+    }
+    topic_id = save_topic_map(ctx.db, topic="教育智能体", graph=graph, session_id="ses_x")
+    payload = dispatch(ctx, "topic.get_map", {"topic_id": topic_id})
+
+    assert payload["topic_id"] == topic_id and payload["topic"] == "教育智能体"
+    assert payload["mode"] == "model" and payload["session_id"] == "ses_x"
+    assert "graph" not in payload, "视图不该把落库原文再带一份"
+    assert [node["id"] for node in payload["nodes"]] == ["a", "b", "c"]
+    assert {node["id"]: node["weight"] for node in payload["nodes"]} == {"a": 1, "b": 2, "c": 1}
+    assert payload["nodes"][0]["sources"] == ["src_a"]
+    assert payload["nodes"][2]["kind"] == "concept", "未知 kind 归一成 concept"
+    assert [(edge["source"], edge["target"], edge["kind"]) for edge in payload["edges"]] == [
+        ("a", "b", "prerequisite"),
+        ("b", "c", "uses"),
+    ], "未知 rel 归一成 uses"
+    assert payload["counts"]["nodes"] == 3 and payload["counts"]["edges"] == 2
+    assert payload["counts"]["kinds"] == {"method": 1, "concept": 2}
+
+
+def test_topic_get_map_drops_dangling_and_self_edges(ctx: AppContext) -> None:
+    graph = {
+        "nodes": [{"nid": "a", "label": "A", "kind": "concept", "source_ids": []}],
+        "edges": [
+            {"src": "a", "dst": "a", "rel": "uses"},
+            {"src": "a", "dst": "ghost", "rel": "uses"},
+        ],
+    }
+    topic_id = save_topic_map(ctx.db, topic="图", graph=graph)
+    payload = dispatch(ctx, "topic.get_map", {"topic_id": topic_id})
+    assert payload["edges"] == [], "自环与端点不存在的边都画不出来"
+    assert payload["nodes"][0]["weight"] == 0
+
+
+def test_topic_get_map_unknown_id_is_not_found(ctx: AppContext) -> None:
+    with pytest.raises(RpcError) as exc:
+        dispatch(ctx, "topic.get_map", {"topic_id": "tpm_nope"})
+    assert exc.value.code == -32002
+
+
 def test_lists_survive_corrupt_json(ctx: AppContext) -> None:
     """库里出现坏 JSON（手工改过、写一半崩过）时，列表**不能整体炸**。"""
     save_topic_map(ctx.db, topic="正常", graph=GRAPH)
