@@ -7887,11 +7887,27 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 
 .map-legend {
   display: flex;
-  flex-wrap: wrap;
+  /* 一行到底：`wrap` 会让图例变成两行（概念图 6 类 + 4 种边），把画布再挤掉 20px。
+   * 宽度不够就横向滑（滚条藏掉），高度预算固定 20px。 */
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  height: 20px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   gap: 4px 10px;
-  padding: 0 12px 4px;
+  padding: 0 12px;
   font-size: 11.5px;
   color: var(--ui-text-tertiary);
+  white-space: nowrap;
+}
+.map-legend::-webkit-scrollbar {
+  display: none;
+}
+.map-legend-title {
+  font-weight: 600;
+  color: var(--ui-text-secondary);
 }
 .map-legend-item,
 .map-legend-edge {
@@ -7921,15 +7937,17 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 
 .map-body {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 180px;
   padding: 0 8px;
   overflow: hidden;
   display: flex;
+  /* 节点详情浮层的定位基准（.map-info 是 absolute，贴在右下角） */
+  position: relative;
 }
 .map-svg {
   width: 100%;
   height: 100%;
-  min-height: 200px;
+  min-height: 120px;
   display: block;
   touch-action: none;
   cursor: grab;
@@ -8038,8 +8056,202 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   margin: 0;
 }
 
+/* 节点详情：**浮层**，覆盖在画布右下角，不占文档流。
+ * 为什么不是流内一行：它一展开就从 `.map-body`（flex:1 1 auto）的高度里扣，
+ * 画布被压扁 → 节点包围盒占比从 69.5% 掉到 58.8%（"内容缩在右下角"的另一个版本）。
+ * 浮层把画布高度还给 SVG，节点布局也不用为一条文本行让位。
+ * max-height + overflow:auto 是为了详情再长也不被裁（滚动条在卡片里，不在画布上）。 */
 .map-info {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2;
+  box-sizing: border-box;
+  max-width: min(246px, 74%);
+  max-height: 46%;
+  overflow-y: auto;
+  padding: 7px 26px 7px 9px;
+  margin: 0;
+  background: var(--ui-bg-elevated);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 18%);
+  color: var(--ui-text-secondary);
+}
+/* 类选择器上的盒模型会压掉 UA 给 [hidden] 的 display:none，所以显式关显示 */
+.map-info[hidden] {
+  display: none;
+}
+/* 收起按钮（详情是浮层，可能盖住画布右下角的节点/标签，得能主动收起） */
+.map-info-close {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.map-info-close:hover {
+  color: var(--ui-text-primary);
+}
+/* 节点详情里的来源按钮与元信息（概念层与资料层共用） */
+.map-info-head {
+  font-size: 12.5px;
+  color: var(--ui-text-primary);
+}
+.map-info-meta,
+.map-info-label {
+  font-size: 12px;
+  color: var(--ui-text-secondary);
+}
+.map-info-sources {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+/* 图层开关 / 搜索 / 路径：都挤在右栏里，只调间距，不动列宽（几何基线只量列宽）。
+ * **高度预算固定**：不换行、定高 30px —— 右栏只有 380px，一换行就多出 26px，
+ * 这几行多出来的高度全是从画布上扣的（画布被压扁 = 内容看着缩在角上）。 */
+.row.map-tools {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  padding: 4px 12px 0;
+  height: 30px;
+  align-items: center;
+}
+.row.map-tools > * {
+  min-width: 0;
+}
+.map-layer {
+  flex: 1 1 0;
+  font-size: 12px;
+  padding: 3px 8px;
+}
+.map-layer.is-active {
+  border-color: var(--ui-accent);
+  color: var(--ui-text-primary);
+  background: var(--ui-bg-chrome);
+}
+.map-path {
+  gap: 4px;
+}
+.map-path select {
+  flex: 1 1 0;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+  color: var(--ui-text-primary);
+  background: var(--ui-bg-elevated);
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+}
+.map-path-arrow {
+  color: var(--ui-text-tertiary);
+  font-size: 12px;
+}
+
+/* 搜索结果下拉 */
+.map-search-results {
+  list-style: none;
+  margin: 2px 0 0;
   padding: 0 12px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+.map-search-hit {
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-text-primary);
+}
+.map-search-hit:hover {
+  border-color: var(--ui-accent);
+  background: var(--ui-control-hover-background);
+}
+.map-search-hit .meta,
+.map-search-empty {
+  color: var(--ui-text-tertiary);
+  font-size: 11.5px;
+}
+
+/* 资料层线宽三档（`data-band` 由 map.js 写在边元素上；宽度只能靠 class，
+   因为 CSS 的 .map-svg .map-edge 会盖掉 stroke-width 表现属性） */
+.map-svg .map-edge.w-band-1 {
+  stroke-width: 1.2;
+}
+.map-svg .map-edge.w-band-2 {
+  stroke-width: 2.4;
+}
+.map-svg .map-edge.w-band-3 {
+  stroke-width: 3.8;
+}
+.map-line.band-1 {
+  border-top-width: 1.2px;
+}
+.map-line.band-2 {
+  border-top-width: 2.4px;
+}
+.map-line.band-3 {
+  border-top-width: 3.8px;
+}
+.map-legend-note {
+  flex: 1 1 100%;
+}
+
+/* 搜索命中：加一圈描边 + 光晕（不用动画，截图/无头下也稳定） */
+.map-node.is-found .map-dot {
+  stroke: var(--ui-accent);
+  stroke-width: 3.2;
+  filter: drop-shadow(0 0 4px var(--ui-accent));
+}
+.map-node.is-found .map-label {
+  fill: var(--ui-text-primary);
+  font-weight: 600;
+}
+
+/* 路径高亮：路径之外的压暗，路径上的点与边提亮 */
+.map-svg.is-pathing .map-node {
+  opacity: 0.25;
+}
+.map-svg.is-pathing .map-node.is-path {
+  opacity: 1;
+}
+.map-svg.is-pathing .map-node.is-path .map-dot {
+  stroke: var(--ui-accent);
+  stroke-width: 2.6;
+}
+.map-svg.is-pathing .map-edge {
+  opacity: 0.12;
+}
+.map-svg.is-pathing .map-edge.is-path {
+  opacity: 1;
+  stroke: var(--ui-accent);
+  stroke-width: 3.2;
+}
+
+/* 路径结论 / 搜索提示 */
+.map-note {
+  padding: 0 12px;
+}
+.map-note[data-kind="warn"] {
+  color: var(--ui-orange);
+}
+.map-note[data-kind="ok"] {
+  color: var(--ui-green);
 }
 
 /* 放大浮层：同一张图换个大盒子（不重取数、不重算布局） */

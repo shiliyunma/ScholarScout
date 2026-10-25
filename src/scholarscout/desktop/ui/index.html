@@ -137,16 +137,39 @@
 
       <div class="pane" id="pane-map">
         <p class="hint">
-          本会话最新的一张知识地图：节点按类型着色、边按关系分线型。点「放大」可单独展开成浮层，
-          放大后能滚轮缩放、拖拽平移（与这里同一张图）。
+          本会话最新的一张知识地图：点节点看关联来源（能直接打开资料），上方可切「概念图 / 资料图」、搜节点定位、查两点路径。
         </p>
         <div class="actions">
           <button type="button" id="btn-map-zoom">放大（单独窗口）</button>
           <button type="button" id="btn-map-all" class="ghost" hidden>显示全部</button>
         </div>
+        <div class="row map-tools">
+          <button type="button" class="map-layer is-active" data-layer="concept" id="btn-map-layer-concept"
+                  aria-pressed="true">概念图</button>
+          <button type="button" class="map-layer" data-layer="source" id="btn-map-layer-source"
+                  aria-pressed="false">资料图</button>
+        </div>
+        <div class="row map-tools">
+          <input id="map-search" placeholder="搜节点：如 RAG（回车定位，Esc 收起）" />
+          <button type="button" id="btn-map-search" class="ghost">定位</button>
+        </div>
+        <!-- 搜索结果下拉：按钮（不是 li 上的监听）→ 键盘/探针都能点 -->
+        <ul class="map-search-results" id="map-search-results" hidden></ul>
+        <div class="row map-tools map-path">
+          <select id="map-path-from" title="路径起点"></select>
+          <span class="map-path-arrow">→</span>
+          <select id="map-path-to" title="路径终点"></select>
+          <button type="button" id="btn-map-path" class="ghost">查路径</button>
+        </div>
         <div class="map-legend" id="map-legend"></div>
-        <div class="map-body" id="map-body"></div>
-        <p class="hint map-info" id="map-info" hidden></p>
+        <!-- 节点详情是**画布里的浮层**（absolute 覆盖右下角，不占文档流），所以它必须
+             在 #map-body 里面：放外面就是一条流内块，一展开就从画布高度里扣（画布被压扁）。
+             div 不是 p —— 里面要放按钮与列表，p 会被浏览器在块元素处自动闭合。 -->
+        <div class="map-body" id="map-body">
+          <div class="hint map-info" id="map-info" hidden></div>
+        </div>
+        <!-- 路径结论 / 搜索提示（同一行：查完路径就地给结论，不再弹窗） -->
+        <p class="hint map-note" id="map-path-note" hidden></p>
         <p class="hint" id="map-count"></p>
       </div>
 
@@ -302,7 +325,7 @@
   <script src="api.js?v=2"></script>
   <script src="sources.js?v=2"></script>
   <script src="learning.js?v=2"></script>
-  <script src="map.js?v=2"></script>
+  <script src="map.js?v=3"></script>
   <script src="board.js?v=2"></script>
  
 
