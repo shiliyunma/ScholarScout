@@ -58,39 +58,33 @@ ScholarScout 是一个**本地优先**的学术调研与学习辅助智能体：
 
 ## 反馈
 
-- 提 Bug / 提需求：`<GitHub Issues 地址占位>`
-- 安全或隐私问题请勿公开提 issue，走 `<私有联系方式占位>`
+- 提 Bug / 提需求：<https://github.com/shiliyunma/ScholarScout/issues>
+- 安全问题请**不要**公开提 issue —— 走仓库 Security 页的「Report a vulnerability」：
+  <https://github.com/shiliyunma/ScholarScout/security/advisories/new>
 
 ---
 
-## 发布日执行（**命令仅供参考，本文件提交时不执行**）
+## 校验下载完整性
 
-> 打 tag 与建 Release 是**发布那一刻**的动作，和写文档不是同一件事，所以这里只留命令。
-
-**前置：先把 Portable 打成 zip 并算 SHA256** —— Release 附件名要与下面命令里的
-`ScholarScout-Portable.zip` 一致，且校验值要能对上，否则「下载即用」就变成「下载即报毒/损坏」。
-
-```bash
-# 0) 前置：打 zip + 算校验值（在项目根执行；产物不要入库）
-cd "D:/AI+教育毕设毕设/ScholarScout"
-( cd ScholarScout-Portable && zip -r ../ScholarScout-Portable.zip . )
-sha256sum ScholarScout-Portable.zip > ScholarScout-Portable.zip.sha256
-
-# 1) 确认要发的那笔就在 main 上，且工作区干净
-git status --short          # 必须为空
-git log --oneline -1        # 记下这个 SHA，写进 Release 正文
-
-# 2) 打附注 tag（版本号与 pyproject.toml / src/scholarscout/__init__.py 一致 = 0.1.0）
-git tag -a v0.1.0 -m "ScholarScout v0.1.0 — 首个公开版本（MIT）"
-
-# 3) 推 tag（只推 tag，不推别的）
-git push origin v0.1.0
-
-# 4) 建 Release，正文用本文件，附件是 Portable 包与校验值
-gh release create v0.1.0 ScholarScout-Portable.zip ScholarScout-Portable.zip.sha256 \
-  --title "ScholarScout v0.1.0" \
-  --notes-file RELEASE_NOTES-v0.1.0.md
+```text
+文件：ScholarScout-Portable-v0.1.0.zip
+大小：39.9 MB（39,883,274 字节）
+SHA256：50d15029ac4add4706ded53685cf92bd6059a9e5db870577dcbbc94d5a0fc4f1
 ```
 
-打完 tag 之后**不要再改这一节** —— Release 正文是从这个文件读的，改文件不会改已发布的正文；
-要修正文请用 `gh release edit v0.1.0 --notes-file RELEASE_NOTES-v0.1.0.md`。
+下载后自行算一遍，值一致才解压运行 —— 不一致说明下载不完整或被篡改，请重新下载。
+
+Windows（PowerShell）：
+
+```powershell
+Get-FileHash .\ScholarScout-Portable-v0.1.0.zip -Algorithm SHA256
+```
+
+macOS / Linux：
+
+```bash
+sha256sum ScholarScout-Portable-v0.1.0.zip
+```
+
+---
+
