@@ -43,12 +43,20 @@ GOLDEN_ON_DEMAND_HASH_V4 = "b9ac0c043bf2"
 #: 连「开关全关」的兜底臂也带着它（旧实验数字因此只能读旧报告，不能在新代码上重跑比对）。
 GOLDEN_AUTO_HASH_V8 = "c21d781d15d5"
 GOLDEN_ON_DEMAND_HASH_V8 = "20b7b97e452e"
-#: 现值（2026-10-25 加入 `SEARCH_PACE_RULE` 之后）：**兜底臂**（`build_system_prompt()`，
-#: 即 `files` 与披露都关掉、只有 `research` 工具集）。换哈希的唯一理由就是新增了那条
-#: 「先检索一次、看结果再抓；同一轮不要发多条不同措辞的检索；换角度留到下一轮」的规则 ——
-#: 它不是文风，是 E4 里 7 次冗余调用的直接来源（见 `Features.enable_tool_disclosure` 的 A/B 表）。
-GOLDEN_AUTO_HASH = "14ea4d9dd806"
-GOLDEN_ON_DEMAND_HASH = "07325099d9ac"
+#: **历史值**（2026-10-25 加 `USER_FACING_RULE`（回答里不许出现内部工具名 / 参数名 / 错误码 /
+#: 异常类名）**之前**那一版）：兜底臂 `14ea4d9dd806` / `07325099d9ac`，
+#: 产品默认臂 `7319b19e98e3` / `65172e7e589b`。
+#: 换哈希的唯一理由：新增了那四行表达纪律 —— 真机缺陷"模型在回答里报内部工具名"（缺陷 4），
+#: 属于**实验条件**（提示词内容）变了，不是格式化。
+GOLDEN_AUTO_HASH_V9 = "14ea4d9dd806"
+GOLDEN_ON_DEMAND_HASH_V9 = "07325099d9ac"
+GOLDEN_PRODUCT_AUTO_HASH_V9 = "7319b19e98e3"
+GOLDEN_PRODUCT_ON_DEMAND_HASH_V9 = "65172e7e589b"
+
+#: 现值（2026-10-25 加 `USER_FACING_RULE` 之后）：**兜底臂**（`build_system_prompt()`，
+#: 即 `files` 与披露都关掉、只有 `research` 工具集）。
+GOLDEN_AUTO_HASH = "1326bbee1e3c"
+GOLDEN_ON_DEMAND_HASH = "43e654887606"
 
 #: **现值 —— 产品默认那一臂**（2026-10-25 起 `features.enable_files` 默认开、
 #: `features.enable_tool_disclosure` 默认**关**）。上面两枚 `GOLDEN_*` 代表
@@ -58,8 +66,8 @@ GOLDEN_ON_DEMAND_HASH = "07325099d9ac"
 #: 默认路径与兜底臂的差别**只有一样**：`files` 工具集 → 多一段 `FILES_RULE`
 #: （「读文件用 file.* 不用 py.exec / 引用带行号 / 越界就停」）+ 工具集那行多一个 `files`。
 #: 披露默认关所以默认档用逐工具点名的那一版（`DELEGATE_RULE` / `PY_EXEC_RULE` / `SKILL_RULE` 都在）。
-GOLDEN_PRODUCT_AUTO_HASH = "7319b19e98e3"
-GOLDEN_PRODUCT_ON_DEMAND_HASH = "65172e7e589b"
+GOLDEN_PRODUCT_AUTO_HASH = "246e7c92a6fe"
+GOLDEN_PRODUCT_ON_DEMAND_HASH = "bd131f552e6c"
 
 
 def _product_prompt(*, auto_artifacts: bool = False) -> str:
@@ -124,6 +132,55 @@ def test_search_pace_rule_is_in_both_arms() -> None:
         assert "先做一次检索，看结果再决定要不要抓正文" in prompt
 
 
+def test_user_facing_rule_is_in_every_arm() -> None:
+    """缺陷 4 的硬约束（回答里不许出现内部工具名 / 错误码 / 异常类名）：**每档都得有**。
+
+    只写进某一档 = 换个配置就复发，而这类文本又最难在真机评测里被发现（模型很会"礼貌地"照抄）。
+    这里连同那句"用户关心的是什么"一起钉住：只钉"不许"会让模型不知道**该说什么**。
+    """
+    from scholarscout.runtime.prompts import USER_FACING_RULE
+
+    arms = {
+        "兜底-按需": build_system_prompt(),
+        "兜底-自动": build_system_prompt(auto_artifacts=True),
+        "产品默认-按需": _product_prompt(),
+        "产品默认-自动": _product_prompt(auto_artifacts=True),
+        "披露-按需": build_system_prompt(toolsets=["research", "files"], disclosure=True),
+        "披露-自动": build_system_prompt(
+            toolsets=["research", "files"], auto_artifacts=True, disclosure=True
+        ),
+    }
+    for name, prompt in arms.items():
+        assert USER_FACING_RULE in prompt, f"{name} 缺了表达纪律这一段"
+        assert "回答用户时不要出现内部标识" in prompt, name
+        assert "不要出现内部工具名、参数名、错误码或异常类名" in prompt, name
+        assert "我检索了哪些来源、查到了什么" in prompt, name
+        assert "先检索了一遍 arXiv 和 OpenAlex，再从中筛出 3 篇精读" in prompt, name
+
+
+def test_hashes_were_re_released_for_the_user_facing_rule() -> None:
+    """换哈希必须留痕：现值 == 新钉的；且现值 ≠ `_V9`（加规则前），`_V9` ≠ `_V8`（链不断）。
+
+    换的理由只有一个：提示词里多了一整段 `USER_FACING_RULE`。它不是文风微调，是缺陷 4 的硬约束 ——
+    但**内容变了哈希就必须变**，否则报告里分不清哪批回答出自"会说人话"的那一版。
+    """
+    assert system_prompt_hash(build_system_prompt()) == GOLDEN_ON_DEMAND_HASH
+    assert system_prompt_hash(build_system_prompt(auto_artifacts=True)) == GOLDEN_AUTO_HASH
+    assert system_prompt_hash(_product_prompt()) == GOLDEN_PRODUCT_ON_DEMAND_HASH
+    assert system_prompt_hash(_product_prompt(auto_artifacts=True)) == GOLDEN_PRODUCT_AUTO_HASH
+
+    assert GOLDEN_ON_DEMAND_HASH != GOLDEN_ON_DEMAND_HASH_V9, (
+        "多了一段 USER_FACING_RULE 却还是同一个哈希 → 那段没进提示词"
+    )
+    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V9
+    assert GOLDEN_PRODUCT_ON_DEMAND_HASH != GOLDEN_PRODUCT_ON_DEMAND_HASH_V9
+    assert GOLDEN_PRODUCT_AUTO_HASH != GOLDEN_PRODUCT_AUTO_HASH_V9
+    # 留痕链本身也要成立：V9（加规则前）≠ V8（加检索节制前）—— 每次换哈希都是独立的一次实验条件变更
+    assert GOLDEN_ON_DEMAND_HASH_V9 != GOLDEN_ON_DEMAND_HASH_V8
+    assert GOLDEN_AUTO_HASH_V9 != GOLDEN_AUTO_HASH_V8
+    assert GOLDEN_PRODUCT_ON_DEMAND_HASH_V9 != GOLDEN_PRODUCT_ON_DEMAND_HASH
+
+
 def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
     """对照臂必须逐字钉死，否则"自动 vs 按需"就不是单变量对照。"""
     assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V1, "提示词变过就得留痕（旧值仍在上面的常量里）"
@@ -134,11 +191,15 @@ def test_auto_arm_is_byte_identical_to_the_old_experiment() -> None:
     assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V4, (
         "加入技能库规矩（skill.list / skill.load，工具数 9 → 11）又换了一次哈希，旧值要留痕"
     )
+    assert GOLDEN_AUTO_HASH != GOLDEN_AUTO_HASH_V9, "加表达纪律（不许报内部标识）又换了一次，旧值要留痕"
     assert system_prompt_hash(build_system_prompt(auto_artifacts=True)) == GOLDEN_AUTO_HASH
 
 
 def test_on_demand_arm_hash_is_pinned() -> None:
     assert GOLDEN_ON_DEMAND_HASH != GOLDEN_ON_DEMAND_HASH_V4, "默认档也加了 SKILL_RULE，旧值要留痕"
+    assert GOLDEN_ON_DEMAND_HASH != GOLDEN_ON_DEMAND_HASH_V9, (
+        "默认档也加了 USER_FACING_RULE（不许报内部标识），旧值要留痕"
+    )
     assert system_prompt_hash(build_system_prompt()) == GOLDEN_ON_DEMAND_HASH
 
 

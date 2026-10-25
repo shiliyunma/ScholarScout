@@ -42,6 +42,9 @@ NOTIFICATION_METHODS = (
     "session.updated",
     # 渠道中心（docs/21 §5.1）：渠道子进程的起停/连接状态变化 → 界面状态点随它变
     "channel.state",
+    # 产物入库（docs/23 缺陷 1）：``py.exec`` 写完文件 + 增量索引完成后推一条，
+    # 界面立刻重拉资料库/路线/笔记，不必重启或切页签（漏登记会被加 chat. 前缀）。
+    "library.updated",
 )
 
 

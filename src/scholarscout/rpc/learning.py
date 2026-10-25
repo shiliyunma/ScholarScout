@@ -11,6 +11,7 @@ from typing import Any
 
 from scholarscout import paths
 from scholarscout.rpc.errors import Code, RpcError
+from scholarscout.rpc.library_refresh import refresh_exports
 from scholarscout.rpc.registry import AppContext, _int_param, _params, _require, method
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import learning, traces
@@ -95,6 +96,8 @@ def route_export(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         target = paths.under_data(Path("notes") / f"route_{route_id}.md")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines), encoding="utf-8")
+    # 导出的路线 md 也是产物：写到哪就扫哪个目录并入库（与 py.exec 同一个函数）
+    refresh_exports(ctx, "", workdir=target.parent)
     return {"ok": True, "path": paths.rel_to_home(target), "route_id": route_id}
 
 

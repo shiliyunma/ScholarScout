@@ -38,6 +38,7 @@ from typing import Any
 from scholarscout import paths
 from scholarscout.fetch import feishu_send
 from scholarscout.rpc.errors import Code, RpcError
+from scholarscout.rpc.library_refresh import refresh_exports
 from scholarscout.rpc.registry import AppContext, _params, method
 from scholarscout.state import learning, library_index, sessions
 
@@ -154,6 +155,16 @@ def _note_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _export_artifact(ctx: AppContext, session_id: str, name: str, text: str) -> Path:
+    """发文件前的导出：写进 `data/exports/` 之后**立刻入库**（与 ``py.exec`` 同一个函数）。
+
+    不接这一步就会出现"发得出去、资料库里却没有"——同一份 md，两个入口两种结果。
+    """
+    path = _write_export(name, text)
+    refresh_exports(ctx, session_id)
+    return path
+
+
 def _artifact_target(
     ctx: AppContext, *, kind: str, session_id: str
 ) -> tuple[FileTarget | None, list[str], str]:
@@ -198,7 +209,7 @@ def _artifact_target(
         if payload is not None:
             title = str(payload.get("topic") or "知识地图")
             name = f"topic_{_safe_stem(title, 'map')}.md"
-            path = _write_export(name, _topic_markdown(payload))
+            path = _export_artifact(ctx, session_id, name, _topic_markdown(payload))
             return FileTarget(path, name, title, "topic"), candidates, ""
     elif picked_kind == "route":
         exported = learning_route_export(ctx, str(picked["route_id"]))
@@ -215,7 +226,7 @@ def _artifact_target(
         if payload is not None:
             title = str(payload.get("title") or "笔记")
             name = f"note_{_safe_stem(title, 'note')}.md"
-            path = _write_export(name, _note_markdown(payload))
+            path = _export_artifact(ctx, session_id, name, _note_markdown(payload))
             return FileTarget(path, name, title, "note"), candidates, ""
 
     return None, candidates, "找到了这件生成物，但导出文件时失败了（详见运行日志）。"

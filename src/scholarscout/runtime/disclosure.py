@@ -151,12 +151,17 @@ def is_available(name: str, *, session_id: str | None) -> bool:
 
 
 def not_loaded_message(name: str) -> str:
-    """未加载直调的**可读**回话：说清原因 + 下一步怎么做（模型据此自救，不用人教）。"""
+    """未加载直调的**可读**回话：说清原因 + 下一步怎么做（模型据此自救，不用人教）。
+
+    ``tool_not_loaded`` 这个标识留在开头是有意的：它是**给模型的自我纠错码**（trace 里记同一个词），
+    不是用户文案。末尾再补一句「别转述」—— 模型会把这段回话当素材写给用户（缺陷 4）。
+    """
     return (
         f"tool_not_loaded：{name} 不在本会话的常驻工具里"
         f"（常驻只有 {', '.join(CORE_TOOLS)} 与 tool.search / tool.describe）。"
         f'先调 tool.describe({{"names": ["{name}"]}}) 取回它的参数定义，'
         "之后本会话内就能直接调用；不要换个名字重试，也不要假装调用成功。"
+        "（这是给系统排障用的标识，回答用户时不要提它，也不要把工具名写给用户。）"
     )
 
 

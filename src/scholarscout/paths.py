@@ -43,6 +43,9 @@ DOC_TYPE_BY_SOURCE: dict[str, str] = {
     "official": "doc",
     "web": "doc",
     "video": "video",
+    # ``py.exec`` 写出的产物（docx/xlsx/pdf…）：按"文档"归档，不单独编一个类型目录
+    # （格式细分在文件扩展名里，资料库的「格式」列只需要一个可读桶）。
+    "artifact": "doc",
 }
 
 #: ``<年-月>`` 桶的合法形态：``2024-10``（月份必须 01–12）。不合规一律落 ``unknown``。

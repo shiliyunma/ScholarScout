@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from scholarscout.rpc.errors import Code, RpcError
+from scholarscout.rpc.library_refresh import refresh_exports
 from scholarscout.rpc.registry import AppContext, _int_param, _params, _require, method
 from scholarscout.runtime import loop, titles
 from scholarscout.state import export_html, export_session, sessions, traces, usage
@@ -146,6 +147,8 @@ def session_export(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     try:
         if fmt == "html":
             saved = export_html.export_html_to_file(ctx.db, session_id)
+            # 导出件也是产物：写完立刻入库（与 py.exec 同一个函数），否则"导出的看不到"
+            refresh_exports(ctx, session_id)
             return {
                 "ok": True,
                 "session_id": session_id,
@@ -159,6 +162,7 @@ def session_export(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
         result = export_session.export_to_file(ctx.db, session_id)
     except KeyError:
         raise RpcError(Code.NOT_FOUND, f"会话不存在：{session_id}") from None
+    refresh_exports(ctx, session_id)
     return {
         "ok": True,
         "session_id": session_id,

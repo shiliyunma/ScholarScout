@@ -64,6 +64,22 @@ ON_DEMAND_PIPELINE_PROMPT = """
 **预算纪律**：检索与抓取合计 **4-5 次**就够（检索 2-3 次、抓取 2-3 条），
 剩下的一次都先别花 —— **等用户点单再花**。某个方向资料稀少时，就带着已有资料把回答讲清楚并说明资料有限。"""
 
+#: **对用户说话不许暴露内部标识**（2026-10-25 加，两档共用）：真机反馈里模型会在回答中写
+#: `research.search`、`tool_not_loaded`、`FetchError` 这类东西，对用户毫无意义。两头一起治 ——
+#: 文案侧（`turn_steps.execute_tool` / `subtasks` 的 `ok=false` 文本）只说人话、内部码只进 trace；
+#: 表达侧在这里落一条硬约束，因为**模型会照抄工具失败文案**，只改文案挡不住它自己发明。
+#: **这一段进 `build_system_prompt` → 改它即改 `system_prompt_hash`**（换哈希＝换实验臂）。
+USER_FACING_RULE = """\
+## 回答用户时不要出现内部标识
+
+1. **不要出现内部工具名、参数名、错误码或异常类名**（`research.search`、`tool_not_loaded`、
+   `TOOL_BUDGET`、`FetchError` 这类写法的东西，一个都别进回答）。
+2. **用户关心的是"我检索了哪些来源、查到了什么"**，不是你调了哪个函数、参数叫什么。
+3. **需要说明过程时用自然语言**：比如"先检索了一遍 arXiv 和 OpenAlex，再从中筛出 3 篇精读"，
+   而不是"调了 research.search 两次、source.fetch 三次"。
+4. **工具失败也只说人话**：说清"哪一步没做成、大概为什么、还能怎么走"（例如"这篇的原文没抓到，
+   站点拒绝了访问，我改用它自己的检索接口拿到了摘要"），不要转述工具返回的标识或错误码。"""
+
 CLARIFY_RULE = """
 澄清规则：当检索结果明显不足或问题有多种理解时，你可以反问一次，然后继续推进；
 不要连续追问，也不要把澄清当成不回答的借口。"""
@@ -322,6 +338,8 @@ def build_system_prompt(
         parts = [
             BASE_PROMPT,
             DISCLOSURE_AUTO_PIPELINE_PROMPT if auto_artifacts else DISCLOSURE_PIPELINE_PROMPT,
+            # 表达纪律：回答里不许出现内部工具名/参数名/错误码/异常类名（两档共用）
+            USER_FACING_RULE,
             # 检索节制：一轮只走一步（两档共用，治的是同义重搜与未看结果就抓取）
             SEARCH_PACE_RULE,
         ]
@@ -337,6 +355,8 @@ def build_system_prompt(
         return "\n".join(parts).strip()
 
     parts = [BASE_PROMPT, PIPELINE_PROMPT if auto_artifacts else ON_DEMAND_PIPELINE_PROMPT]
+    # 表达纪律：回答里不许出现内部工具名/参数名/错误码/异常类名（两档共用，缺陷 4 的表达侧）
+    parts.append(USER_FACING_RULE)
     # 检索节制：一轮只走一步（与披露档同一段 —— 两档的差别只该在"工具怎么找"，不该在"检索怎么走"）
     parts.append(SEARCH_PACE_RULE)
     if allow_clarify:

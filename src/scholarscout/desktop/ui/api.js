@@ -356,6 +356,34 @@ function unreadFromDone(doneSessionId, currentSessionId, alreadyUnread) {
   return String(doneSessionId) !== String(currentSessionId || "");
 }
 
+/* ------------------------------------------------- 资料库刷新（library.updated） */
+
+/** 事件合并窗口（毫秒）：窗口内来多条 `library.updated` 只重拉一次列表。
+
+    为什么需要：一轮里模型可能连着写几个产物（docx + xlsx + 图），或者连着跑几段
+    `py.exec`，后端每段都会推一条。一条一拉就是连着整块重画好几次，用户看到的是列表在闪。
+    合并成一次，看起来只是"多了几行"。 */
+var LIBRARY_REFRESH_DEBOUNCE_MS = 300;
+
+/* 窗口里有没有排着一次刷新（非 null = 有）。**只看"有没有"，不重置计时**：
+   重置就变成"最后一条之后 300ms"，产物连写时列表一直不刷新；不重置才是
+   "第一条通知之后 300ms 内合并成一次"。 */
+var libraryRefreshTimer = null;
+
+
+/** 排一次资料库刷新（防抖）。真正拉数据的是 `sources.js` 的 `refreshSourcesInPlace()`：
+    只重拉 `archive.list` 并替换 `#source-list` 内容 —— 不整页重渲染，滚动位置与输入框都在。 */
+function scheduleLibraryRefresh() {
+  if (libraryRefreshTimer) return; // 窗口里已经排着了 → 这一条并进那一次
+  libraryRefreshTimer = setTimeout(function () {
+    libraryRefreshTimer = null;
+    Promise.resolve(refreshSourcesInPlace()).catch(function (error) {
+      // 刷新失败不该弹窗打断用户（列表停在旧数据比弹错好）；控制台留一行便于排障
+      if (window.console) console.warn("资料库刷新失败：", (error && error.message) || error);
+    });
+  }, LIBRARY_REFRESH_DEBOUNCE_MS);
+}
+
 /* --------------------------------------------------------- 后端推来的事件 */
 
 window.scoutEvent = function (event) {
@@ -375,6 +403,15 @@ window.scoutEvent = function (event) {
   if (event.method === "practice.delta") {
     const out = document.querySelector(".practice-help-out");
     if (out) out.textContent = (out.textContent || "") + (p.delta || "");
+    return;
+  }
+  /* 产物入库（`library.updated`）：`py.exec` / 导出写完文件并增量入库后推一条。
+     也放在"必须有进行中气泡"那道闸**之前** —— 导出可能来自页签按钮，那时根本没有
+     进行中的轮次；放进闸后面就等于把通知丢掉（用户原话：生成完资料库看不见）。
+     载荷里的 added/updated 不用于分头改 DOM：列表按会话分组 + 折叠态渲染，
+     重拉整份数据比分头插一行更不容易错位；多条事件由 scheduleLibraryRefresh 合并。 */
+  if (event.method === "library.updated") {
+    scheduleLibraryRefresh();
     return;
   }
   /* 事件**按 session_id 路由**：只落进它自己会话的槽（docs/20 §3.1/§3.3）。

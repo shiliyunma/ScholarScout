@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from scholarscout import paths
+from scholarscout.library import artifacts as artifact_index
 from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.sandbox.approval import ApprovalGate, approval_options
@@ -228,6 +229,17 @@ def py_exec(
             "reason": decision.reason,
         },
     }
+    # 产物落盘 → **立刻**增量入库并刷新资料索引（docs/23 缺陷 1：生成完看不见）。
+    # 失败只让回包标 `indexed=false`，产物仍算成功 —— 索引是附加动作，不许拖垮主流程。
+    payload.update(
+        artifact_index.refresh_after_write(
+            ctx.db,
+            target,
+            session_id=ctx.session_id,
+            layout=ctx.config.library.layout,
+            emit=ctx.emit,
+        )
+    )
     if result.violations:
         blocked = "、".join(item.get("event", "?") for item in result.violations[:5])
         return fail(

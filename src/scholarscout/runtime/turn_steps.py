@@ -210,7 +210,12 @@ def execute_tool(
         },
     )
     if spec is None:
-        message = f"工具 {call.name} 未注册（当前阶段可用工具集为空）"
+        # 回给模型的文案只说人话：工具名与 `tool_not_registered` 只进 trace。
+        # 模型会**照抄**它读到的标识给用户（缺陷 4），所以文案侧不能带内部名。
+        message = (
+            "这个工具当前未注册（当前阶段可用工具集为空）：不要重试，也不要假装调用成功；"
+            "换用已提供的工具，或如实告诉用户这个能力现在不可用。"
+        )
         traces.record_trace(
             ctx.db,
             session_id=session_id,
@@ -314,7 +319,14 @@ def execute_tool(
             "chat.tool_result",
             {"turn_id": turn_id, "seq": step, "call_id": call.id, "ok": False, "refs": {}},
         )
-        return f"工具 {call.name} 执行失败：{exc}", {}, canonical, False
+        # 同上：工具名与异常类名只进 trace（上面那条），喂回模型的是人话 + 原始原因。
+        return (
+            f"这一步没有成功：{exc}（如实说明哪一步没做成、大概为什么；"
+            "不要把工具名、错误码或异常类名写进回答）",
+            {},
+            canonical,
+            False,
+        )
 
 
 def maybe_compact(ctx: TurnContext, *, session_id: str, turn_id: str) -> None:

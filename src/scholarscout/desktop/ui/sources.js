@@ -77,6 +77,28 @@ async function loadSources(query) {
 }
 
 
+/** 产物入库事件（`library.updated`）触发的「原地刷新」：只重拉列表数据、只换 `#source-list`。
+
+    与 `loadSources()` 的差别只有两点，而这两点正是用户能不能看出抖动的地方：
+
+    1. **沿着当前搜索词重查**（`#search` 里已有的字）—— 事件刷新不该偷偷清掉用户正在筛的条件；
+    2. **记住/还原列表滚动位置** —— 用户正翻到中间时后端推来新产物，视线不该被打回顶部。
+
+    折叠态本来就活在 `sourcesFoldState` 里（见下面 `loadSources` 的注释），重画不掉；
+    页面其余部分（会话流、输入框、右侧摘要区）**一个节点都不碰** —— 这就是不整页重渲染的意思。
+    没有 `#source-list`（界面还没建好）就直接掉头，不当成错误。 */
+async function refreshSourcesInPlace() {
+  const list = el("source-list");
+  if (!list) return;
+  const top = list.scrollTop;
+  const query = el("search") ? el("search").value.trim() : "";
+  await loadSources(query);
+  // 列表在 await 期间可能被另一次刷新换成新节点 —— 重新取一次再还原滚动
+  const after = el("source-list");
+  if (after) after.scrollTop = top;
+}
+
+
 
 
 /* 资料库分组的折叠态（按会话组的 key 记）。

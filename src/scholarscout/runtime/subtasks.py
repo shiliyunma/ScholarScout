@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -36,6 +37,9 @@ from scholarscout.state import traces
 
 #: 线程名前缀：真机排查（卡住/超时）时 ``threading.enumerate()`` 一眼能认出是谁
 _THREAD_PREFIX = "scout-fetch"
+
+#: 内部标识（异常类名 / 错误 kind）只进日志，不进 `SubTaskResult.text`（缺陷 4）。
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -286,7 +290,12 @@ def _run_subtask_tool(
             args=call.arguments,
             error="tool_not_registered",
         )
-        return f"工具 {call.name} 未注册", {}, canonical
+        return (
+            "这个工具当前未注册：不要重试，也不要假装调用成功；"
+            "换用已提供的工具，或如实告诉用户这个能力现在不可用。",
+            {},
+            canonical,
+        )
     try:
         arguments = call.parsed_arguments()
         result = registry.invoke(spec, ctx, arguments)
@@ -317,7 +326,13 @@ def _run_subtask_tool(
             args=call.arguments,
             error=f"{type(exc).__name__}: {exc}",
         )
-        return f"工具 {call.name} 执行失败：{exc}", {}, canonical
+        # 工具名与 `{异常类名}: {原因}` 只进 trace（上面那条），喂回模型的是人话。
+        return (
+            f"这一步没有成功：{exc}（如实说明哪一步没做成、大概为什么；"
+            "不要把工具名、错误码或异常类名写进回答）",
+            {},
+            canonical,
+        )
 
 
 def run_subtask(
@@ -419,10 +434,16 @@ def run_subtask(
             stop_reason = "tool_limit"
     except LlmError as exc:
         stop_reason = "error"
-        final_text = final_text or f"子任务模型调用失败：{exc.kind}: {exc}"
+        # 内部标识（`exc.kind` / 异常类名）只进日志：子任务的 text 会被塞回主模型、
+        # 也可能给用户看，写 `rate_limited: ...` 只会被原样转述出去（缺陷 4）。
+        logger.warning(
+            "子任务模型调用失败：goal=%r kind=%s err=%s", goal_text, exc.kind, exc
+        )
+        final_text = final_text or "子任务没有跑完：模型服务这一侧出错（原因已记进日志）。"
     except Exception as exc:
         stop_reason = "error"
-        final_text = final_text or f"子任务执行失败：{type(exc).__name__}: {exc}"
+        logger.warning("子任务执行失败：goal=%r", goal_text, exc_info=exc)
+        final_text = final_text or "子任务没有跑完：执行时出了错（原因已记进日志）。"
 
     result = SubTaskResult(
         goal=goal_text,
