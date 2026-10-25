@@ -286,33 +286,43 @@ def test_enable_kb_switch_controls_registration_and_tool_list(kb: Path, ctx: App
 
 
 def test_enable_kb_adds_one_tool_and_changes_the_prompt_hash() -> None:
-    """开启态：工具 11 → 12，且系统提示词**只在这时才**多出 `KB_RULE`（哈希因此不同）。
+    """开启态：工具 13 → 14，且系统提示词**只在这时才**多出 `KB_RULE`（哈希因此不同）。
 
     为什么单独一条：`kb.search` 加进来会动两样东西 —— 工具清单与提示词。前者由
     `test_enable_kb_switch_controls_registration_and_tool_list` 钉住，这里钉后者：
     `KB_RULE` 是**条件段**（`runtime/prompts.build_system_prompt` 里 `if "kb" in toolsets`），
     关着时那段不进提示词，所以
 
-    - 关态的提示词与"从来不传 toolsets"的默认提示词**逐字节相同**（`system_prompt_hash`
-      与 `tests/runtime/test_prompt_arms.py` 的 `GOLDEN_ON_DEMAND_HASH` 同一个值）——
-      这就是"默认关不掉哈希、历史实验数字仍可比"的依据；
+    - 关态的提示词与**产品默认那一臂**（`research, files`）**逐字节相同**（`system_prompt_hash`
+      与 `tests/runtime/test_prompt_arms.py` 的 `GOLDEN_PRODUCT_ON_DEMAND_HASH` 同一个值）——
+      这就是"默认关不掉哈希"的依据；
     - 开态的哈希必须**不同**，否则说明 `KB_RULE` 根本没生效（开关只改了工具清单、没改行为说明）。
+
+    两边的 `enabled_toolsets` 都必须显式带 `enable_files=True`：2026-10-25 起 `files` 是产品默认，
+    而 `enabled_toolsets` 的参数默认值仍是 `False`（它不读配置）。不传的话比的是"两个都不带
+    files"的另一条臂 —— 那样这条用例测的就不是 `kb` 这一个变量了。
     """
     registry.clear_registry()
     off_names = register_tools(enable_kb=False)
     registry.clear_registry()
     on_names = register_tools(enable_kb=True)
 
-    assert len(off_names) == 11
+    assert len(off_names) == 13, (
+        "默认注册集 13 个（旧值 11：2026-10-25 起 file.* 默认开；披露仍默认关，所以不含 tool.*）"
+    )
     assert "kb.search" not in off_names
-    assert len(on_names) == 12
+    assert len(on_names) == len(off_names) + 1
     assert "kb.search" in on_names
 
-    off_prompt = build_system_prompt(toolsets=list(registry.enabled_toolsets([], enable_kb=False)))
-    on_prompt = build_system_prompt(toolsets=list(registry.enabled_toolsets([], enable_kb=True)))
-    # 关态：没有那段"什么时候查本地知识库"，且与默认提示词逐字节相同
+    off_prompt = build_system_prompt(
+        toolsets=list(registry.enabled_toolsets([], enable_kb=False, enable_files=True))
+    )
+    on_prompt = build_system_prompt(
+        toolsets=list(registry.enabled_toolsets([], enable_kb=True, enable_files=True))
+    )
+    # 关态：没有那段"什么时候查本地知识库"，且与产品默认臂逐字节相同
     assert "kb.search" not in off_prompt
-    assert off_prompt == build_system_prompt()
+    assert off_prompt == build_system_prompt(toolsets=["research", "files"])
     # 开态：多了 KB_RULE，哈希必须变
     assert "什么时候查本地知识库" in on_prompt
     assert "kb.search" in on_prompt

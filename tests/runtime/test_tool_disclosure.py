@@ -21,9 +21,9 @@ from dataclasses import replace
 
 import pytest
 
-from scholarscout.config import Config
+from scholarscout.config import Config, Features
 from scholarscout.providers.llm import ToolCall
-from scholarscout.runtime import disclosure, registry
+from scholarscout.runtime import disclosure, loop, registry
 from scholarscout.runtime.prompts import build_system_prompt, system_prompt_hash
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.runtime.turn_context import TurnContext
@@ -33,7 +33,7 @@ from scholarscout.tools import register_tools
 from scholarscout.tools.tool_catalog import tool_describe, tool_search
 
 from ..conftest import StubLlm, insert_session
-from .test_prompt_arms import GOLDEN_ON_DEMAND_HASH
+from .test_prompt_arms import GOLDEN_ON_DEMAND_HASH, GOLDEN_PRODUCT_ON_DEMAND_HASH
 
 #: 最该被"藏起来"的几个：它们恰好是 E4 里最容易与别的工具互相干扰的那几个
 MOST_LIKELY_TO_LEAK = ("route.plan", "source.grade", "py.exec")
@@ -95,17 +95,18 @@ def _run(db: Database, config: Config, session_id: str, call: ToolCall) -> tuple
 
 
 def test_default_prompt_is_byte_identical_to_the_golden_arm() -> None:
-    """不传 ``disclosure``（产品默认）与显式 ``disclosure=False`` 必须**逐字节相同**，且哈希是黄金值。
+    """不传 ``disclosure``（**两个开关都关掉的那一臂**）与显式 ``disclosure=False`` 必须逐字节相同。
 
-    这一条是整个改动的"不许动默认臂"承诺：披露是**实验臂**，一开就换提示词；
-    默认臂的文本、拼装顺序一个字都不能跟着变，否则历史实验数字全部不可比。
+    2026-10-25 之后产品默认换成了「files 开、披露关」那一臂（`GOLDEN_PRODUCT_*_HASH`），
+    这条钉的是**兜底臂**：用户把两个开关一起关掉时，提示词必须逐字回到旧值 ——
+    那是「旧实验数字仍可比」的唯一依据。`GOLDEN_ON_DEMAND_HASH` 因此仍是这枚靶子。
     """
     default = build_system_prompt()
     explicit_off = build_system_prompt(disclosure=False)
 
     assert default == explicit_off
     assert system_prompt_hash(default) == GOLDEN_ON_DEMAND_HASH
-    # 默认臂里**必须**写着那些工具（默认 11 个全常驻，那是它的前提）
+    # 兜底臂里**必须**写着那些工具（13 个全常驻，那是它的前提）
     for name in MOST_LIKELY_TO_LEAK:
         assert name in default
 
@@ -144,7 +145,9 @@ def test_disclosure_prompt_never_names_a_non_core_tool() -> None:
 
 def test_tool_search_lists_only_allowed_tools(db: Database, config: Config) -> None:
     """目录范围 = 本会话允许的工具集（过了特性开关），且**不含元工具自己**。"""
-    register_tools(enable_tool_disclosure=True)  # files / kb 都关着
+    # files 显式关掉：这条要测「关掉的工具集里的工具一个都不能出现」，
+    # 而 `enable_files` 现在默认开（2026-10-25），不显式关就测不出门控。
+    register_tools(enable_tool_disclosure=True, enable_files=False)
     ctx = _tool_ctx(db, config, "ses_catalog")
 
     result = tool_search(ctx, limit=50)
@@ -336,12 +339,12 @@ def test_describe_refuses_a_tool_registered_but_outside_the_session(
 
 
 def test_gate_is_inactive_when_the_feature_is_off(db: Database, config: Config) -> None:
-    """``enable_tool_disclosure = False`` 时同一个直调**照常执行** —— 默认臂与改前逐字一致。
+    """``enable_tool_disclosure = False`` 时同一个直调**照常执行** —— 兜底臂与改前逐字一致。
 
-    没有这条，闸一旦写错成"无条件生效"，默认产品里 8 个工具会全部变成
+    没有这条，闸一旦写错成"无条件生效"，关掉开关的用户会看到 10 个工具全变成
     ``tool_not_loaded``，而所有涉及工具的既有用例仍可能绿（它们多半走 mock）。
     """
-    register_tools()  # 默认：11 个工具全常驻
+    register_tools()  # 默认：15 个工具全注册
     insert_session(db, "ses_default")
     assert config.features.enable_tool_disclosure is False
 
@@ -349,3 +352,120 @@ def test_gate_is_inactive_when_the_feature_is_off(db: Database, config: Config) 
 
     assert ok is True, message
     assert "tool_not_loaded" not in message
+
+
+# --------------------------------------------------------------------------- #
+# 11. 产品默认臂（2026-10-25：`files` 默认开、披露默认**关**）
+# --------------------------------------------------------------------------- #
+
+
+def _product_config(config: Config) -> Config:
+    """产品默认：不传参数构造 `Features()`（files 开、披露关），其余沿用测试配置。"""
+    return replace(config, features=Features())
+
+
+def _disclosure_config(config: Config) -> Config:
+    """披露臂：两个开关都开（显式）—— 默认关不等于这条臂可以烂掉。"""
+    return replace(config, features=Features(enable_files=True, enable_tool_disclosure=True))
+
+
+def test_product_default_arm_registers_thirteen_and_declares_all(
+    db: Database, config: Config
+) -> None:
+    """产品默认：注册 13 个、**13 个全部发给模型**（没有闸），`tool.*` 根本不在注册集里。
+
+    真因：产品默认是 `enable_files=True` / `enable_tool_disclosure=False`（A/B 实测披露开着
+    把整轮调用数 19 → 25、冗余 7 → 15，核心包含率 0.667 → 0.667 无收益）。所以默认臂
+    既没有元工具、也没有 `declared_specs` 的减法 —— 写成 15/7 是把实验臂当成了产品。
+    """
+    cfg = _product_config(config)
+    names = register_tools()  # 默认参数 = 产品默认
+
+    assert len(names) == 13
+    assert {"file.list", "file.read"} <= set(names)
+    assert "tool.search" not in names and "tool.describe" not in names
+    assert cfg.features.enable_files is True
+    assert cfg.features.enable_tool_disclosure is False
+
+    insert_session(db, "ses_prod")
+    specs = _turn_ctx(db, cfg).tools(["research"])
+    assert {spec.name for spec in specs} == set(names), "会话工具集应收敛成 research + files"
+    # `declared_specs` 本身是**纯减法**（核心 + 元 + 已加载），不看开关 —— 它只在披露臂被调用。
+    # 「默认臂 13 个全发」这件事由 `test_loop.test_product_default_arm_declares_all_thirteen_...`
+    # 真跑一轮钉住（跑过 `run_turn` 才算证据，光看辅助函数不算）。
+    assert {spec.name for spec in disclosure.declared_specs(specs, session_id="ses_prod")} == set(
+        disclosure.CORE_TOOLS
+    )
+
+
+def test_disclosure_arm_registers_fifteen_and_declares_seven(db: Database, config: Config) -> None:
+    """披露臂：注册 15 个、**发给模型的只有 7 个**（5 核心 + 2 元工具），其余 8 个在目录里。
+
+    7 这个数字是「省」与「可自救」的平衡点：核心集必须覆盖流程的每一步（检索 / 取原文 /
+    存笔记 / 读本地文件），否则模型第一步就会撞上 ``tool_not_loaded``。
+    """
+    cfg = _disclosure_config(config)
+    names = register_tools(enable_files=True, enable_tool_disclosure=True)
+
+    assert len(names) == 15
+    assert {"file.list", "file.read", "tool.search", "tool.describe"} <= set(names)
+    # 核心集里**必须**有检索 / 取原文 / 存笔记 / 读文件 —— 缺一个，那条流程就会撞闸
+    assert {"research.search", "source.fetch", "note.save", "file.read", "file.list"} <= set(
+        disclosure.CORE_TOOLS
+    )
+
+    insert_session(db, "ses_prod_disc")
+    specs = _turn_ctx(db, cfg).tools(["research"])
+    assert {spec.name for spec in specs} == set(names), (
+        "披露臂的会话工具集 = research + files + 两个元工具"
+    )
+    declared = disclosure.declared_specs(specs, session_id="ses_prod_disc")
+    assert {spec.name for spec in declared} == set(disclosure.CORE_TOOLS) | set(
+        disclosure.META_TOOLS
+    )
+    assert len(declared) == 7
+
+
+def test_product_default_prompt_hash_is_the_new_pin(db: Database, config: Config) -> None:
+    """默认配置真正走进 `build_messages` 的那份提示词 = 新钉的哈希（不是旧值）。
+
+    默认档是**逐工具点名**那版（`FILES_RULE` 在、披露档文本不在），所以它本来就会写出
+    `route.plan` 这类名字 —— 「提示词不点名非核心工具」是**披露臂**的性质，不是默认臂的。
+    """
+    cfg = _product_config(config)
+    insert_session(db, "ses_prod_prompt")
+
+    messages = loop.build_messages(db, "ses_prod_prompt", config=cfg, toolsets=["research"])
+    prompt = str(messages[0]["content"])
+
+    assert system_prompt_hash(prompt) == GOLDEN_PRODUCT_ON_DEMAND_HASH
+    assert system_prompt_hash(prompt) != GOLDEN_ON_DEMAND_HASH
+    assert "什么时候用只读文件工具" in prompt, "files 默认开 → FILES_RULE 必须在"
+    assert "工具是先查后用的" not in prompt, "披露默认关 → 不许带披露档文本"
+    for name in MOST_LIKELY_TO_LEAK:
+        assert name in prompt, f"默认档要点名工具，{name} 缺了说明提示词拼装漏了一段"
+
+
+def test_disclosure_arm_prompt_never_names_a_non_core_tool(db: Database, config: Config) -> None:
+    """披露臂的提示词里没有任何非核心工具名（省 token 的前提），且与默认档哈希不同。"""
+    cfg = _disclosure_config(config)
+    insert_session(db, "ses_disc_prompt")
+
+    messages = loop.build_messages(db, "ses_disc_prompt", config=cfg, toolsets=["research"])
+    prompt = str(messages[0]["content"])
+
+    assert "工具是先查后用的" in prompt, "披露档文本必须在"
+    leaked = [name for name in MOST_LIKELY_TO_LEAK if name in prompt]
+    assert leaked == []
+    assert system_prompt_hash(prompt) != GOLDEN_PRODUCT_ON_DEMAND_HASH
+
+
+def test_switching_both_off_restores_the_old_prompt_hash(db: Database, config: Config) -> None:
+    """两个开关一起关掉（`config` 夹具就是这一臂）→ 哈希**逐字回到旧值**，注册集回到 11 个。"""
+    assert config.features.enable_files is False
+    assert config.features.enable_tool_disclosure is False
+    insert_session(db, "ses_off_prompt")
+
+    messages = loop.build_messages(db, "ses_off_prompt", config=config, toolsets=["research"])
+    assert system_prompt_hash(str(messages[0]["content"])) == GOLDEN_ON_DEMAND_HASH
+    assert len(register_tools(enable_files=False, enable_tool_disclosure=False)) == 11

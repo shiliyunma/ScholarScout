@@ -72,10 +72,17 @@ def test_enable_kb_switch_gates_kb_search() -> None:
     这条是 docs/23 那条"空开关"缺陷的**反面守卫**。当时的教训是：开关开了什么都不发生，
     比没有这个开关更坏。所以这里只断言**行为差异**，不断言"字段存在"：
 
-    ① 产品默认是关（`Features()` / 示例配置）→ 注册集 11 个、不含 `kb.search`；
-    ② `enable_kb=True` → 注册集 12 个、含 `kb.search`；
+    ① 产品默认是关（`Features()` / 示例配置）→ 注册集里不含 `kb.search`；
+    ② `enable_kb=True` → 注册集多一个 `kb.search`；
     ③ 收敛点只有一个：`enabled_toolsets` —— 关着时**会话显式要 `kb` 也摘掉**，开着时没要也补上；
     ④ `get_tools()` 仍不收 `features` 参数（开关不许散进注册表，否则绕过路径会再长出来）。
+
+    注册集总数在 2026-10-25 变过一次（11 → **13**：`enable_files` 改默认开，多出 `file.list` /
+    `file.read`；`enable_tool_disclosure` 仍是默认**关**，所以 `tool.search` / `tool.describe`
+    不在默认集里 —— 实测开着会把整轮调用数 19 → 25 而没有包含率收益，见 `Features` 的注释），
+    但这些断言钉的是**kb 开关的增量**（+1），所以写成「基数 → 基数 + 1」而不是硬写新数字：
+    再改别的默认值时这条用例不会跟着红，也不会因此变得没意义；而行首的基数仍然显式钉死，
+    免得「默认集被谁悄悄削掉两个」也照样绿。
     """
     from scholarscout.tools import register_tools
 
@@ -87,13 +94,15 @@ def test_enable_kb_switch_gates_kb_search() -> None:
     assert "kb" in registry.TOOLSETS
     off = register_tools()
     assert "kb.search" not in off
-    assert len(off) == 11
+    assert len(off) == 13, (
+        f"默认注册集是 13 个（旧值 11，2026-10-25 起 file.* 默认开；披露仍关）：{off}"
+    )
 
     # ② 开了就真的多一个工具（不是"字段变了、行为没变"）
     registry.clear_registry()
     on = register_tools(enable_kb=True)
     assert "kb.search" in on
-    assert len(on) == 12
+    assert len(on) == len(off) + 1
     assert on == sorted({*off, "kb.search"})
 
     # ③ 收敛点：关着时显式要 kb 被摘掉，开着时不用要也会补上

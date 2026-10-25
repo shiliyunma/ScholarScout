@@ -12,7 +12,7 @@ __all__: list[str] = []
 def register_tools(
     *,
     enable_kb: bool = False,
-    enable_files: bool = False,
+    enable_files: bool = True,
     enable_tool_disclosure: bool = False,
 ) -> list[str]:
     """注册本版所有工具，返回注册后的工具名列表。
@@ -20,14 +20,16 @@ def register_tools(
     ``enable_kb`` 决定要不要注册 ``kb.search``（docs/01 §5.8）；``enable_files`` 决定要不要
     注册只读的 ``file.list`` / ``file.read``（docs/01 §3.16）；``enable_tool_disclosure``
     决定要不要注册工具目录的 ``tool.search`` / ``tool.describe``（docs/01 §3.17）。
-    三个都**默认关**，与产品默认取值一致（``Features`` 的三个字段 / ``config.example.yaml``）。
+    与产品默认一致（``Features`` 的两个字段 / ``config.example.yaml``）：默认是
+    「13 个工具、**不带**渐进披露」，``enable_kb`` 仍默认关。披露默认关是实测结论 ——
+    开着会把整轮调用数 19 → 25、冗余 7 → 15，而包含率没有收益（见 `Features` 的注释）。
 
-    默认值必须跟产品默认一致：调用方忘了传参数时，得到的是"产品默认那一套 11 个工具"，
-    而不是"多出两个默认关掉的元工具" —— 后者会让契约清单（``tests/contract`` 的 11 个名字）
+    默认值必须跟产品默认一致：调用方忘了传参数时，得到的就是「产品默认那一套 13 个工具」，
+    而不是「多两个默认关掉的元工具」—— 后者会让契约清单（``tests/contract`` 的名字表）
     与真实注册集静默分叉。真正跑应用的是 `app.build_context`，它一定显式传这三个开关。
 
     关着时**不注册**（而不是注册了再过滤）：注册表里没这个东西，模型清单、
-    `tool_traces` 与线上声明就都不可能出现它，也就不会出现"看着能用其实没接线"的假象。
+    `tool_traces` 与线上声明就都不可能出现它，也就不会出现「看着能用其实没接线」的假象。
     """
     from scholarscout.runtime import registry
     from scholarscout.tools import (
@@ -57,8 +59,8 @@ def register_tools(
     py_exec.register()
     skills.register()
     # 工具目录的两个元工具（`tool.search` / `tool.describe`，docs/01 §3.17）：**只在渐进披露
-    # 开着时注册**。常驻工具的清单是契约的一部分（`tests/contract` 逐名比对 11 个），
-    # 所以它们不能无条件存在 —— 否则默认臂会静默多出两个工具、与旧实验数字分叉。
+    # 开着时注册**。常驻工具的清单是契约的一部分（`tests/contract` 逐名比对那一串），
+    # 所以它们不能无条件存在 —— 披露关着时那 13 个工具全常驻，元工具留着没意义。
     if enable_tool_disclosure:
         tool_catalog.register()
     if enable_kb:

@@ -23,8 +23,10 @@ from scholarscout.settings_io import FIELDS, SettingsError
 #: 2026-10-22 再更新：**新增了 `skill.list` / `skill.load` 两个模型可见工具**（工具集 9 → 11），
 #: 提示词加了 `SKILL_RULE`（只说"什么时候翻本地技能库"，清单按需取）—— 同样是**有意识的契约变更**，
 #: 不是为凑绿改值；理由写在 `test_prompt_arms.py` 的钉值注释里。
-GOLDEN_ON_DEMAND_HASH = "20b7b97e452e"
-GOLDEN_AUTO_HASH = "c21d781d15d5"
+#: 2026-10-25 再更新（`20b7b97e452e` / `c21d781d15d5` → 现值）：只因为两档共用位置多了一条
+#: `SEARCH_PACE_RULE`（检索节制）。默认风格仍然**不加任何字符**，这条用例的语义没变。
+GOLDEN_ON_DEMAND_HASH = "07325099d9ac"
+GOLDEN_AUTO_HASH = "14ea4d9dd806"
 
 
 def test_style_choices_and_prompt_texts_do_not_drift() -> None:

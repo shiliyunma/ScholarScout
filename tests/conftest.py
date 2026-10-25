@@ -180,7 +180,14 @@ def config(tmp_path: Path) -> Config:
             # 需要它的用例自己 `replace(config.runtime, classify_search_intent=True)` 打开。
             classify_search_intent=False,
         ),
-        features=Features(),
+        # 特性开关：**多数编排/通道用例钉在「旧的两档都关」那一臂上**（单变量对照）。
+        # 为什么不跟随产品默认：产品默认（`Features()`）现在是「files 开、渐进披露 关」——
+        # `files` 工具集会进每个会话的 toolsets，那会把「预算记账 / trace / 事件 / 通道绑定」
+        # 这些用例的断言全扯偏，它们要测的根本不是文件工具也不是披露。产品默认那一臂由三处专门钉：
+        # `tests/contract`（默认 13 个 / 披露 15 个）、
+        # `tests/runtime/test_prompt_arms.py`（`GOLDEN_PRODUCT_*_HASH`）、
+        # `tests/runtime/test_tool_disclosure.py` + `test_loop.py`（真跑一遍默认臂与披露臂）。
+        features=Features(enable_files=False, enable_tool_disclosure=False),
         # 标题默认**关掉**：否则每个走 chat.send 的测试都要多备一条桩回复（那是噪声）。
         # 标题行为由 tests/runtime/test_title_suggest.py 显式打开开关来测。
         generation=Generation(title_by_model=False),

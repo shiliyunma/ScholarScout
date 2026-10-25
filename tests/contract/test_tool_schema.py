@@ -29,10 +29,10 @@ from scholarscout.providers.settings import KNOWN
 from scholarscout.runtime.registry import ToolSpec, get_spec, register, wire_name
 from scholarscout.tools import register_tools
 
-#: 本版注册的 11 个工具（`docs/01 §5` 冻结，**新增的两个工具**——`research.delegate` 与 `py.exec`——
-#: 的 schema 与边界写在 `docs/24`；`skill.list` / `skill.load` 是本地技能库的渐进式披露入口，
-#: 索引不在提示词里、按需取，见 `skills/index.py`；08-10 那段冻结期不动 docs/01 的表格）
-TOOL_NAMES = (
+#: **历史值**：2026-10-25 之前的产品默认集 —— 11 个（`file.*` / `tool.*` 那时默认关）。
+#: 留着不是纪念：它是「关掉 `enable_files` + `enable_tool_disclosure` 能不能回到旧行为」的对照面，
+#: 也是这两次改动**确实加了工具**的证据（下面 `test_registered_names...` 里有 ≠ 断言）。
+TOOL_NAMES_V11 = (
     "note.save",
     "py.exec",
     "research.delegate",
@@ -43,6 +43,47 @@ TOOL_NAMES = (
     "skill.load",
     "source.fetch",
     "source.grade",
+    "topic.build_map",
+)
+
+#: 本版**默认**注册的 13 个工具（`docs/01 §5` 冻结的 11 个 + 2026-10-25 起默认开的
+#: `file.list` / `file.read`（docs/01 §3.16））。`tool.search` / `tool.describe` **不在里面** ——
+#: 渐进披露默认关（实测开着会把整轮调用数 19 → 25、冗余 7 → 15，包含率无收益）。
+#: `research.delegate` 与 `py.exec` 的 schema 与边界写在 `docs/24`；`skill.list` / `skill.load`
+#: 是本地技能库的渐进式披露入口，索引不在提示词里、按需取，见 `skills/index.py`。
+TOOL_NAMES = (
+    "file.list",
+    "file.read",
+    "note.save",
+    "py.exec",
+    "research.delegate",
+    "research.search",
+    "route.plan",
+    "route.revise",
+    "skill.list",
+    "skill.load",
+    "source.fetch",
+    "source.grade",
+    "topic.build_map",
+)
+
+#: 披露开着时的 15 个（默认 13 个 + 两个元工具，docs/01 §3.17）。schema 契约对两套都要查：
+#: 默认关只保证「默认臂不多东西」，披露臂仍要能正常注册、声明合法。
+TOOL_NAMES_WITH_DISCLOSURE = (
+    "file.list",
+    "file.read",
+    "note.save",
+    "py.exec",
+    "research.delegate",
+    "research.search",
+    "route.plan",
+    "route.revise",
+    "skill.list",
+    "skill.load",
+    "source.fetch",
+    "source.grade",
+    "tool.describe",
+    "tool.search",
     "topic.build_map",
 )
 
@@ -67,9 +108,11 @@ def _specs() -> list[ToolSpec]:
 
 
 def test_registered_names_are_unique_and_match_registry() -> None:
-    """注册集 == 契约里那 11 个，且不重名（重名会让「线上名 → 规范名」反查歧义）。"""
+    """注册集 == 契约里那 15 个，且不重名（重名会让「线上名 → 规范名」反查歧义）。"""
     names = register_tools()
     assert names == sorted(TOOL_NAMES), f"注册集与契约不一致：{names}"
+    # 旧集（11 个）必须仍是新集的真子集：默认开的那 4 个是**加**上去的，不是替换
+    assert set(TOOL_NAMES_V11) < set(names), "旧的 11 个工具不该被这次的默认值改动删掉"
     assert len(names) == len(set(names)), f"注册集里有重名：{names}"
     assert len({wire_name(name) for name in names}) == len(names), (
         f"有两个工具换算出同一个线上名：{[wire_name(name) for name in names]}"

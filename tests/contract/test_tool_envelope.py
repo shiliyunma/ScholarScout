@@ -34,13 +34,16 @@ import pytest
 
 from scholarscout.fetch.http import FetchError, HttpClient
 from scholarscout.rpc.methods import AppContext
+from scholarscout.runtime import registry
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.tools import delegate as delegate_tool
+from scholarscout.tools import file_tools as file_tools_mod
 from scholarscout.tools import py_exec as py_exec_tool
 from scholarscout.tools import register_tools
 from scholarscout.tools import research_search as search_tool
 from scholarscout.tools import skills as skills_tool
 from scholarscout.tools import source_fetch as fetch_tool
+from scholarscout.tools import tool_catalog as catalog_tool
 from scholarscout.tools.note_save import note_save
 from scholarscout.tools.route_plan import route_plan
 from scholarscout.tools.route_revise import route_revise
@@ -52,11 +55,24 @@ from ..conftest import StubLlm, insert_source, redirect_home, reply, tool_ctx
 #: 信封顶层允许出现的键（docs/01 §5.0）。`refs` 可省，`error` 成功时可省。
 ENVELOPE_KEYS = {"ok", "data", "error", "refs"}
 
-#: 唯一会在 `data.note` 里带「这一轮为什么这么搜」的工具
-NOTE_ALLOWED = {"research.search"}
+#: 允许在 `data.note` 里带一句话说明的工具。
+#:
+#: `research.search`：带「这一轮为什么这么搜」（检索意图/回退路径），是给人看的解释。
+#:
+#: `tool.search` / `tool.describe`：**登记为例外（2026-10-25 决议）**。这两个是元工具，
+#: 它们的 note 是**给模型的自救提示**，不是解释：
+#: - `tool.search`：「目录只有名字与一句话，要参数就 describe（一次最多 3 个）」——
+#:   模型看到目录但不知道下一步该干什么，就会拿着名字瞎猜参数；这句话就是那一步的唯一指路。
+#: - `tool.describe`：「这些工具已加入本会话可用集，现在可以直接调用；新会话不继承」——
+#:   不写，模型会怀疑自己的调用会不会被闸拦（或在下一轮重复 describe，白烧调用）。
+#: 两者都是**产品行为**（渐进披露的核心可用性保证），不是调试残留，所以登记在允许名单里，
+#: 不删产品里的 note；信封顶层形状（`ok`/`data`/`error`/`refs`）对它们仍一模一样，
+#: 下面 `note is None or 非空字符串` 的约束照旧生效。
+NOTE_ALLOWED = {"research.search", "tool.search", "tool.describe"}
 
-#: 本版注册的工具（`tools/__init__.register_tools()` 的实际注册集，11 个）
-TOOL_NAMES = (
+#: **历史值**：2026-10-25 之前的产品默认集（11 个）。留着当对照面：`file.*` 是默认开**加**上来的、
+#: `tool.*` 是披露开着才有的 —— 旧的 11 个必须仍在新集里（下面有子集断言）。
+TOOL_NAMES_V11 = (
     "note.save",
     "py.exec",
     "research.delegate",
@@ -67,6 +83,46 @@ TOOL_NAMES = (
     "skill.load",
     "source.fetch",
     "source.grade",
+    "topic.build_map",
+)
+
+#: 本版**默认**注册的工具（`tools/__init__.register_tools()` 不带参数时的实际注册集，13 个）：
+#: 冻结的 11 个 + 默认开的 `file.list` / `file.read`（docs/01 §3.16）。
+#: `tool.search` / `tool.describe` **不在里面** —— 渐进披露默认关（A/B 实测开着会把整轮调用数
+#: 19 → 25、冗余 7 → 15 而没有包含率收益），见 `TOOL_NAMES_WITH_DISCLOSURE`。
+TOOL_NAMES = (
+    "file.list",
+    "file.read",
+    "note.save",
+    "py.exec",
+    "research.delegate",
+    "research.search",
+    "route.plan",
+    "route.revise",
+    "skill.list",
+    "skill.load",
+    "source.fetch",
+    "source.grade",
+    "topic.build_map",
+)
+
+#: 披露开着时的注册集（15 个）：默认的 13 个 + 两个元工具（docs/01 §3.17）。
+#: 两个集都要钉：只钉默认集会漏掉「披露一开元工具注册了没有」，只钉披露集会漏掉默认值回退。
+TOOL_NAMES_WITH_DISCLOSURE = (
+    "file.list",
+    "file.read",
+    "note.save",
+    "py.exec",
+    "research.delegate",
+    "research.search",
+    "route.plan",
+    "route.revise",
+    "skill.list",
+    "skill.load",
+    "source.fetch",
+    "source.grade",
+    "tool.describe",
+    "tool.search",
     "topic.build_map",
 )
 
@@ -184,8 +240,28 @@ def _py_exec(tc: ToolContext) -> dict[str, Any]:
     return py_exec_tool.py_exec(tc, code='print("shape")')
 
 
-#: 现在就是绿的 8 个工具（注册表 9 个里的 8 个；`route.revise` 的样本在下面单独钉）：
-#: 名字 → 桩调用（每个都真实进 handler）
+def _file_list(tc: ToolContext) -> dict[str, Any]:
+    """列目录：tmp 家里刚 `ensure_dirs()` 过 → 走"空/很短的目录"那条真实分支。"""
+    return file_tools_mod.file_list(tc, path="data")
+
+
+def _file_read(tc: ToolContext) -> dict[str, Any]:
+    """读文件：路径不存在 → 必须是 `ok:false` + 可读 kind（不是异常、也不是 500）。"""
+    return file_tools_mod.file_read(tc, path="data/no-such-file.md")
+
+
+def _tool_search(tc: ToolContext) -> dict[str, Any]:
+    """目录：只回名字 + 一句话，且不含元工具自己。"""
+    return catalog_tool.tool_search(tc, query="route", limit=5)
+
+
+def _tool_describe(tc: ToolContext) -> dict[str, Any]:
+    """取 schema：`route.plan` 在默认工具集里 → `ok:true` 且带回完整 parameters。"""
+    return catalog_tool.tool_describe(tc, names=["route.plan"])
+
+
+#: 现在就是绿的这些工具（默认注册集 13 个里的 12 个 + 只有披露开着才存在的 2 个；
+#: `route.revise` 的样本在下面单独钉）：名字 → 桩调用（每个都真实进 handler）
 SAMPLES = {
     "research.search": _search,
     "source.fetch": _fetch,
@@ -197,21 +273,37 @@ SAMPLES = {
     "py.exec": _py_exec,
     "skill.list": _skill_list,
     "skill.load": _skill_load,
+    "file.list": _file_list,
+    "file.read": _file_read,
+    "tool.search": _tool_search,
+    "tool.describe": _tool_describe,
 }
 
 
 def test_registry_matches_the_documented_tool_set(tc: ToolContext) -> None:
-    """注册集就是这 9 个：不多不少、不重名（名字是 `docs/01 §5` + `docs/24` 的索引）。"""
+    """注册集就是默认那 13 个：不多不少、不重名（名字是 `docs/01 §5` + `docs/24` 的索引）。"""
     names = register_tools()
     assert names == sorted(TOOL_NAMES), f"注册集与契约不一致：{names}"
+    assert set(TOOL_NAMES_V11) < set(names), "默认开了 file.*，但旧的 11 个一个都不该消失"
     assert len(names) == len(set(names)), f"注册集里有重名：{names}"
+
+    # 披露开着时**只多**两个元工具（默认关不许把 tool.* 留在注册集里）。
+    # 注册表是全局的：先清空再注册，测完再清空并恢复默认集，否则这一条会把 tool.* 漏给同进程里的其它用例。
+    registry.clear_registry()
+    with_disclosure = register_tools(enable_tool_disclosure=True)
+    assert with_disclosure == sorted(TOOL_NAMES_WITH_DISCLOSURE), (
+        f"披露开着时的注册集不对：{with_disclosure}"
+    )
+    assert set(with_disclosure) == set(names) | {"tool.describe", "tool.search"}
+    registry.clear_registry()
+    assert register_tools() == names, "恢复默认集失败（后续用例会看到披露臂的注册集）"
 
 
 @pytest.mark.parametrize("name", sorted(SAMPLES))
 def test_tool_returns_the_shared_envelope(
     name: str, tc: ToolContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """7 个工具的回包同形（成败两条分支由各自的桩决定，形状只有一种）。"""
+    """13 个工具的样本回包同形（成败两条分支由各自的桩决定，形状只有一种）。"""
     envelope = SAMPLES[name](tc, monkeypatch) if name == "research.search" else SAMPLES[name](tc)
     _assert_envelope(name, envelope)
 

@@ -229,17 +229,19 @@ features:
   # 关着时这个工具不注册（模型清单里没有它）；开启后第一次检索才建索引
   # （data/cache/kb-fts.sqlite3：正文只进这份可删可重建的缓存，资料库 run/state.db 里没有）。
   enable_kb: false
-  # 只读文件工具（file.list / file.read，docs/01 §3.16）：**默认关**。
-  # 关着时这两个工具不注册、files 工具集被摘掉、提示词也不加那一段（默认路径的
-  # system_prompt_hash 不变）；开启后可以只读地列目录 / 读正文（文本/PDF/Office/HTML/电子书/RTF），
-  # 读文件不必再走 py.exec 的审批。只允许 data/、data/exports/ 与会话工作目录之下。
-  enable_files: false
-  # 工具渐进披露（tool.search / tool.describe，docs/01 §3.17）：**默认关 —— 这是实验臂**。
-  # 关着时这两个元工具不注册，会话的 11 个工具声明与系统提示逐字节不变
-  # （契约清单与 system_prompt_hash 都不动，旧实验数字仍可比）。
-  # 开着时常驻只有 note.save / research.search / source.fetch 与这两个元工具；
-  # 其余能力要模型先 tool.search 翻目录、tool.describe 取参数定义，之后本会话内才能直接调用
-  # —— 没加载就直调会回 tool_not_loaded（不会静默执行）。
+  # 只读文件工具（file.list / file.read，docs/01 §3.16）：**默认开**（2026-10-25 改）。
+  # 读本地 md/pdf/docx/Office/HTML/电子书/RTF 的正文不必再走 py.exec 的审批（那是审批疲劳的来源）。
+  # 只允许 data/、data/exports/ 与会话工作目录之下；**只读**：不写、不建、不改。
+  # 关掉它就设 false：两个工具不注册、files 工具集被摘掉、提示词不加那一段（哈希回到旧版）。
+  enable_files: true
+  # 工具渐进披露（tool.search / tool.describe，docs/01 §3.17）：**默认关**（2026-10-25 定）。
+  # 为什么不默认开：A/B 实测（E4 --limit 2、同一提示词与模型）开着时整轮工具调用 19 → 25
+  #（+32%）、轨迹口径冗余 7 → 15，而核心工具包含率一点没变（0.667 → 0.667）。
+  # 结论：机制保留、默认关 —— **长尾工具才需要**它（工具很多时才划算）。
+  # 开着时常驻只有核心工具（research.search / source.fetch / note.save / file.read / file.list，
+  # 后两个仅在 enable_files 开着时）+ 这两个元工具；其余能力要模型先 tool.search 翻目录、
+  # tool.describe 取参数定义，之后本会话内才能直接调用 —— 没加载就直调会回 tool_not_loaded
+  #（不会静默执行）。关着时 13 个声明全常驻、提示词用逐工具点名的版本。
   enable_tool_disclosure: false
 
 # ===== 生成策略 =====

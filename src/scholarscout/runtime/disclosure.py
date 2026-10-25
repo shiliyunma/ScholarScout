@@ -39,8 +39,19 @@ from typing import Any
 from scholarscout.config import Config
 from scholarscout.runtime import registry
 
-#: 核心常驻工具（每轮都发给模型的三个）。依据见模块顶注：默认 `research` 工具集里流程三步各一个。
-CORE_TOOLS: tuple[str, ...] = ("note.save", "research.search", "source.fetch")
+#: 核心常驻工具（每轮都发给模型的那些）。依据见模块顶注：流程三步各一个 —— 但这还不够。
+#: **2026-10-25 修复（默认开启披露后暴露的真坑）**：`file.list` / `file.read` 也必须在核心集里。
+#: 它们在 `enable_files` 默认开后是「搜一下 X 并读一份本地文件」这类请求的**第二步**，
+#: 却在目录里——模型扫不到就直接调，回 `tool_not_loaded` 白烧一轮；即使它去 search，
+#: `tool.search` 的关键词也得恰好命中。只读工具没有审批成本、体量也小，常驻比藏起来划算。
+#: 代价：披露档的常驻声明从 5 个（3 核心 + 2 元）变成 7 个 —— 仍然远小于 15 个全量。
+CORE_TOOLS: tuple[str, ...] = (
+    "file.list",
+    "file.read",
+    "note.save",
+    "research.search",
+    "source.fetch",
+)
 
 #: 元工具本身：它们**常驻**，且**不进目录**（目录是"还没加载的能力"，不该列自己）。
 META_TOOLS: tuple[str, ...] = ("tool.describe", "tool.search")

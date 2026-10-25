@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from scholarscout.config import Features
 from scholarscout.providers.llm import LlmError
 from scholarscout.rpc.methods import AppContext
 from scholarscout.runtime import loop, registry
 from scholarscout.runtime.registry import ToolSpec
 from scholarscout.state import sessions
+from scholarscout.tools import register_tools
+from scholarscout.tools import research_search as search_tool
 
-from ..conftest import StubLlm, reply, tool_call
+from ..conftest import StubLlm, redirect_home, reply, tool_call
 
 ECHO_SCHEMA = {
     "type": "object",
@@ -203,3 +208,137 @@ def test_second_turn_sees_history(ctx: AppContext) -> None:
     assert "第一轮回答" in contents
     assert "第二轮问题" in contents
     assert messages[0]["role"] == "system"
+
+
+def test_product_default_arm_declares_all_thirteen_and_reads_a_local_file(
+    ctx: AppContext, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """产品默认（`files` 开、渐进披露**关**）真跑一轮：「搜一下 + 读一份本地文件」端到端可用。
+
+    这条钉的是**产品默认臂的真实形状**：2026-10-25 决议是 `enable_files=True` /
+    `enable_tool_disclosure=False`（A/B 实测披露开着把整轮调用数 19 → 25、冗余 7 → 15，
+    包含率无收益），所以默认臂**没有闸**，13 个工具（11 旧集 + `file.*`）全部写进 `tools=`。
+    断言逐名列出而不是只数字数：数量对了但少的是 `file.read` 这类，一样是坏的产品。
+
+    只把检索扇出换成空表（不出网；`research.search` 回 `ok:false`，但**不是** `tool_not_loaded`）。
+    """
+    redirect_home(monkeypatch, tmp_path)
+    note = tmp_path / "data" / "notes" / "demo.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# 本地笔记\n教育智能体的检索增强先看 3 篇综述。\n", encoding="utf-8")
+    register_tools()  # 默认参数 = 产品默认（13 个）
+    monkeypatch.setattr(search_tool, "fetch_many", lambda *args, **kwargs: [])
+
+    prod = replace(ctx, config=replace(ctx.config, features=Features()))
+    session_id = _session(prod)
+    stub = StubLlm(
+        reply("", tool_calls=[tool_call("research.search", '{"query":"教育智能体"}')]),
+        reply(
+            "",
+            tool_calls=[
+                tool_call("file.read", '{"path":"data/notes/demo.md"}', call_id="call_2"),
+            ],
+        ),
+        reply("检索没拿到来源，但本地笔记里写着：先看 3 篇综述。"),
+    )
+    prod.llm = stub
+
+    result = loop.run_turn(
+        _context(prod),
+        session_id=session_id,
+        text="搜一下教育智能体，再读一下 data/notes/demo.md",
+    )
+
+    assert prod.config.features.enable_files is True
+    assert prod.config.features.enable_tool_disclosure is False
+    assert result.stop_reason == "completed"
+    assert result.tool_calls == ["research.search", "file.read"]
+    # 默认臂没有闸：13 个声明全在（不是披露档的 7 个）
+    declared = [decl["function"]["name"] for decl in stub.calls[0]["tools"]]
+    assert declared == [
+        "file__list",
+        "file__read",
+        "note__save",
+        "py__exec",
+        "research__delegate",
+        "research__search",
+        "route__plan",
+        "route__revise",
+        "skill__list",
+        "skill__load",
+        "source__fetch",
+        "source__grade",
+        "topic__build_map",
+    ]
+    # 一条 `tool_not_loaded` 都不许出现：默认臂里这两个工具本来就常驻
+    fed_back = [msg for msg in stub.calls[-1]["messages"] if msg["role"] == "tool"]
+    assert len(fed_back) == 2
+    assert all("tool_not_loaded" not in str(msg["content"]) for msg in fed_back)
+    assert "3 篇综述" in str(fed_back[-1]["content"]), "file.read 必须真的读到正文（不是空壳回包）"
+    system = stub.calls[0]["messages"][0]
+    assert system["role"] == "system"
+    # 默认档是**逐工具点名**那版（FILES_RULE 在、披露档文本不在）
+    assert "什么时候用只读文件工具" in str(system["content"])
+    assert "工具是先查后用的" not in str(system["content"])
+
+
+def test_disclosure_arm_declares_seven_and_is_not_deadlocked(
+    ctx: AppContext, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """披露臂（显式开 `enable_tool_disclosure`）真跑一轮：只发 7 个声明，且**核心集够用**。
+
+    披露默认关不等于机制可以烂掉 —— 它是留给「长尾工具很多」那天的开关。这条盯着两件事：
+    ① 声明从 13 收到 7（5 核心 + 2 元工具）；
+    ② 核心集必须覆盖「先检索、再读本地文件」这两步，否则用户第一句需求就撞 `tool_not_loaded`
+       （真坑：核心集曾经没有 `file.list` / `file.read`）。
+    """
+    redirect_home(monkeypatch, tmp_path)
+    note = tmp_path / "data" / "notes" / "demo.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# 本地笔记\n教育智能体的检索增强先看 3 篇综述。\n", encoding="utf-8")
+    register_tools(enable_files=True, enable_tool_disclosure=True)  # 披露臂：15 个注册
+    monkeypatch.setattr(search_tool, "fetch_many", lambda *args, **kwargs: [])
+
+    arm = replace(
+        ctx,
+        config=replace(
+            ctx.config, features=Features(enable_files=True, enable_tool_disclosure=True)
+        ),
+    )
+    session_id = _session(arm)
+    stub = StubLlm(
+        reply("", tool_calls=[tool_call("research.search", '{"query":"教育智能体"}')]),
+        reply(
+            "",
+            tool_calls=[
+                tool_call("file.read", '{"path":"data/notes/demo.md"}', call_id="call_2"),
+            ],
+        ),
+        reply("检索没拿到来源，但本地笔记里写着：先看 3 篇综述。"),
+    )
+    arm.llm = stub
+
+    result = loop.run_turn(
+        _context(arm),
+        session_id=session_id,
+        text="搜一下教育智能体，再读一下 data/notes/demo.md",
+    )
+
+    assert result.stop_reason == "completed"
+    assert result.tool_calls == ["research.search", "file.read"]
+    declared = [decl["function"]["name"] for decl in stub.calls[0]["tools"]]
+    assert declared == [
+        "file__list",
+        "file__read",
+        "note__save",
+        "research__search",
+        "source__fetch",
+        "tool__describe",
+        "tool__search",
+    ]
+    fed_back = [msg for msg in stub.calls[-1]["messages"] if msg["role"] == "tool"]
+    assert len(fed_back) == 2
+    assert all("tool_not_loaded" not in str(msg["content"]) for msg in fed_back)
+    assert "3 篇综述" in str(fed_back[-1]["content"]), "核心集里的 file.read 必须真能读到正文"
+    system = stub.calls[0]["messages"][0]
+    assert "工具是先查后用的" in str(system["content"]), "披露臂必须走披露档提示词"
