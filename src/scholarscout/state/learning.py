@@ -46,6 +46,7 @@ from scholarscout.state.learning_topics import (
     get_topic_map,
     latest_topic_map,
     list_topic_maps,
+    replace_topic_map_graph,
     save_topic_map,
 )
 
@@ -74,6 +75,7 @@ __all__ = [
     "note_card_counts",
     "notes_for_source",
     "parse_cards",
+    "replace_topic_map_graph",
     "replay_card",
     "reveal_card",
     "review_card",

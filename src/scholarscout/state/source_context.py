@@ -81,6 +81,33 @@ def ungated_sources(db: Database, *, limit: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def sources_with_text(db: Database, ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """按 id 批量取来源 + **有没有正文**（`has_text`），键是 `source_id`。
+
+    为什么 `has_text` 用"有 documents 行"判：正文落文件、库里只存 `documents.text_path`，
+    所以"有没有一条抽取记录"就是"能不能点开看全文"的判据（与 `research_board` 同一口径）。
+    查不到的 id 不出现在返回值里 —— 由调用方决定"缺来源"怎么表现（资料层图标 `missing`）。
+    """
+    wanted = sorted({str(item).strip() for item in ids if str(item).strip()})
+    if not wanted:
+        return {}
+    placeholders = ",".join("?" for _ in wanted)
+    rows = db.query(
+        f"""
+        SELECT s.id AS source_id, s.title, s.url, s.domain, s.source_type, s.year,
+               (SELECT count(*) FROM documents d WHERE d.source_id = s.id) AS docs
+        FROM sources s WHERE s.id IN ({placeholders})
+        """,
+        tuple(wanted),
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row)
+        item["has_text"] = bool(item.pop("docs"))
+        out[str(item["source_id"])] = item
+    return out
+
+
 def session_sources_with_summary(
     db: Database, *, session_id: str, limit: int
 ) -> list[dict[str, Any]]:

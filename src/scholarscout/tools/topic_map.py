@@ -11,9 +11,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from scholarscout.learning import knowledge_graph
 from scholarscout.runtime.registry import ToolSpec
 from scholarscout.runtime.toolctx import ToolContext
-from scholarscout.state.learning import save_topic_map
+from scholarscout.state.learning import (
+    get_topic_map,
+    latest_topic_map,
+    replace_topic_map_graph,
+    save_topic_map,
+)
 from scholarscout.summary.prompts import PromptPack
 from scholarscout.tools.envelope import ToolResult, ok
 from scholarscout.tools.source_context import (
@@ -224,6 +230,217 @@ def topic_build_map(
         },
         refs={"topic_ids": [topic_id], "source_ids": sorted(allowed)},
     )
+
+
+def grow_map_graph(
+    ctx: ToolContext,
+    *,
+    topic: str,
+    existing_graph: dict[str, Any],
+    source_ids: list[str] | None = None,
+    max_nodes: int = knowledge_graph.TOTAL_NODE_CAP,
+    use_model: bool = True,
+) -> dict[str, Any]:
+    """**只算不写**：拿旧图 + 新来源，回合并后的新图与一份可核对的报告。
+
+    与 `topic_build_map` 的区别只有一处：模型**只看没进过图的来源**（按 `source_ids`
+    集合判，见 `knowledge_graph.applied_source_ids`），产出的是**局部补丁**，由
+    `merge_concept_graph` 并进旧图。所以：旧节点 `nid` 不变、旧边一条不删、整批来源都
+    已在图里时一个字段都不动。
+    """
+    limit = max(3, min(int(max_nodes), knowledge_graph.TOTAL_NODE_CAP))
+    applied = knowledge_graph.applied_source_ids(existing_graph)
+    if source_ids is None:
+        rows = candidate_sources(ctx, topic=topic)
+        pending = [str(row["id"]) for row in rows if str(row["id"]) not in applied]
+    else:
+        pending = [str(ref) for ref in source_ids if str(ref) not in applied]
+    pending = list(dict.fromkeys(pending))
+
+    if not pending:
+        return {
+            "graph": existing_graph,
+            "changed": False,
+            "mode": str(existing_graph.get("mode") or "flat"),
+            "mode_reason": existing_graph.get("mode_reason"),
+            "batch": [],
+            "new_source_ids": [],
+            "added": [],
+            "updated": [],
+            "added_edges": 0,
+            "dropped_nodes": 0,
+            "untouched": 0,
+            "reason": "没有新来源（这批来源都已经在图里了）",
+        }
+
+    rows = candidate_sources(ctx, source_ids=pending)
+    allowed = valid_ids(rows)
+    pack = PromptPack(ctx.config.summary_cfg.prompts_dir)
+
+    mode = "flat"
+    reason: str | None = None
+    patch: dict[str, Any]
+    if use_model and ctx.llm is not None and rows:
+        prompt = pack.compose("build-topic-map", topic=topic, sources=render_sources(rows))
+        content = ""
+        finish_reason = ""
+        try:
+            reply = ctx.llm.chat([{"role": "user", "content": prompt}])
+            content = str(getattr(reply, "content", ""))
+            finish_reason = str(getattr(reply, "finish_reason", "") or "")
+            parsed = parse_map(content)
+        except Exception:
+            parsed = {"nodes": [], "edges": []}
+        if parsed["nodes"]:
+            mode = "model"
+            patch = apply_guards(parsed, allowed_ids=allowed, max_nodes=limit)
+        else:
+            patch = build_flat_map(rows, max_nodes=limit)
+            reason = degrade_reason(finish_reason=finish_reason, content=content, parsed_ok=False)
+    else:
+        patch = build_flat_map(rows, max_nodes=limit)
+        reason = "未使用模型（use_model=false 或没有可用模型）"
+
+    outcome = knowledge_graph.merge_concept_graph(
+        existing_graph,
+        {"nodes": patch["nodes"], "edges": patch["edges"]},
+        max_nodes=limit,
+    )
+    return {
+        "graph": outcome.graph,
+        "changed": outcome.changed,
+        "mode": mode,
+        "mode_reason": reason,
+        "batch": sorted(allowed),
+        "new_source_ids": list(outcome.new_source_ids),
+        "added": list(outcome.added),
+        "updated": list(outcome.updated),
+        "added_edges": outcome.added_edges,
+        "dropped_nodes": outcome.dropped_nodes,
+        "untouched": outcome.untouched,
+        "reason": outcome.reason,
+    }
+
+
+def topic_grow_map(
+    ctx: ToolContext,
+    *,
+    topic_id: str | None = None,
+    topic: str | None = None,
+    source_ids: list[str] | None = None,
+    max_nodes: int = knowledge_graph.TOTAL_NODE_CAP,
+    use_model: bool = True,
+) -> dict[str, Any]:
+    """让**已有**知识地图增量长大（`topic.build_map` 的增量版，RPC `topic.grow_map` 走这里）。
+
+    给了 `topic_id` 就在那一张图上长；否则按 `topic` 取最近一张图。找不到现成图时
+    **从空图长起**（等价于建一张新图，`created=True`）。
+
+    失败不丢图：合并结果先在内存里算完、`json.dumps` 成功之后才 `UPDATE` 那一行
+    （`state.learning_topics.replace_topic_map_graph`），序列化或写库失败时旧图原样还在。
+    """
+    payload: dict[str, Any] | None = None
+    if topic_id:
+        payload = get_topic_map(ctx.db, topic_id)
+        if payload is None:
+            raise LookupError(f"主题地图不存在：{topic_id}")
+    name = str(topic or "").strip()
+    if not name and payload is not None:
+        name = str(payload.get("topic") or "").strip()
+    if not name:
+        raise ValueError("topic 不能为空")
+
+    if payload is None:
+        payload = latest_topic_map(ctx.db, name)
+    existing_graph: dict[str, Any] = {}
+    if payload is not None:
+        raw = payload.get("graph")
+        existing_graph = dict(raw) if isinstance(raw, dict) else {}
+
+    result = grow_map_graph(
+        ctx,
+        topic=name,
+        existing_graph=existing_graph,
+        source_ids=source_ids,
+        max_nodes=max_nodes,
+        use_model=use_model,
+    )
+
+    created = False
+    target_id = str(payload["id"]) if payload is not None else None
+    if result["changed"]:
+        graph = dict(result["graph"])
+        graph["topic"] = name
+        # 旧图的 mode 才是"这张图怎么来的"；本次退化成 flat 只记进 growth，不改旧口径。
+        if not graph.get("mode"):
+            graph["mode"] = result["mode"]
+            graph["mode_reason"] = result["mode_reason"]
+        if target_id is None:
+            target_id = save_topic_map(ctx.db, topic=name, graph=graph, session_id=ctx.session_id)
+            created = True
+        elif not replace_topic_map_graph(ctx.db, topic_id=target_id, graph=graph):
+            raise LookupError(f"主题地图不存在：{target_id}")
+        result = {**result, "graph": graph}
+
+    return {
+        "topic_id": target_id,
+        "topic": name,
+        "created": created,
+        "changed": result["changed"],
+        # 这两个是**本次调用**的模式与原因（图上的 mode 记的是"这张图怎么来的"，不该被改），
+        # 图里存的那份另给 `graph_mode*` —— 一次退化只留在返回值里，丢了就没法诊断
+        "mode": result["mode"],
+        "mode_reason": result["mode_reason"],
+        "graph_mode": result["graph"].get("mode"),
+        "graph_mode_reason": result["graph"].get("mode_reason"),
+        "batch": result["batch"],
+        "new_source_ids": result["new_source_ids"],
+        "added": result["added"],
+        "updated": result["updated"],
+        "added_edges": result["added_edges"],
+        "dropped_nodes": result["dropped_nodes"],
+        "untouched": result["untouched"],
+        "reason": result["reason"],
+        "nodes": result["graph"].get("nodes", []),
+        "edges": result["graph"].get("edges", []),
+        "stats": {
+            "nodes": len(result["graph"].get("nodes") or []),
+            "edges": len(result["graph"].get("edges") or []),
+            "batch": len(result["batch"]),
+        },
+    }
+
+
+def grow_map_on_library_update(
+    ctx: ToolContext,
+    *,
+    topic: str,
+    source_ids: list[str],
+    max_nodes: int = knowledge_graph.TOTAL_NODE_CAP,
+    use_model: bool = True,
+) -> dict[str, Any]:
+    """**留给 `library.updated` 的入口（本轮只导出、不接线）**。
+
+    为什么单列一个函数而不是让事件直接调 `topic_grow_map`：事件是"资料入库了"，
+    它对"这个主题有没有图"没有把握，**没有图时应当安静跳过**（不能因为一次入库就凭空
+    造一张图，那会把用户没看过的主题塞满列表）。手动入口则相反：没图就从空图长起。
+    """
+    payload = latest_topic_map(ctx.db, topic.strip())
+    if payload is None:
+        return {
+            "topic": topic,
+            "topic_id": None,
+            "changed": False,
+            "reason": "该主题还没有知识地图（先 topic.build_map 或 topic.grow_map）",
+        }
+    result = topic_grow_map(
+        ctx,
+        topic_id=str(payload["id"]),
+        source_ids=source_ids,
+        max_nodes=max_nodes,
+        use_model=use_model,
+    )
+    return {"topic": topic, **result}
 
 
 SPEC = ToolSpec(
