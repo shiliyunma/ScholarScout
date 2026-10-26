@@ -2,8 +2,12 @@
 
 守则：
 - **每个节点至少要挂一个真实 source_id**；挂不上的节点保留但标 ``[无出处]`` 并计入 ``ungrounded``
-- 端点不存在的边一律丢弃（宁可少，不许错）
-- 没有模型时退化成"扁平图"（每个来源一个节点、无边），并如实标 ``mode="flat"``
+- 端点不存在 / 自环的边一律丢弃（宁可少，不许错）
+- 边带**置信度**（``strong`` / ``weak``）：模型有直接证据的标 strong，只有「同领域 / 可能前置」的标
+  weak。**弱边照样进图**（界面可画成虚线让人自己验证），不因没把握就把关系整条丢掉 —— 旧提示词
+  「拿不准就不给」在真机上产出 12 节点 3 条边的散点图，把「不确定性」和「不输出」混成了一件事。
+  **给弱边不等于允许编节点**：端点不存在的边仍然丢弃。
+- 没有模型时退化成「扁平图」（每个来源一个节点、无边），并如实标 ``mode="flat"``
 """
 
 from __future__ import annotations
@@ -52,10 +56,28 @@ PARAMETERS: dict[str, Any] = {
 
 ALLOWED_NODE_KINDS = ("concept", "method", "dataset", "tool", "venue", "source")
 ALLOWED_RELATIONS = ("prerequisite", "variant", "uses", "evaluates")
+#: 边的置信度：`strong` = 模型有直接证据，`weak` = 同领域 / 可能前置但没证实。
+#: **只分两档，不新增关系类型** —— 弱边是"关系本身待验证"，不是"另一种关系"。
+ALLOWED_CONFIDENCE = ("strong", "weak")
+DEFAULT_CONFIDENCE = "strong"
 NO_SOURCE_PREFIX = "[无出处]"
 
 _NODE_LINE = re.compile(r"^\s*node\s*[:：]\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*(.*)$")
 _EDGE_LINE = re.compile(r"^\s*edge\s*[:：]\s*([^|]+?)\s*->\s*([^|]+?)\s*\|\s*(.+)$")
+_EDGE_SEPARATOR = re.compile(r"[|｜]")
+
+
+def edge_confidence(raw: Any) -> str:
+    """置信度归一：只有明确写 ``weak`` 才算弱边（老格式没第三段 → strong，模型写怪词也归 strong）。"""
+    return raw if raw in ALLOWED_CONFIDENCE else DEFAULT_CONFIDENCE
+
+
+def _parse_edge_tail(tail: str) -> tuple[str, str]:
+    """``<rel>`` 或 ``<rel> | <confidence>`` → (rel, confidence)。"""
+    parts = _EDGE_SEPARATOR.split(tail, maxsplit=1)
+    rel = parts[0].strip()
+    confidence = edge_confidence(parts[1].strip() if len(parts) > 1 else None)
+    return rel, confidence
 
 
 def parse_map(text: str) -> dict[str, Any]:
@@ -89,8 +111,9 @@ def parse_map(text: str) -> dict[str, Any]:
 
         edge_match = _EDGE_LINE.match(line)
         if edge_match is not None:
-            src, dst, rel = (part.strip() for part in edge_match.groups())
-            edges.append({"src": src, "dst": dst, "rel": rel})
+            src, dst, tail = (part.strip() for part in edge_match.groups())
+            rel, confidence = _parse_edge_tail(tail)
+            edges.append({"src": src, "dst": dst, "rel": rel, "confidence": confidence})
 
     return {"nodes": nodes, "edges": edges}
 
@@ -124,13 +147,32 @@ def apply_guards(
 
     known = {node["nid"] for node in nodes}
     edges: list[dict[str, Any]] = []
+    by_pair: dict[tuple[str, str], dict[str, Any]] = {}
     dropped_edges = 0
     for edge in raw.get("edges") or []:
-        if edge.get("src") not in known or edge.get("dst") not in known:
+        src = edge.get("src")
+        dst = edge.get("dst")
+        # 端点不存在 / 自环：画不出来也不该画
+        if src == dst or src not in known or dst not in known:
             dropped_edges += 1
             continue
         rel = edge.get("rel") if edge.get("rel") in ALLOWED_RELATIONS else "uses"
-        edges.append({"src": edge["src"], "dst": edge["dst"], "rel": rel})
+        confidence = edge_confidence(edge.get("confidence"))
+        existing = by_pair.get((src, dst))
+        if existing is not None:
+            # 同一对端点只留一条：**strong 优先**（后到的 strong 把先到的 weak 升级；
+            # weak 不覆盖 strong，也不改已定的 rel/方向 —— 免得同一关系来回翻烧饼）
+            if confidence == "strong":
+                existing["confidence"] = "strong"
+            continue
+        item = {"src": src, "dst": dst, "rel": rel, "confidence": confidence}
+        by_pair[(src, dst)] = item
+        edges.append(item)
+
+    degree: dict[str, int] = {node["nid"]: 0 for node in nodes}
+    for edge in edges:
+        degree[edge["src"]] += 1
+        degree[edge["dst"]] += 1
 
     return {
         "nodes": nodes,
@@ -138,6 +180,9 @@ def apply_guards(
         "stats": {
             "nodes": len(nodes),
             "edges": len(edges),
+            "weak_edges": sum(1 for edge in edges if edge["confidence"] == "weak"),
+            # 度数为 0 的节点数：模型「只交散点」时这个数会很大，是这张图太稀的直接指标
+            "isolated_nodes": sum(1 for value in degree.values() if value == 0),
             "ungrounded_nodes": len(ungrounded),
             "dropped_edges": dropped_edges,
             "ungrounded_labels": ungrounded,
@@ -163,6 +208,9 @@ def build_flat_map(rows: list[dict[str, Any]], *, max_nodes: int) -> dict[str, A
         "stats": {
             "nodes": len(nodes),
             "edges": 0,
+            "weak_edges": 0,
+            # 扁平图本来就没有边：每个节点都是孤岛（这里如实报，不粉饰）
+            "isolated_nodes": len(nodes),
             "ungrounded_nodes": 0,
             "dropped_edges": 0,
             "ungrounded_labels": [],

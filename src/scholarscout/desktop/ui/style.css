@@ -7934,6 +7934,10 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .map-line.rel-variant {
   border-top-style: dotted;
 }
+/* 弱边图例的样线：和画布里的 `.map-edge.is-weak` 同一套观感（虚线 = 待验证） */
+.map-line.is-weak {
+  border-top-style: dashed;
+}
 
 .map-body {
   flex: 1 1 auto;
@@ -7968,6 +7972,12 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 }
 .map-edge.rel-evaluates {
   stroke-dasharray: 9 3 2 3;
+}
+/* 弱边（待验证）：虚线。这条必须排在 rel-* 之后 —— 同样的选择器权重，
+ * 靠后的一条才盖得住「前置/变体/评测」各自的线型（弱边一律同一种虚线）。 */
+.map-edge.is-weak {
+  stroke-dasharray: 4 3;
+  stroke-opacity: 0.75;
 }
 .map-edge.is-hot {
   stroke: var(--ui-accent);

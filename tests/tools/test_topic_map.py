@@ -73,7 +73,32 @@ def test_parse_map_tolerates_noise_and_dedupes() -> None:
     assert parsed["nodes"][0]["source_ids"] == ["src_a"]
     assert parsed["nodes"][1]["kind"] == "concept"
     assert parsed["nodes"][1]["source_ids"] == []
-    assert parsed["edges"] == [{"src": "n1", "dst": "n2", "rel": "variant"}]
+    # 两字段边（老格式，没有置信度）→ 按 strong 处理
+    assert parsed["edges"] == [{"src": "n1", "dst": "n2", "rel": "variant", "confidence": "strong"}]
+
+
+def test_parse_map_reads_three_field_edge_confidence() -> None:
+    """三字段边：第三段是置信度，weak 必须原样读出来（否则弱边被静默升成强边）。"""
+    parsed = parse_map(
+        "node: n1 | A | method | src_a\nnode: n2 | B | concept | src_a\n"
+        "edge: n1 -> n2 | prerequisite | weak\n"
+        "edge: n2 -> n1 | uses | strong\n"
+    )
+    assert [(edge["rel"], edge["confidence"]) for edge in parsed["edges"]] == [
+        ("prerequisite", "weak"),
+        ("uses", "strong"),
+    ]
+
+
+def test_parse_map_unknown_confidence_falls_back_to_strong() -> None:
+    """模型瞎写的置信度（`可能` / 空 / 大写 WEAK）→ 一律 strong，不猜。"""
+    parsed = parse_map(
+        "node: n1 | A | method | src_a\nnode: n2 | B | concept | src_a\n"
+        "edge: n1 -> n2 | uses | 可能\n"
+        "edge: n2 -> n1 | uses | WEAK\n"
+        "edge: n1 -> n2 | variant | \n"
+    )
+    assert [edge["confidence"] for edge in parsed["edges"]] == ["strong", "strong", "strong"]
 
 
 def test_parse_map_accepts_full_width_colon() -> None:
@@ -90,9 +115,85 @@ def test_apply_guards_marks_ungrounded_and_drops_dangling_edges() -> None:
     assert nodes["n2"]["source_ids"] == ["src_a", "src_b"]
     assert nodes["n3"]["label"].startswith("[无出处]")
     assert nodes["n3"]["dropped_source_ids"] == ["src_不存在"]
-    assert graph["edges"] == [{"src": "n1", "dst": "n2", "rel": "prerequisite"}]
+    assert graph["edges"] == [
+        {"src": "n1", "dst": "n2", "rel": "prerequisite", "confidence": "strong"}
+    ]
     assert graph["stats"]["ungrounded_nodes"] == 1
     assert graph["stats"]["dropped_edges"] == 1
+
+
+def test_apply_guards_dedupes_same_pair_preferring_strong() -> None:
+    """同一 `(src,dst)` 只留一条：先来的 weak 被后到的 strong 升级，**不重复出边**。"""
+    raw = {
+        "nodes": [
+            {"nid": "n1", "label": "A", "kind": "method", "source_ids": []},
+            {"nid": "n2", "label": "B", "kind": "concept", "source_ids": []},
+        ],
+        "edges": [
+            {"src": "n1", "dst": "n2", "rel": "uses", "confidence": "weak"},
+            {"src": "n1", "dst": "n2", "rel": "prerequisite", "confidence": "strong"},
+        ],
+    }
+    graph = apply_guards(raw, allowed_ids=set(), max_nodes=5)
+    assert graph["edges"] == [{"src": "n1", "dst": "n2", "rel": "uses", "confidence": "strong"}]
+    assert graph["stats"]["weak_edges"] == 0
+
+
+def test_apply_guards_keeps_weak_edge_and_does_not_downgrade() -> None:
+    """weak 边必须留住（这正是这张图变密的来源）；后到的 weak 不许把已定的 strong 降级。"""
+    raw = {
+        "nodes": [
+            {"nid": "n1", "label": "A", "kind": "method", "source_ids": []},
+            {"nid": "n2", "label": "B", "kind": "concept", "source_ids": []},
+            {"nid": "n3", "label": "C", "kind": "concept", "source_ids": []},
+        ],
+        "edges": [
+            {"src": "n1", "dst": "n2", "rel": "prerequisite", "confidence": "strong"},
+            {"src": "n1", "dst": "n2", "rel": "variant", "confidence": "weak"},
+            {"src": "n2", "dst": "n3", "rel": "uses", "confidence": "weak"},
+        ],
+    }
+    graph = apply_guards(raw, allowed_ids=set(), max_nodes=5)
+    assert [(edge["src"], edge["dst"], edge["confidence"]) for edge in graph["edges"]] == [
+        ("n1", "n2", "strong"),
+        ("n2", "n3", "weak"),
+    ]
+    assert graph["stats"]["weak_edges"] == 1
+
+
+def test_apply_guards_counts_isolated_nodes_and_weak_edges() -> None:
+    """`isolated_nodes` = 度数为 0 的节点数（散点图的直接指标）；`weak_edges` 只数弱边。"""
+    raw = {
+        "nodes": [
+            {"nid": f"n{i}", "label": f"L{i}", "kind": "concept", "source_ids": []}
+            for i in range(1, 5)
+        ],
+        "edges": [
+            {"src": "n1", "dst": "n2", "rel": "uses", "confidence": "weak"},
+            {"src": "n2", "dst": "n3", "rel": "prerequisite", "confidence": "strong"},
+        ],
+    }
+    graph = apply_guards(raw, allowed_ids=set(), max_nodes=5)
+    assert graph["stats"]["nodes"] == 4
+    assert graph["stats"]["edges"] == 2
+    assert graph["stats"]["weak_edges"] == 1
+    # n4 一条边都没有 → 唯一的孤岛
+    assert graph["stats"]["isolated_nodes"] == 1
+
+
+def test_apply_guards_drops_self_loop_and_keeps_confidence_off_unknown_endpoints() -> None:
+    """自环丢弃（计入 dropped_edges）；端点不存在的弱边也不许活（弱≠可以瞎连）。"""
+    raw = {
+        "nodes": [{"nid": "n1", "label": "A", "kind": "method", "source_ids": []}],
+        "edges": [
+            {"src": "n1", "dst": "n1", "rel": "uses", "confidence": "weak"},
+            {"src": "n1", "dst": "n9", "rel": "uses", "confidence": "weak"},
+        ],
+    }
+    graph = apply_guards(raw, allowed_ids=set(), max_nodes=5)
+    assert graph["edges"] == []
+    assert graph["stats"]["dropped_edges"] == 2
+    assert graph["stats"]["isolated_nodes"] == 1
 
 
 def test_apply_guards_truncates_to_max_nodes() -> None:
@@ -116,6 +217,31 @@ def test_build_flat_map_one_node_per_source() -> None:
     assert [node["source_ids"] for node in graph["nodes"]] == [["src_a"], ["src_b"]]
     assert all(node["kind"] == "source" for node in graph["nodes"])
     assert graph["edges"] == []
+    # 兜底图没有边 → 每个节点都是孤岛，如实计数（不粉饰成功率）
+    assert graph["stats"]["weak_edges"] == 0
+    assert graph["stats"]["isolated_nodes"] == 2
+
+
+def test_build_map_end_to_end_reports_weak_edges_and_isolated(ctx: AppContext) -> None:
+    """模型按新格式给弱边 → 弱边进图、统计能看出结构；没连上边的节点被算成孤岛。"""
+    a, b = _seed(ctx)
+    ctx.llm = StubLlm(
+        reply(
+            f"node: n1 | RAG | method | {a}\n"
+            f"node: n2 | 教育智能体 | concept | {a}, {b}\n"
+            f"node: n3 | 规格驱动验证 | concept | {b}\n"
+            f"edge: n1 -> n2 | prerequisite | weak\n"
+        )
+    )
+
+    result = topic_build_map(tool_ctx(ctx), "教育智能体", source_ids=[a, b], max_nodes=10)
+    data = result["data"]
+    assert data["mode"] == "model"
+    assert data["edges"] == [
+        {"src": "n1", "dst": "n2", "rel": "prerequisite", "confidence": "weak"}
+    ]
+    assert data["stats"]["weak_edges"] == 1
+    assert data["stats"]["isolated_nodes"] == 1
 
 
 def test_build_map_with_model_saves_and_returns(ctx: AppContext) -> None:

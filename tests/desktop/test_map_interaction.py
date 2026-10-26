@@ -420,3 +420,84 @@ def test_visible_graph_copies_source_refs_for_the_info_panel() -> None:
     body = _function_body(MAP_JS, "mapVisibleGraph")
     assert "source_refs" in body, "mapVisibleGraph 没拷 source_refs：详情面板拿不到真标题"
     assert "dropped_sources" in body, "mapVisibleGraph 没拷 dropped_sources：缺失计数永远 0"
+
+
+# --------------------------------------------------------------------- 弱边（待验证）
+
+
+def test_weak_edge_gets_is_weak_but_keeps_rel_class() -> None:
+    """`confidence:"weak"` 的边既要有 `is-weak`（出虚线），也**不许丢掉** `rel-*`。
+
+    为什么两条都要：`rel-*` 是边的语义线型（前置/变体/评测），`is-weak` 是
+    "这条还没证据"的标记。只挂一条，另一层信息就没了。
+    """
+    body = _function_body(MAP_JS, "buildMapSvg")
+    assert "mapEdgeIsWeak(edge)" in body, "buildMapSvg 没按 confidence 判弱边"
+    assert '"map-edge rel-" + String(edge.kind || "uses")' in body, "边的 rel-* 前半段被改了"
+    assert '" is-weak"' in body, "弱边没加 is-weak（CSS 的虚线就落不到它身上）"
+    assert '"data-confidence"' in body, "弱边没写 data-confidence（探针/DOM 都认不出来）"
+    assert '"data-weak-edges"' in body, "SVG 上没有弱边计数（探针没法一步断言）"
+
+
+def test_weak_edge_is_dashed_and_wins_over_the_rel_line_styles() -> None:
+    """弱边的虚线写在 CSS 里，且必须排在 `rel-*` 之后 —— 同选择器权重，靠后才生效。
+
+    顺序反了会怎样：一条 `rel-prerequisite` 的弱边显示成 6 4 的前置线型，
+    "待验证"在图上完全看不出来，而这正是这次改动要解决的事。
+    """
+    rule = re.search(r"\.map-edge\.is-weak\s*\{([^}]*)\}", STYLE_CSS)
+    assert rule, "style.css 里没有 .map-edge.is-weak 规则"
+    assert re.search(r"stroke-dasharray:\s*4\s*3", rule.group(1)), (
+        "弱边没有 stroke-dasharray（画不成虚线）"
+    )
+    assert STYLE_CSS.index(".map-edge.is-weak {") > STYLE_CSS.index(".map-edge.rel-evaluates {"), (
+        ".map-edge.is-weak 排在 rel-* 前面：前置/变体/评测的线型会盖掉弱边虚线"
+    )
+    # 悬停高亮照旧：is-hot 只改颜色/粗细，绝不许复位 dasharray（否则一悬停变实线）
+    hot = re.search(r"\.map-edge\.is-hot\s*\{([^}]*)\}", STYLE_CSS)
+    assert hot, "style.css 里没有 .map-edge.is-hot 规则"
+    assert "dasharray" not in hot.group(1), (
+        ".map-edge.is-hot 里动了 dasharray —— 悬停/选中时弱边会变实线"
+    )
+
+
+def test_legend_marks_dashes_as_pending_verification() -> None:
+    """图例补一项「虚线 = 待验证」，且只在这张图真有弱边时出现（不硬塞一条找不到对应物的说明）。"""
+    body = _function_body(MAP_JS, "renderMapLegend")
+    assert "虚线 = 待验证" in body, "图例没有「虚线 = 待验证」"
+    assert "map-legend-weak" in body, "图例里没有可定位的弱边项（class 缺失）"
+    assert "map-line is-weak" in body, "图例样线不是 is-weak（看起来还是实线）"
+    assert "mapEdgeIsWeak(" in body, "图例没按边的 confidence 数弱边"
+    assert "if (weak > 0)" in body, "图例无条件挂「待验证」：没有弱边的图上会让人满图找虚线"
+    assert "insertBefore(weakItem, title.nextSibling)" in body, (
+        "「虚线 = 待验证」挂在了图例末尾：右栏 364px 一行放不下，默认就是看不见（要横滑才有）"
+    )
+
+
+def test_old_payload_without_confidence_stays_solid() -> None:
+    """老数据（边没有 `confidence`）按 strong 画实线，且不报错。"""
+    body = _function_body(MAP_JS, "mapEdgeIsWeak")
+    assert '"strong"' in body and '=== "weak"' in body, "判弱边不是「明确等于 weak 才算」"
+    assert '|| "strong"' in body, "缺省没落到 strong（老数据会被当成弱边）"
+    assert "!!edge.confidence" not in body, '用了 truthy 判断：confidence:"high" 之类也会被画成虚线'
+    # 边是整条 slice() 透传（不做白名单拷贝），所以 confidence 不会在取子图时被丢
+    assert "((payload && payload.edges) || []).slice()" in _function_body(
+        MAP_JS, "mapVisibleGraph"
+    ), "mapVisibleGraph 改了边的拷贝方式：confidence 可能在半路被丢"
+
+
+def test_count_line_reports_pending_edges_only_when_there_are_some() -> None:
+    """计数行：`共 N 个节点、M 条边（其中 K 条待验证）`；K=0 不显示括号。
+
+    K 优先取后端 `stats.weak_edges` / `counts.weak_edges`，读不到就数画出来的边
+    （老后端没有这个字段也不许报错/显示 undefined）。
+    """
+    figure = _function_body(MAP_JS, "renderMapFigure")
+    assert "条待验证" in figure, "计数行没有「其中 K 条待验证」"
+    assert "weak > 0" in figure, "K=0 也打了括号（干净图上多一句 0 条待验证）"
+    assert '" 个节点、"' in figure and '" 条边"' in figure, "计数行的节点/边文案被改了"
+
+    helper = _function_body(MAP_JS, "mapWeakEdgeCount")
+    assert "weak_edges" in helper, "没读后端的 stats.weak_edges / counts.weak_edges"
+    assert 'typeof value === "number"' in helper, "没做类型容错（undefined 会算出 NaN）"
+    assert "mapEdgeIsWeak(" in helper, "后端没给数时没有回落到数画出来的边"

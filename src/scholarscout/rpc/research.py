@@ -475,11 +475,14 @@ def _map_view(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
         if source == target or source not in index or target not in index:
             continue
         kind = str(item.get("rel") or item.get("kind") or "uses")
+        # 置信度缺省补 strong：老图（落库时还没有这个字段）不改也能照常画
+        confidence = "weak" if item.get("confidence") == "weak" else "strong"
         edges.append(
             {
                 "source": source,
                 "target": target,
                 "kind": kind if kind in MAP_EDGE_KINDS else "uses",
+                "confidence": confidence,
             }
         )
         index[source]["weight"] += 1

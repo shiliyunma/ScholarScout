@@ -213,6 +213,43 @@ def test_grow_map_degrades_with_a_recorded_reason(ctx: AppContext) -> None:
     assert "max_tokens" in str(out["mode_reason"])
 
 
+def test_get_map_passes_edge_confidence_and_defaults_old_graph_to_strong(
+    ctx: AppContext,
+) -> None:
+    """视图层透传置信度；**老图（边里没有 confidence）照样能画**，按 strong 处理。
+
+    为什么要在视图层也补默认值：库里已有的图是旧格式，界面不该因为多了一个字段就报错；
+    也不该把"没标"当成"弱"（那会把所有老边画成虚线）。
+    """
+    a, b, _c = _seed_sources(ctx)
+    topic_id = save_topic_map(
+        ctx.db,
+        topic="教育智能体",
+        graph={
+            "nodes": [
+                {"nid": "n1", "label": "RAG", "kind": "method", "source_ids": [a]},
+                {"nid": "n2", "label": "教育智能体", "kind": "concept", "source_ids": [a, b]},
+            ],
+            "edges": [
+                {"src": "n1", "dst": "n2", "rel": "prerequisite", "confidence": "weak"},
+                # 旧格式：没有 confidence
+                {"src": "n2", "dst": "n1", "rel": "uses"},
+                # 乱写的置信度也不许把图画坏
+                {"src": "n1", "dst": "n2", "rel": "variant", "confidence": "或许"},
+            ],
+        },
+    )
+
+    out = dispatch(ctx, "topic.get_map", {"topic_id": topic_id})
+    assert [(edge["source"], edge["target"], edge["confidence"]) for edge in out["edges"]] == [
+        ("n1", "n2", "weak"),
+        ("n2", "n1", "strong"),
+        ("n1", "n2", "strong"),
+    ]
+    # 度数仍按边数算（新字段不影响画图口径）
+    assert {node["id"]: node["weight"] for node in out["nodes"]} == {"n1": 3, "n2": 3}
+
+
 def test_source_graph_single_source_has_no_edge(ctx: AppContext) -> None:
     """只有一个来源：回 1 个节点、0 条边（空图/单来源不报错）。"""
     a, _b, _c = _seed_sources(ctx)

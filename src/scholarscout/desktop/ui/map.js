@@ -212,6 +212,33 @@ function mapEdgeKindLabel(kind) {
 }
 
 
+/* 弱边（待验证）：后端给 `confidence:"weak"`，**老数据没有这个字段 → 按 strong 画实线**。
+ * 只认明确写了 weak 的：缺省、null、"strong"、乱七八糟的值一律实线 ——
+ * 宁可漏标一条待验证，也不把有证据的边画成虚线（那等于告诉用户"这条是猜的"）。 */
+function mapEdgeIsWeak(edge) {
+  return String((edge && edge.confidence) || "strong") === "weak";
+}
+
+
+/* 待验证条数：优先信后端 `stats.weak_edges` / `counts.weak_edges`（读不到也不算错），
+ * 读不到就数**这张图真画出来的**边。截断显示时不采信 stats —— 它数的是全图，
+ * 会和屏幕上的边数对不上（"8 条边其中 5 条待验证"却只看得到 3 条）。 */
+function mapWeakEdgeCount(payload, edges, truncated) {
+  if (!truncated) {
+    var holders = [(payload && payload.stats) || {}, (payload && payload.counts) || {}];
+    for (var i = 0; i < holders.length; i += 1) {
+      var value = holders[i].weak_edges;
+      if (typeof value === "number" && isFinite(value) && value >= 0) return value;
+    }
+  }
+  var counted = 0;
+  (edges || []).forEach(function (edge) {
+    if (mapEdgeIsWeak(edge)) counted += 1;
+  });
+  return counted;
+}
+
+
 /* 本次要画的子图：大图默认截断到度数前 30，其余保持原顺序（颜色/标签不因截断而变）。 */
 function mapVisibleGraph(payload, showAll) {
   /* 拷贝一份再算坐标：布局会往节点上写 x/y/dx/dy，不能污染 RPC 回来的载荷
@@ -646,6 +673,7 @@ function buildMapSvg(payload, showAll, size) {
   var stage = mapSvgEl("g", { class: "map-stage" });
 
   /* 先画边（压在点下面），再画点 —— 视觉上点永远盖住线的端点 */
+  var weakEdges = 0;
   view.edges.forEach(function (edge) {
     var src = null;
     var dst = null;
@@ -654,9 +682,14 @@ function buildMapSvg(payload, showAll, size) {
       if (node.id === edge.target) dst = node;
     });
     if (!src || !dst) return;
+    /* 弱边 = 待验证：加 `is-weak`（CSS 出虚线），线型 rel-* 照旧挂上 ——
+     * `is-hot` 只管颜色/粗细，悬停高亮不因虚线而失效。 */
+    var weak = mapEdgeIsWeak(edge);
+    if (weak) weakEdges += 1;
     var line = mapSvgEl("line", {
-      class: "map-edge rel-" + String(edge.kind || "uses"),
+      class: "map-edge rel-" + String(edge.kind || "uses") + (weak ? " is-weak" : ""),
       "data-kind": String(edge.kind || "uses"),
+      "data-confidence": weak ? "weak" : "strong",
       "data-source": edge.source,
       "data-target": edge.target,
       x1: src.x.toFixed(1),
@@ -666,6 +699,7 @@ function buildMapSvg(payload, showAll, size) {
     });
     stage.appendChild(line);
   });
+  svg.setAttribute("data-weak-edges", String(weakEdges));
 
   view.nodes.forEach(function (node) {
     var group = mapSvgEl("g", {
@@ -1124,6 +1158,14 @@ function renderMapLegend(payload) {
   title.textContent = "图例";
   box.appendChild(title);
 
+  /* 弱边（待验证）：数的是**画出来这子图**里的弱边（`mapState.view` 由 renderMapFigure
+   * 先置好）。一条都没有时不挂这项 —— 挂个"虚线 = 待验证"只会让人满图找虚线。 */
+  var shown = (mapState.view && mapState.view.edges) || (payload && payload.edges) || [];
+  var weak = 0;
+  shown.forEach(function (edge) {
+    if (mapEdgeIsWeak(edge)) weak += 1;
+  });
+
   var counts = (payload && payload.counts && payload.counts.kinds) || {};
   MAP_NODE_KINDS.forEach(function (pair) {
     var kind = pair[0];
@@ -1154,6 +1196,20 @@ function renderMapLegend(payload) {
     item.appendChild(document.createTextNode(pair[1]));
     box.appendChild(item);
   });
+
+  /* 弱边（待验证）单独一项，排在**图例标题后面**：364px 的右栏一行放不下所有项，
+   * 「横向可滑」是隐藏能力 —— 放在末尾等于看不见，而这一项正是解释图上虚线的唯一说明。
+   * 定高 20px + nowrap，所以它不会把图例顶成两行。 */
+  if (weak > 0) {
+    var weakItem = document.createElement("span");
+    weakItem.className = "map-legend-edge map-legend-weak";
+    weakItem.setAttribute("data-confidence", "weak");
+    var weakSwatch = document.createElement("i");
+    weakSwatch.className = "map-line is-weak";
+    weakItem.appendChild(weakSwatch);
+    weakItem.appendChild(document.createTextNode("虚线 = 待验证"));
+    box.insertBefore(weakItem, title.nextSibling);
+  }
 }
 
 
@@ -1402,9 +1458,13 @@ function renderMapFigure(host, payload) {
 
   var count = el("map-count");
   if (count) {
+    /* "（其中 K 条待验证）"：K=0 不显示括号 —— 干净图不该被 0 提醒。
+     * K 优先取后端 `stats.weak_edges`（读不到就数画出来的边，老数据自然得 0）。 */
+    var weak = mapWeakEdgeCount(payload, built.view.edges, built.view.truncated);
+    var weakNote = weak > 0 ? "（其中 " + weak + " 条待验证）" : "";
     count.textContent = built.view.truncated
-      ? "共 " + built.view.total + " 个节点，显示前 " + built.view.shown + "（按连接数排序）"
-      : "共 " + built.view.shown + " 个节点、" + built.view.edges.length + " 条边";
+      ? "共 " + built.view.total + " 个节点，显示前 " + built.view.shown + "（按连接数排序）" + weakNote
+      : "共 " + built.view.shown + " 个节点、" + built.view.edges.length + " 条边" + weakNote;
   }
 
   var all = el("btn-map-all");
