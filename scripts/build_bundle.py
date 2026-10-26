@@ -88,6 +88,32 @@ SIDE_FILES: tuple[str, ...] = (
     CONFIG_TEMPLATE,  # 只是模板；应用读不到 config.yaml 时全用默认值，不用它也能跑
 )
 
+#: 版本标记文件名：写在 exe 旁边的这一行文字，是打包版 `--version` 的唯一来源。
+#: 为什么不在包里再抄一遍版本号：`scholarscout.__version__` 现在从 `pyproject.toml` 读
+#: （源码树），冻结后源码树不在 —— 于是由本脚本在打包时把同一个值写成 `_VERSION`
+#: 放在 exe 旁边，`__init__.py` 向上找得到它。三处（pyproject / 产物 / 界面）永远是同一个值。
+VERSION_MARKER = "_VERSION"
+
+
+def project_version() -> str:
+    """读 `pyproject.toml` 的 `[project].version` —— 全项目唯一的事实源。"""
+    import tomllib
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = data["project"]["version"]
+    if not isinstance(version, str) or not version.strip():
+        raise SystemExit("pyproject.toml 的 [project].version 是空的 —— 先修版本号再打包")
+    return version.strip()
+
+
+def stage_version_marker(target: Path) -> str:
+    """把版本号写进产物目录的 `_VERSION`（打包版 `--version` 读它）。"""
+    version = project_version()
+    (target / VERSION_MARKER).write_text(f"{version}\n", encoding="utf-8")
+    print(f"     {VERSION_MARKER}：{version}（取自 pyproject.toml）")
+    return version
+
+
 QUICKSTART_TEXT = """\
 # ScholarScout 便携包 —— 三步跑起来
 
@@ -249,6 +275,24 @@ def assert_bundle_no_secrets(target: Path) -> None:
     print("     自检：.env 无真密钥、.env.example 值全空、包内无本机 config.yaml")
 
 
+def _warn_about_user_state(target: Path) -> None:
+    """提示产物目录里混着**上一次运行留下的本机状态**（不是这一版打进去的）。
+
+    默认 `--dist-dir` 就是 `ScholarScout-Portable/`，双击跑过一次就会在里面长出
+    `run/`、`data/`、`.env`、`config.yaml`。它们留着不删（那是用户的东西），但**发版**
+    不能带着走 —— `python scripts/release.py` 用 `--clean` 在空目录里组装，天然干净。
+    """
+    junk = [name for name in ("run", "data", ".env", "config.yaml") if (target / name).exists()]
+    junk += sorted(path.name for path in target.glob("*.db")) + sorted(
+        path.name for path in target.glob("*.log")
+    )
+    if junk:
+        print(
+            f"     ! 注意：{target.name}/ 里还有上次运行的 {'、'.join(junk)}（没被拷进包，但发版别用它）；\n"
+            "       发版用 `python scripts/release.py`（空目录组装，不带你本机的数据与密钥）。"
+        )
+
+
 def _skill_copy_ignore(directory: str, names: list[str]) -> set[str]:
     """`copytree` 的排除名单：点号条目（`.archive`/`.hub`/`.curator_*`）+ `__pycache__`。"""
     del directory
@@ -309,6 +353,7 @@ def stage_files(target: Path, *, with_secrets: bool) -> None:
             shutil.copy2(source, target / name_only)
     stage_skills(target)
     _write_quickstart(target)
+    stage_version_marker(target)
 
     if with_secrets:
         print("     " + "!" * 62)
@@ -322,7 +367,7 @@ def stage_files(target: Path, *, with_secrets: bool) -> None:
             print("     （项目根没有 .env，没东西可拷）")
 
 
-def install_built(built: Path, target: Path) -> None:
+def install_built(built: Path, target: Path, *, clean: bool = False) -> None:
     """把 PyInstaller 的产出铺进 `target`（**不**多套一层同名子目录，双击更好找）。
 
     为什么要显式覆盖而不是直接 `mv built/* target/`：`--dist-dir` 默认就指向**最终目录本身**，
@@ -330,8 +375,19 @@ def install_built(built: Path, target: Path) -> None:
     （真机表现：`ScholarScout-Portable/_internal/_internal` + 一个残留的 `ScholarScout/`，
     第二次打包直接 `shutil.Error: Destination path already exists`）。
     现在只覆盖**本包自己的产出**（exe 与 `_internal/`），用户放在目录里的
-    `.env` / `data/` / 自己的 `skills/` 不动。
+    `.env` / `data/` / 自己的 `skills/` 不动 —— 除非 `clean=True`：
+
+    `clean=True` 用于**发版**（`scripts/release.py`）：整目录换成刚组装好的那一份。
+    这条是 v0.1.1 踩出来的：旧产物目录里上一次运行留下的 `run/logs/scout.log` 被原样
+    留在里面，发出去的 zip 就带着别人的运行日志。清理必须发生在**组装**这一侧，
+    而不是"发版前手工删一遍"。
     """
+    if clean:
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(built), str(target))
+        return
     target.mkdir(parents=True, exist_ok=True)
     # 旧版"抹平"逻辑留下的同名子目录：扁平包里它本不该存在，顺手清掉（否则白白多占一倍体积）
     stale = target / built.name
@@ -346,7 +402,7 @@ def install_built(built: Path, target: Path) -> None:
         shutil.move(str(child), str(dest))
 
 
-def build(name: str, dist_dir: Path, *, with_secrets: bool = False) -> Path:
+def build(name: str, dist_dir: Path, *, with_secrets: bool = False, clean: bool = False) -> Path:
     work_dir = ROOT / "build" / "bundle"
     spec_dir = ROOT / "build" / "spec"
     staging = work_dir / "dist"
@@ -360,7 +416,7 @@ def build(name: str, dist_dir: Path, *, with_secrets: bool = False) -> Path:
         "PyInstaller",
         *_pyinstaller_args(name, staging, work_dir, spec_dir),
     ]
-    print("[1/3] 打包（PyInstaller，首次约 1-3 分钟）…")
+    print("[1/4] 打包（PyInstaller，首次约 1-3 分钟）…")
     result = subprocess.run(command, cwd=ROOT, check=False)
     if result.returncode != 0:
         raise SystemExit(f"PyInstaller 失败，退出码 {result.returncode}")
@@ -369,21 +425,28 @@ def build(name: str, dist_dir: Path, *, with_secrets: bool = False) -> Path:
     if not exe.exists():
         raise SystemExit(f"没找到产物 {exe}")
 
+    # **先在 PyInstaller 的空目录里把整包组装好，再整目录搬进 dist_dir**。
+    # 顺序反了就会出 v0.1.1 那个事故：往已有目录里覆盖时，上一轮运行留下的 `run/`、
+    # `data/`、`.env`、`config.yaml` 原样留在里面，自检报"包不干净"——而"干净"该由
+    # 组装过程保证，不是靠发版前手工删一遍（忘了删就会发出去）。
+    print("[2/4] 放上「旁边要有的东西」（提示词、技能库、说明文件、配置模板、_VERSION）…")
+    stage_files(built, with_secrets=with_secrets)
+    # 自检放在搬动之前：验收的是"要送出去的那个目录"，不是"我以为拷了什么"
+    assert_bundle_no_secrets(built)
+
     # PyInstaller 的 onedir 产出永远多一层 `<name>/`：抹平它，产物就是
     # `ScholarScout-Portable/ScholarScout.exe`；同时保证重复打包不会越套越深
+    print("[3/4] 铺进产物目录…")
     target = dist_dir
-    install_built(built, target)
+    install_built(built, target, clean=clean)
     shutil.rmtree(staging, ignore_errors=True)
     exe = target / f"{name}.exe"
     if not exe.exists():
         raise SystemExit(f"铺进 {target} 之后没找到 {exe}")
+    if not clean:
+        _warn_about_user_state(target)
 
-    print("[2/3] 放上「旁边要有的东西」（提示词、技能库、说明文件、配置模板）…")
-    stage_files(target, with_secrets=with_secrets)
-    # 自检放在拷完之后：验收的是"要送出去的那个目录"，不是"我以为拷了什么"
-    assert_bundle_no_secrets(target)
-
-    print("[3/3] 完成")
+    print("[4/4] 完成")
     size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
     print(f"     目录：{target}")
     print(f"     入口：{exe}")
@@ -408,8 +471,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         action="store_true",
         help="连真 .env（含 API 密钥）一起拷；打完自检会失败，仅自己排障用",
     )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="先把产物目录整个删掉（发版用：目录里上次运行留下的 run/、data/、.env 不会混进包）",
+    )
     args = parser.parse_args(None if argv is None else list(argv))
-    build(args.name, Path(args.dist_dir), with_secrets=args.with_secrets)
+    build(
+        args.name,
+        Path(args.dist_dir),
+        with_secrets=args.with_secrets,
+        clean=args.clean,
+    )
     return 0
 
 

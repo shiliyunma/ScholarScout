@@ -63,6 +63,10 @@ def make_project(tmp_path: Path) -> Path:
     (root / "config.yaml").write_text(USER_CONFIG, encoding="utf-8")
     (root / ".env.example").write_text(EMPTY_ENV_TEMPLATE, encoding="utf-8")
     (root / ".env").write_text(REAL_ENV, encoding="utf-8")
+    # 版本号的事实源：打包时 `_VERSION` 就是从这份 `[project].version` 写出来的
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "scholarscout"\nversion = "9.9.9"\n', encoding="utf-8"
+    )
 
     skills = root / "skills"
     (skills / "creative" / "ascii-art").mkdir(parents=True)
@@ -373,3 +377,41 @@ def test_rebuilding_does_not_nest_internal_or_eat_user_data(
     assert (out / "ScholarScout.exe").is_file()
     assert (out / "data" / "keep.txt").read_text(encoding="utf-8") == "我的资料"
     assert (out / ".env").is_file(), "空值 .env 不算泄露，也不该被重打包抹掉"
+
+
+# ── 发版：`--clean` 让产物目录变成"刚组装好的那一份" ────────────────────
+
+
+def test_clean_build_drops_previous_runtime_state(
+    bundle: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--clean`（发版用）：上一轮运行留下的 `run/`、`data/`、`.env`、`*.log` 不许留在产物里。
+
+    这是 v0.1.1 第一次发版的真事：`build_bundle.py` 往已有目录里覆盖，旧
+    `run/logs/scout.log` 原样留着，`scripts/release.py` 的干净度自检把它拦了下来 ——
+    拦得对，但"干净"该由组装保证，不该靠发版前记得手工删。
+    """
+    out = build_project(bundle, tmp_path, monkeypatch)
+    (out / "run" / "logs").mkdir(parents=True)
+    (out / "run" / "logs" / "scout.log").write_text("旧日志", encoding="utf-8")
+    (out / "data").mkdir()
+    (out / "data" / "old.db").write_bytes(b"x")
+    (out / ".env").write_text("LLM_API_KEY=sk-old\n", encoding="utf-8")
+
+    bundle.build("ScholarScout", out, clean=True)
+
+    assert not (out / "run").exists(), "运行日志目录不许跟着发出去"
+    assert not (out / "data").exists(), "用户资料目录不许跟着发出去"
+    assert not (out / ".env").exists(), "旧 .env 不许留着（模板 .env.example 才是随包的那份）"
+    assert (out / "ScholarScout.exe").is_file()
+    assert (out / "skills" / "top-level" / "SKILL.md").is_file()
+
+
+def test_version_marker_is_written_from_pyproject(
+    bundle: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """包里那行 `_VERSION` 取自 `pyproject.toml` —— 打包版 `--version` 的唯一来源。"""
+    out = build_project(bundle, tmp_path, monkeypatch)
+
+    assert (out / "_VERSION").read_text(encoding="utf-8").strip() == bundle.project_version()
+    assert bundle.project_version() == "9.9.9"

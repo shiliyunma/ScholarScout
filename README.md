@@ -22,10 +22,15 @@ API key；不配也能启动，但模型不可用。
 ### ① 桌面版（Windows，下载即用）
 
 ```bash
-# 从 Releases 下载 ScholarScout-Portable-*-win64.zip → 解压到不含中文的路径 → 双击 ScholarScout.exe
+# 从 Releases 下载 ScholarScout-Portable-v<版本>.zip → 解压到不含中文的路径 → 双击 ScholarScout.exe
+# （zip 顶层已经套了一层 ScholarScout-Portable-v<版本>/，不会把 673 个文件撒进当前目录）
 # 首次启动生成 config.yaml / .env.example；把它复制成 .env 填 LLM_API_KEY，重开即用
 # Releases 还没有包时自己打：python scripts/build_bundle.py  →  ScholarScout-Portable/
 ```
+
+> **旧版本在哪找**：<https://github.com/shiliyunma/ScholarScout/releases> —— 每个 tag 挂着
+> zip 与 `SHA256SUMS`。本机只保留当前版本（`releases/v<版本>/`，产物不进 git），
+> 发版流程与台账见 [docs/29-发布产物管理.md](docs/29-发布产物管理.md)。
 
 ### ② 源码跑（Windows / macOS / Linux）
 

@@ -11,15 +11,20 @@
 ## ① 桌面版（Windows，下载即用）
 
 ```bash
-# 1) 打开仓库的 Releases 页，下载 ScholarScout-Portable-x.y.z-win64.zip
+# 1) 打开仓库的 Releases 页，下载 ScholarScout-Portable-v<版本>.zip（旧版本也在那一页）
 # 2) 解压到**不含中文的路径**（例如 D:\apps\ScholarScout），双击 ScholarScout.exe
 # 3) 首次启动会生成 config.yaml 与 .env.example：把 .env.example 复制成 .env，填 LLM_API_KEY
 # 4) 重开 exe → 左上角设置 → 填 key 也可以（写入 .env，界面上只显示掩码）
 ```
 
+> **旧版本在哪找**：<https://github.com/shiliyunma/ScholarScout/releases>（每个 tag 挂着 zip 与
+> `SHA256SUMS`）。本机只留当前版本 `releases/v<版本>/`，产物不进 git —— 规则与台账见
+> [docs/29-发布产物管理.md](docs/29-发布产物管理.md)。
+
 > Releases 页还没有桌面包时，用仓库自带的打包脚本自己出一个（需要本机有 Python 3.11）：
-> `python scripts/build_bundle.py`，产物在项目根的 `ScholarScout-Portable/`（会带 `.env.example`，
-> 但**不带**你本地的 `.env` 与 `data/`）。
+> `python scripts/release.py`（构建 → 打 zip → 算 SHA256 → 落 `releases/v<版本>/`，
+> 只想要目录就 `python scripts/build_bundle.py`，产物在项目根的 `ScholarScout-Portable/`；
+> 会带 `.env.example`，但**不带**你本地的 `.env` 与 `data/`）。
 
 ## ② 源码跑（Windows / macOS / Linux 通用）
 

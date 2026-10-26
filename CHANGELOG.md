@@ -5,6 +5,34 @@
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
+## [0.1.1] - 2026-10-26
+
+**发布工程规范修正版。** 功能与 v0.1.0 一致，改的是"发出去的东西怎么管"——
+v0.1.0 发完就把包留在了仓库根目录、`pyproject` 还写着旧版本号，两件事都得先修。
+
+### Fixed
+
+- **版本号只有一个事实源**：`scholarscout.__version__` 不再手写常量，改为按顺序读
+  `importlib.metadata`（装出来的包）→ `pyproject.toml`（源码树）→ exe 旁边的 `_VERSION`
+  （PyInstaller 包，由 `scripts/build_bundle.py` 从 `pyproject` 写出）。v0.1.1 之前
+  `pyproject` 写 `0.1.0`、包名却叫 v0.1.1，打包版 `--version` 也报 `0.1.0`——
+  用户报 bug 时给的版本号是错的。`tests/test_version_alignment.py` 钉住这条闸。
+  （`src/scholarscout/__init__.py`、`scripts/build_bundle.py`、`pyproject.toml`）
+- **发布产物按版本落盘**：新增 `scripts/release.py`，一条命令完成
+  构建 → 打 zip → 算 SHA256 → 落 `releases/v<版本>/` → 写 `SHA256SUMS` /
+  `RELEASE_NOTES.md` / `MANIFEST.json`（含 version / commit / built_at / bytes /
+  sha256 / exe_bytes / skill_count）。zip 走标准库 `zipfile`（本机无 `zip` 命令），
+  并在顶层套一层 `ScholarScout-Portable-v<版本>/`（v0.1.0 的包是平铺的，
+  解压会把 `_internal/`、`skills/` 撒进当前目录）。
+- **产物不进 git**：`.gitignore` 补 `*.zip` 与 `/releases/`——v0.1.1 的 zip 之前就躺在
+  仓库根目录、对 `git status` 永远显示未跟踪，一不留神就会被 `git add -A` 带进历史。
+
+### Added
+
+- `docs/29-发布产物管理.md`：产物怎么放、旧版本在哪找、`release.py` 用法、发版台账。
+- `releases/v0.1.0/MISSING.md`：如实写明本地副本已丢失、官方副本在 GitHub Releases
+  （不伪造哈希与体积）。
+
 ## [0.1.0] - 2026-10-26
 
 首个公开版本。此前是毕设开发期（`0.0.x` 只在本机迭代），没有对外发布过，

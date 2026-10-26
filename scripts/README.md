@@ -56,6 +56,11 @@
 - **`feishu_ws_up.py [--check]`**：飞书**一键开机**（`lark-oapi` 的 websocket 长连接，**不需要隧道/回调地址**）。
   先做前提自检（SDK 装没装 / 凭据有没有 / 出站开关开没开），再装配长连接客户端并**阻塞**收包；`--check` 只自检不起连接。
   退出码 **0 正常（含 Ctrl-C）/ 2 前提没满足 / 3 起连接失败**。**首次 `import lark_oapi` 本机约 116 秒**（脚本会先打这句提示）。
+- **`release.py [--skip-build] [--force] [--dist-dir D]`**：**一键发版** —— 版本从 `pyproject.toml` 读，
+  依次 构建 → 自检（无 `.env`/`*.db`/`*.log`、技能数>0、`ScholarScout.exe --version` 与
+  `pyproject` 一致）→ 打 zip（`zipfile`，顶层套 `ScholarScout-Portable-v<版本>/`）→ 算 SHA256 →
+  落 `releases/v<版本>/`（`SHA256SUMS` / `RELEASE_NOTES.md` / `MANIFEST.json`）。
+  任一步失败即非 0 退出；规则与台账见 `docs/29-发布产物管理.md`。
 - **`searxng_up.py [--status] [--query Q]`**、**`build_exe.py [--out-dir D] [--diagnose]`**、
   **`build_bundle.py [--with-secrets] [--name N] [--dist-dir D]`**（默认只带 `.env.example` +
   `config.example.yaml` + `skills/` + `QUICKSTART.md`；**本机 `config.yaml` 永不进包** —— 应用读不到它就用默认值；

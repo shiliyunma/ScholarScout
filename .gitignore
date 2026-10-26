@@ -25,6 +25,10 @@ venv/
 # ===== 打包 =====
 build/
 dist/
+# 发布产物（`scripts/release.py` 落到 releases/v<版本>/）：zip 动辄几十 MB，
+# 归档走 GitHub Releases，不进 git —— 但也绝不留在仓库根目录让 `git status` 常驻两行。
+*.zip
+/releases/
 # 自包含 Windows 包（`scripts/build_bundle.py` 的产物：解释器+依赖，几十~几百 MB，不入库）
 ScholarScout-Portable/
 *.spec
