@@ -217,11 +217,133 @@ def test_source_click_goes_through_show_source_by_source_id() -> None:
 
 
 def test_node_info_renders_source_buttons_with_ids() -> None:
-    """详情面板的每个来源都是按钮（带 data-source-id），点了才走通路。"""
-    body = _function_body(MAP_JS, "showMapNodeInfo")
+    """详情面板的每条来源都是按钮（带 data-source-id / data-action），点了才走通路。
+
+    按钮的构造搬进了 `mapInfoSourceRow`（一行 = 标题 + 状态 + 按钮）：这里跟着搬，
+    断言的还是同一件事 —— "每个来源一个按钮，按钮上带 source_id，点了走 openMapSource"。
+    """
+    body = _function_body(MAP_JS, "mapInfoSourceRow")
     assert "map-source-open" in body, "详情里没有 .map-source-open 按钮"
     assert "data-source-id" in body, "来源按钮没带 data-source-id"
+    assert "data-action" in body, "来源按钮没带 data-action（探针要按动作挑按钮）"
     assert "openMapSource(" in body, "来源按钮没接到 openMapSource"
+    panel = _function_body(MAP_JS, "showMapNodeInfo")
+    assert "mapInfoSourceRow(ref)" in panel, "详情面板没按行渲染来源"
+
+
+# --------------------------------------------------------------------- 详情面板：真标题 / 缺失计数 / 获取正文
+
+
+def test_node_info_renders_real_titles_from_source_refs() -> None:
+    """详情面板读 `source_refs` 的**真标题**（后端已做三级回退，不会为空）。
+
+    改之前用的是 `node.sources` 的 id，渲染成「打开资料 N（src-xxx）」—— 用户看到的就是
+    一串「资料1 资料2」（第 6 条反馈）。
+    """
+    refs = _function_body(MAP_JS, "mapInfoSourceRefs")
+    assert "node.source_refs" in refs, "详情面板没读 source_refs（还在用纯 id，所以只有「资料N」）"
+    assert "ref.title" in refs, "source_refs 的 title 没被取用"
+    assert "node.sources" in refs and '"来源 " + short(id, 12)' in refs, (
+        "老数据（没有 source_refs）没有回退成「来源 <id 前 12 位>」"
+    )
+    row = _function_body(MAP_JS, "mapInfoSourceRow")
+    assert "ref.title" in row, "行里没显示标题"
+    assert '"（" + ref.year + "）"' in row, "标题没带年份（有年份时应显示「标题（2024）」）"
+    # 编号式文案一个字符都不许留
+    assert "index + 1" not in MAP_JS, "map.js 里还有编号来源的残留（「打开资料 N」）"
+    assert '"打开资料 "' not in MAP_JS, "map.js 里还有「打开资料 N」的拼法"
+
+
+def test_source_rows_sort_by_title_with_chinese_collation() -> None:
+    """按标题排序（中文走拼音），同标题再按 id —— 每次打开顺序一致，按钮不会乱跳。"""
+    refs = _function_body(MAP_JS, "mapInfoSourceRefs")
+    assert "out.sort(" in refs, "来源没有排序（后端返回顺序一变，按钮就换位置）"
+    assert 'localeCompare(String(b.title), "zh")' in refs, "没按标题做中文排序"
+    assert "localeCompare(String(b.id))" in refs, "同标题没有按 id 稳定兜底"
+
+
+def test_dropped_sources_are_counted_and_never_buttons() -> None:
+    """库里查不到的来源（`dropped_sources`）只留一行灰字计数，**绝不**渲染成按钮。
+
+    用户第 5 条："有很多没有来源，要么不出现，要么点了立即查" —— 点了必然是空的那一类不出现。
+    """
+    body = _function_body(MAP_JS, "showMapNodeInfo")
+    assert "dropped_sources" in body, "详情面板没读 dropped_sources"
+    assert "另有 " in body and "条来源已不在库中（可能被删除或未入库）" in body, "缺了计数灰字"
+    assert "map-info-dropped" in body, "计数行没有自己的 class（灰字样式落不到）"
+    # 按钮只从 refs 生成；行构造里不许出现 dropped
+    assert "mapInfoSourceRow(ref) }" in body or "mapInfoSourceRow(ref)" in body
+    assert "dropped" not in _function_body(MAP_JS, "mapInfoSourceRow"), (
+        "被丢弃的来源仍会渲染成一行/一个按钮（点了必然空）"
+    )
+
+
+def test_node_without_any_source_shows_placeholder_and_no_empty_header() -> None:
+    """一条都没有（且没有丢的）→ 一句「这个节点没有关联资料」，**不出**空列表头。"""
+    body = _function_body(MAP_JS, "showMapNodeInfo")
+    assert "这个节点没有关联资料" in body, "没有说明文字"
+    guard = body.index("!refs.length && !dropped")
+    label = body.index('"map-info-label"')
+    assert guard < label, "「没有关联资料」排在列表头之后 —— 会先画一个空列表头"
+
+
+def test_missing_text_source_offers_fetch_button() -> None:
+    """`has_text:false` → 按钮是「获取正文」，点了立刻 `archive.download({source_id})`。"""
+    row = _function_body(MAP_JS, "mapInfoSourceRow")
+    assert "获取正文" in row and "打开资料" in row, "没有区分「获取正文」与「打开资料」"
+    assert "ref.has_text === false" in row, "没按 has_text 分流"
+    fetch = _function_body(MAP_JS, "fetchMapSourceText")
+    assert 'scout.call("archive.download"' in fetch, "「获取正文」没调 archive.download"
+    assert "{ source_id: ref.id }" in fetch, "没按 source_id 传给 archive.download"
+    assert "openMapSource(ref.id)" in fetch, "抓到正文后没继续打开"
+    assert "alert(" not in fetch, "「获取正文」里用了 alert"
+
+
+def test_download_failure_splits_disabled_from_large() -> None:
+    """失败分三类说：功能未开启（+「去设置」）/ 大文件 / 其它原文 —— 全部写行内，不弹窗。
+
+    默认配置 `features.enable_download=false`，后端**一定**回 ok:false + reason
+    "按需下载已关闭…"，所以「获取正文」默认就是"点了告诉你去哪儿开"，不能做成永远没反馈。
+    """
+    err = _function_body(MAP_JS, "mapInfoDownloadError")
+    assert "res.disabled === true" in err, "没认回包的 disabled:true"
+    assert "/未开启|已关闭/" in err, "没按 reason 认「功能未开启」这一类"
+    assert "设置 → 功能 → 允许下载" in err, "没告诉用户去哪儿开下载"
+    assert "去设置" in err and "openSettings" in err, "没给「去设置」按钮（复用现有设置通路）"
+    assert "文件较大，可在资料库里确认后重试" in err, "大文件没给二次确认的提示"
+    assert "alert(" not in err, "失败提示用了 alert"
+    assert "map-info-error" in _function_body(MAP_JS, "mapInfoSourceRow"), "行内错误没有落点"
+
+
+def test_open_source_scrolls_detail_into_view() -> None:
+    """打开资料后把 `#source-detail` 滚进视口（它在列表下面，不滚就是"被压在下面"）。"""
+    body = _function_body(MAP_JS, "openMapSource")
+    assert "mapRevealSourceDetail(" in body, "打开后没滚详情区"
+    assert "showSourceBySourceId(" in body, "没走资料库现成通路"
+    reveal = _function_body(MAP_JS, "mapRevealSourceDetail")
+    assert 'el("source-detail")' in reveal, "滚的不是 #source-detail"
+    assert 'scrollIntoView({ block: "nearest"' in reveal, "没用 scrollIntoView(block:nearest)"
+    assert "result === false" in reveal, "没正文（false）时也会滚过去 —— 滚到的是一片空白"
+
+
+def test_no_alert_in_map_or_source_open_path() -> None:
+    """打开/下载这条链路上一个 alert 都不许有（它把页签切换和详情一起挡住 = "点了没反应"）。"""
+    assert "alert(" not in MAP_JS, "map.js 还有 alert"
+    body = _function_body(
+        (UI_DIR / "sources.js").read_text(encoding="utf-8"), "showSourceBySourceId"
+    )
+    assert "alert(" not in body, "showSourceBySourceId 还有 alert"
+    assert 'el("source-download-status")' in body, "没写进详情区下面那行提示"
+    assert "return false;" in body, "没回 false（调用方据此决定要不要滚详情）"
+    assert "return true;" in body, "打开成功没回 true"
+
+
+def test_detail_has_a_floor_height_when_not_empty() -> None:
+    """详情区不许是 0 高：滚进视口也要真的有内容可看（CSS 层给下限，不用内联 hack）。"""
+    rule = re.search(r"#pane-sources \.detail:not\(:empty\)\s*\{([^}]*)\}", STYLE_CSS)
+    assert rule, "style.css 没有给资料库详情区设下限高度"
+    assert re.search(r"min-height:\s*\d+px", rule.group(1)), "下限高度不是像素值"
+    assert ".detail" in STYLE_CSS and ":empty" in STYLE_CSS, "空详情区仍然要能收起"
 
 
 # --------------------------------------------------------------------- 铺满可用区
@@ -289,3 +411,12 @@ def test_toolbar_and_legend_have_a_fixed_height_budget() -> None:
     assert "overflow-x: auto" in body, "图例不让横向滑，一行放不下就看不到后面的项"
 
     assert "map-legend-title" in MAP_JS, "图例前面没有标题（单行图例看不出是什么）"
+
+
+def test_visible_graph_copies_source_refs_for_the_info_panel() -> None:
+    """`mapVisibleGraph` 是**白名单拷贝**：漏掉 `source_refs` / `dropped_sources`，
+    详情面板会静默退化成裸 id（显示成「来源 src-xxx」），看起来像后端没给数据 ——
+    这正是「资料显示成资料1」那一类 bug 的入口，必须钉住。"""
+    body = _function_body(MAP_JS, "mapVisibleGraph")
+    assert "source_refs" in body, "mapVisibleGraph 没拷 source_refs：详情面板拿不到真标题"
+    assert "dropped_sources" in body, "mapVisibleGraph 没拷 dropped_sources：缺失计数永远 0"

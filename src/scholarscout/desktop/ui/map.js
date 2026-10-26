@@ -223,6 +223,11 @@ function mapVisibleGraph(payload, showAll) {
       kind: String(node.kind || "concept"),
       weight: Number(node.weight || 0),
       sources: (node.sources || []).slice(),
+      /* 详情面板要的**可读来源**（后端 `topic.get_map` 的 `source_refs`）必须一起拷过来：
+       * 这里是白名单拷贝，漏一个字段就是"面板退化成裸 id"——而且不报错、只是显示成
+       * 「来源 src-xxx」，看起来像后端没给。 */
+      source_refs: Array.isArray(node.source_refs) ? node.source_refs.slice() : [],
+      dropped_sources: Number(node.dropped_sources || 0),
       /* 节点可能带的元数据（没有就是 undefined，不影响画图）：详情面板靠它
        * 说清"这个点是什么、正文在不在库里"。 */
       url: node.url || "",
@@ -791,11 +796,18 @@ function mapWatchSize(svg, view, host) {
 }
 
 
-/* 节点详情面板：**不是**一行纯文本 —— 每个来源是一个按钮，点了就走资料库那条现成通路
- * （`showSourceBySourceId` → `archive.list(source_id)` → `showSource(doc_id)` → `archive.get`
- *  → 摘要渲染进 `#source-detail`）。这里只负责"把哪个 source_id 交出去"，不另写一套打开逻辑。
+/* 节点详情面板：**不是**一行纯文本 —— 每条关联资料一行，右边一个按钮，点了就走资料库那条
+ * 现成通路（`showSourceBySourceId` → `archive.list(source_id)` → `showSource(doc_id)` →
+ * `archive.get` → 摘要渲染进 `#source-detail`）。这里只负责"把哪个 source_id 交出去"。
  *
- * 节点的 `sources` 是 source_id 列表：每个 id 一个按钮，共用同一条通路。 */
+ * 三条口径（对应用户的三条反馈，改之前分别踩过）：
+ *   ① 显示后端给的**资料真标题**（`source_refs[].title`，后端已做三级回退、不会为空）——
+ *      以前拿 `node.sources` 的 id 编号成「打开资料 1/2/3」，用户看到的是一串「资料1 资料2」；
+ *   ② 库里查不到的来源（`dropped_sources`）**不出按钮**：点了必然是空的，
+ *      只在底部留一行灰字计数；
+ *   ③ `has_text:false`（只有元数据）→ 按钮改成「获取正文」，点了立刻 `archive.download`，
+ *      成了再打开；失败把原因写在**那一行下面**，不弹 alert。
+ */
 function showMapNodeInfo(node) {
   var box = el("map-info");
   if (!box) return;
@@ -827,38 +839,213 @@ function showMapNodeInfo(node) {
     box.appendChild(meta);
   }
 
-  var refs = [];
-  (node.sources || []).forEach(function (ref) {
-    var id = String(ref || "").trim();
-    if (id && refs.indexOf(id) < 0) refs.push(id);
-  });
+  var refs = mapInfoSourceRefs(node);
+  var dropped = Math.max(0, parseInt(node.dropped_sources, 10) || 0);
+  /* 一条都没有 → 一句话说清楚。**不出**空列表头：那看着像"还在加载"。 */
+  if (!refs.length && !dropped) {
+    var empty = document.createElement("p");
+    empty.className = "map-info-empty";
+    empty.textContent = "这个节点没有关联资料";
+    box.appendChild(empty);
+    box.appendChild(mapInfoCloseButton());
+    return;
+  }
 
-  var label = document.createElement("div");
-  label.className = "map-info-label";
-  label.textContent = refs.length ? "关联来源（点一下就去看资料）：" : "关联来源：无出处";
-  box.appendChild(label);
-  if (!refs.length) return;
-
-  var list = document.createElement("ul");
-  list.className = "map-info-sources";
-  refs.forEach(function (sourceId, index) {
-    var item = document.createElement("li");
-    var button = document.createElement("button");
-    button.type = "button";
-    button.className = "mini map-source-open";
-    button.setAttribute("data-source-id", sourceId);
-    button.textContent = "打开资料 " + (index + 1) + "（" + short(sourceId, 22) + "）";
-    button.title = "在「资料库」里打开这条来源的摘要与原文入口";
-    button.addEventListener("click", function () {
-      openMapSource(sourceId);
+  if (refs.length) {
+    var label = document.createElement("div");
+    label.className = "map-info-label";
+    label.textContent = "关联资料 " + refs.length + " 条：";
+    box.appendChild(label);
+    var list = document.createElement("ul");
+    list.className = "map-info-sources";
+    refs.forEach(function (ref) {
+      list.appendChild(mapInfoSourceRow(ref));
     });
-    item.appendChild(button);
-    list.appendChild(item);
-  });
-  box.appendChild(list);
+    box.appendChild(list);
+  }
 
-  /* 收起按钮：详情是浮层，会盖住画布右下角那块（那里可能正好有节点/标签）。
-   * 让用户能主动收起来，比"只能点别的节点换内容"更省事。 */
+  /* 查不到的那些**只计数、不出按钮**（用户第 5 条：要么不出现，要么点了立即查） */
+  if (dropped > 0) {
+    var miss = document.createElement("p");
+    miss.className = "map-info-dropped";
+    miss.textContent = "另有 " + dropped + " 条来源已不在库中（可能被删除或未入库）";
+    box.appendChild(miss);
+  }
+  box.appendChild(mapInfoCloseButton());
+}
+
+
+/* 详情面板要显示的来源：优先 `source_refs`（真标题），老数据（没有 source_refs）退回
+ * `sources` 的 id，显示成「来源 <id 前 12 位>」—— **同样不编号**。
+ * 排序按标题（中文走拼音 `localeCompare("zh")`），同标题再按 id：每次打开顺序都一样，
+ * 不会因为后端返回顺序变了而"按钮换了位置"。 */
+function mapInfoSourceRefs(node) {
+  var out = [];
+  var seen = {};
+  var raw = Array.isArray(node.source_refs) ? node.source_refs : [];
+  raw.forEach(function (ref) {
+    if (!ref) return;
+    var id = String(ref.id || "").trim();
+    if (!id || seen[id]) return;
+    seen[id] = true;
+    out.push({
+      id: id,
+      title: String(ref.title || "").trim() || "来源 " + short(id, 12),
+      year: ref.year || null,
+      /* 三种值都要保住：true（打开）/ false（获取正文）/ null（老数据不知道 → 按打开走） */
+      has_text: ref.has_text === false ? false : ref.has_text === true ? true : null,
+      domain: String(ref.domain || "").trim(),
+    });
+  });
+  if (!raw.length) {
+    (node.sources || []).forEach(function (sourceId) {
+      var id = String(sourceId || "").trim();
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      out.push({
+        id: id,
+        title: "来源 " + short(id, 12),
+        year: null,
+        has_text: null,
+        domain: "",
+      });
+    });
+  }
+  out.sort(function (a, b) {
+    var byTitle = String(a.title).localeCompare(String(b.title), "zh");
+    return byTitle !== 0 ? byTitle : String(a.id).localeCompare(String(b.id));
+  });
+  return out;
+}
+
+
+/* 一行资料：标题（有年份就带「（2024）」）+ 已入库/未入库标签 + 域名（小字），右边一个动作按钮。
+ * 按钮的 `data-action` 是 open / fetch —— 探针按它挑按钮，不用猜第几个。 */
+function mapInfoSourceRow(ref) {
+  var item = document.createElement("li");
+  item.className = "map-info-source";
+  item.setAttribute("data-source-id", ref.id);
+
+  var main = document.createElement("div");
+  main.className = "map-info-source-main";
+
+  var title = document.createElement("span");
+  title.className = "map-info-source-title";
+  title.textContent = ref.title + (ref.year ? "（" + ref.year + "）" : "");
+  title.title = ref.domain ? ref.title + "｜" + ref.domain : ref.title;
+  main.appendChild(title);
+
+  var tag = document.createElement("span");
+  var pending = ref.has_text === false;
+  tag.className = "map-info-tag " + (pending ? "is-pending" : "is-ready");
+  tag.textContent = pending ? "未入库" : "已入库";
+  main.appendChild(tag);
+
+  if (ref.domain) {
+    var domain = document.createElement("span");
+    domain.className = "map-info-domain";
+    domain.textContent = ref.domain;
+    main.appendChild(domain);
+  }
+  item.appendChild(main);
+
+  var button = document.createElement("button");
+  button.type = "button";
+  button.className = "mini map-source-open";
+  button.setAttribute("data-source-id", ref.id);
+  button.setAttribute("data-action", pending ? "fetch" : "open");
+  button.textContent = pending ? "获取正文" : "打开资料";
+  button.title = pending
+    ? "库里只有元数据：先用 archive.download 抓正文，成功后再打开"
+    : "在「资料库」里打开这条来源的摘要与原文入口";
+  button.addEventListener("click", function () {
+    if (ref.has_text === false) {
+      fetchMapSourceText(ref, item, button);
+      return;
+    }
+    openMapSource(ref.id);
+  });
+  item.appendChild(button);
+
+  var note = document.createElement("p");
+  note.className = "map-info-error";
+  note.hidden = true;
+  item.appendChild(note);
+  return item;
+}
+
+
+/* 「获取正文」：库里只有元数据 → 直接 `archive.download`（后端默认**关**，回 ok:false + reason）。
+ * 成功就顺着同一条通路打开；失败把结论写在这一行下面 —— **不弹 alert**（打断式弹窗把切页签、
+ * 地图详情一起挡住，那正是"点了没反应"的观感来源之一）。 */
+async function fetchMapSourceText(ref, row, button) {
+  var note = row.querySelector(".map-info-error");
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "map-info-error";
+    row.appendChild(note);
+  }
+  note.textContent = "";
+  note.title = "";
+  note.hidden = true;
+  var original = button.textContent;
+  button.disabled = true;
+  button.textContent = "正在获取…";
+  var res = null;
+  try {
+    res = await scout.call("archive.download", { source_id: ref.id });
+  } catch (error) {
+    res = { ok: false, reason: (error && error.message) || String(error) };
+  }
+  button.disabled = false;
+  button.textContent = original;
+  if (res && res.ok) {
+    /* 抓到了：正文已落库，接着走打开通路（列表那边这时就能查到 doc_id） */
+    mapSourceStatus("已获取正文：" + ref.title, false);
+    return openMapSource(ref.id);
+  }
+  mapInfoDownloadError(note, res || {});
+  return false;
+}
+
+
+/* 下载失败的三类说法（判据来自 `rpc/archive.py::archive_download`，前端只分流、不改判据）：
+ *   ① 功能未开启（默认配置 features.enable_download=false 就是这条）→ 说清去哪儿开 + 「去设置」；
+ *   ② 大文件 → reason 原文 + 可在资料库里确认后重试；
+ *   ③ 其它（网络 / 落盘 / 没记录源地址）→ reason 原文。 */
+function mapInfoDownloadError(note, res) {
+  var reason = String(res.reason || "下载失败（没有给出原因）");
+  note.hidden = false;
+  note.textContent = "";
+  note.title = reason;
+  if (res.disabled === true || /未开启|已关闭/.test(reason)) {
+    note.appendChild(
+      document.createTextNode("下载未开启：设置 → 功能 → 允许下载，打开后再点一次"),
+    );
+    var go = document.createElement("button");
+    go.type = "button";
+    go.className = "mini map-info-goto-settings";
+    go.textContent = "去设置";
+    go.title = "打开设置（按需下载由 features.enable_download 控制）";
+    go.addEventListener("click", function () {
+      if (typeof openSettings !== "function") {
+        note.textContent = "这个版本没有设置面板，请直接改 config.yaml 的 features.enable_download";
+        return;
+      }
+      Promise.resolve(openSettings()).catch(function (error) {
+        note.textContent = "打不开设置：" + ((error && error.message) || error);
+      });
+    });
+    note.appendChild(go);
+    return;
+  }
+  note.textContent = res.large ? reason + "；文件较大，可在资料库里确认后重试" : reason;
+}
+
+
+/* 收起按钮：详情是浮层，会盖住画布右下角那块（那里可能正好有节点/标签）。
+ * 让用户能主动收起来，比"只能点别的节点换内容"更省事。 */
+function mapInfoCloseButton() {
   var close = document.createElement("button");
   close.type = "button";
   close.className = "map-info-close";
@@ -866,19 +1053,62 @@ function showMapNodeInfo(node) {
   close.setAttribute("aria-label", "收起详情");
   close.textContent = "×";
   close.addEventListener("click", function () {
-    box.hidden = true;
+    var box = el("map-info");
+    if (box) box.hidden = true;
   });
-  box.appendChild(close);
+  return close;
+}
+
+
+/* 写资料库那行下载/打开提示（`#source-download-status` 在详情区之外，重画详情不会被清掉）。 */
+function mapSourceStatus(text, bad) {
+  var status = el("source-download-status");
+  if (!status) return null;
+  status.textContent = text || "";
+  status.hidden = !text;
+  status.className = bad === true ? "hint set-bad" : "hint";
+  return status;
 }
 
 
 /* 打开一条来源：切到「资料库」页签（走 app.js 已绑好的页签点击，不另写切换），
- * 再调 sources.js 现成的 `showSourceBySourceId` —— **这就是"现有通路"**。 */
+ * 再调 sources.js 现成的 `showSourceBySourceId` —— **这就是"现有通路"**。
+ *
+ * 打开后**必须把详情区滚进视口**：`#source-detail` 在资料列表**下面**，只切页签的话
+ * 用户看到的还是列表，详情被压在下面（用户第 4 条："资料窗口被压在下面，看不到"）。 */
 function openMapSource(sourceId) {
   if (typeof showSourceBySourceId !== "function") return null;
   var tab = document.querySelector('.tab[data-tab="sources"]');
   if (tab) tab.click();
-  return showSourceBySourceId(String(sourceId));
+  var done = showSourceBySourceId(String(sourceId));
+  /* showSourceBySourceId 回 false = 这条没有可打开的内容：详情区是空的，滚过去只是一片白 */
+  if (!done || typeof done.then !== "function") {
+    mapRevealSourceDetail(done);
+    return done;
+  }
+  return done.then(
+    function (result) {
+      mapRevealSourceDetail(result);
+      return result;
+    },
+    function (error) {
+      mapSourceStatus("打开资料失败：" + ((error && error.message) || error), true);
+      return false;
+    },
+  );
+}
+
+
+/* 把摘要详情滚到可见处，并让探针量得到（返回详情区元素）。
+ * `block:"nearest"`：已经看得见就不动（不做无意义的跳动），被压在下面才滚上来。 */
+function mapRevealSourceDetail(result) {
+  if (result === false) return null;
+  var detail = el("source-detail");
+  if (!detail) return null;
+  if (typeof detail.scrollIntoView === "function") {
+    detail.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+  return detail;
 }
 
 

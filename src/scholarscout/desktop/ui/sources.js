@@ -328,8 +328,20 @@ async function showSourceBySourceId(sourceId) {
   // 定向查这一条（原来拉 200 条回来再 find，库一大就是白扫）
   const payload = await scout.call("archive.list", { source_id: sourceId, limit: 1 });
   const hit = (payload.items || [])[0];
-  if (hit && hit.doc_id) await showSource(hit.doc_id);
-  else alert("这条资料还没有抓取正文（只有 source_id：" + sourceId + "）");
+  if (hit && hit.doc_id) {
+    await showSource(hit.doc_id);
+    return true;
+  }
+  // 没有正文时**不弹 alert**（打断式弹窗把页签切换和地图详情一起挡住，用户只觉得"点了没反应"）：
+  // 写进详情区下面那行提示（#source-download-status 就是为这件事静态声明的）。
+  // 回 false 给调用方（地图的 openMapSource 据此决定要不要滚详情区）；忽略返回值的调用方不受影响。
+  const status = el("source-download-status");
+  if (status) {
+    status.textContent = "这条资料还没有正文（只有 source_id：" + sourceId + "），可在地图里点「获取正文」";
+    status.className = "hint set-bad";
+    status.hidden = false;
+  }
+  return false;
 }
 
 

@@ -8125,8 +8125,73 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   margin: 4px 0 0;
   padding: 0;
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* 一行资料：标题在左（可折行），动作按钮在右（不缩）；出错时红字落在这一行**下面**。
+   以前一排「打开资料 1/2/3」的编号按钮既看不出是哪篇，也说不清点了会怎样。 */
+.map-info-source {
+  display: flex;
   flex-wrap: wrap;
-  gap: 4px 8px;
+  align-items: flex-start;
+  gap: 2px 6px;
+  padding: 3px 0;
+  border-top: 0.0625rem solid var(--ui-stroke-tertiary);
+}
+.map-info-source:first-child {
+  border-top: 0;
+}
+.map-info-source-main {
+  flex: 1 1 120px;
+  min-width: 0;
+  line-height: 1.35;
+}
+.map-info-source-title {
+  display: block;
+  font-size: 12px;
+  color: var(--ui-text-primary);
+  word-break: break-word;
+}
+/* 状态标签：已入库（绿）/ 未入库（橙，意味着"点下去要先抓正文"） */
+.map-info-tag {
+  font-size: 10.5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--ui-text-secondary);
+  border: 0.0625rem solid var(--ui-stroke-tertiary);
+}
+.map-info-tag.is-ready {
+  color: var(--ui-green);
+  border-color: color-mix(in srgb, var(--ui-green) 55%, transparent);
+}
+.map-info-tag.is-pending {
+  color: var(--ui-orange);
+  border-color: color-mix(in srgb, var(--ui-orange) 55%, transparent);
+}
+.map-info-domain {
+  font-size: 10.5px;
+  color: var(--ui-text-quaternary);
+  margin-left: 4px;
+}
+/* 行内错误（获取正文失败 / 下载未开启）：红字 + 可能的「去设置」，不弹 alert */
+.map-info-error {
+  flex: 1 1 100%;
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ui-red);
+}
+.map-info-error .mini {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+/* 查不到来源时的灰字计数 + "没有关联资料"的说明（都不出按钮） */
+.map-info-dropped,
+.map-info-empty {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  color: var(--ui-text-tertiary);
 }
 
 /* 搜索行：挤在右栏里，只调间距，不动列宽（几何基线只量列宽）。
@@ -8205,4 +8270,13 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .map-zoom-body .map-body {
   height: 100%;
   padding: 0;
+}
+
+/* ───────── 资料库详情区：打开后必须"看得见" ─────────
+ * `#source-detail` 在列表**下面**：从知识地图点开资料时，只切页签等于详情落在视口外
+ * （用户："资料窗口被压在下面，看不到"）。滚动由 map.js 的 `mapRevealSourceDetail` 负责；
+ * 这里保证"滚过去了有东西可看" —— 内容还少 / 标题只占一行时，详情区不许被压成一条线。
+ * 只限资料库这一栏（其它面板的 .detail 各有自己的高度规矩），`:empty` 时仍然收起。 */
+#pane-sources .detail:not(:empty) {
+  min-height: 96px;
 }
