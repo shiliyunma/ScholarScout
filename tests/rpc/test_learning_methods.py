@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,8 @@ import pytest
 from scholarscout import paths
 from scholarscout.rpc.errors import RpcError
 from scholarscout.rpc.methods import AppContext, dispatch
+from scholarscout.state import source_context
+from scholarscout.state.db import Database
 from scholarscout.state.learning import save_note, save_route, save_topic_map
 from scholarscout.tools import register_tools
 
@@ -214,6 +217,191 @@ def test_topic_get_map_unknown_id_is_not_found(ctx: AppContext) -> None:
     with pytest.raises(RpcError) as exc:
         dispatch(ctx, "topic.get_map", {"topic_id": "tpm_nope"})
     assert exc.value.code == -32002
+
+
+#: 固定时间，与 `tests/conftest.py` 同口径
+_T0 = "2026-10-05T10:00:00+08:00"
+
+
+def _source(
+    db: Database,
+    source_id: str,
+    *,
+    title: str | None = "真实标题",
+    url: str | None = None,
+    domain: str | None = None,
+    source_type: str = "arxiv",
+    year: int | None = 2025,
+) -> str:
+    """插一条来源；`title` / `url` / `domain` 给 `None` 就是"库里这项是空的"。"""
+    real_url = url if url is not None else f"https://{source_id}.test/a.pdf"
+    db.execute(
+        "INSERT INTO sources (id, url, url_canonical, domain, title, source_type, year,"
+        " first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            source_id,
+            real_url,
+            f"https://canon.test/{source_id}",
+            domain if domain is not None else f"{source_id}.test",
+            title,
+            source_type,
+            year,
+            _T0,
+            _T0,
+        ),
+    )
+    return source_id
+
+
+def _doc(db: Database, source_id: str) -> str:
+    """给来源插一条正文抽取记录（`has_text` 就是按这张表判的）。"""
+    doc_id = f"doc_{source_id}"
+    db.execute(
+        "INSERT INTO documents (id, source_id, sha256, chars, extract_status, fetched_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (doc_id, source_id, f"sha256-{source_id}", 1234, "ok", _T0),
+    )
+    return doc_id
+
+
+def _graph(nodes: dict[str, list[str]]) -> dict[str, object]:
+    return {
+        "nodes": [
+            {"nid": nid, "label": nid.upper(), "kind": "concept", "source_ids": sids}
+            for nid, sids in nodes.items()
+        ],
+        "edges": [],
+    }
+
+
+def _nodes_by_id(payload: dict[str, object]) -> dict[str, dict[str, object]]:
+    raw = payload["nodes"]
+    assert isinstance(raw, list)
+    return {str(node["id"]): node for node in raw}
+
+
+def test_topic_get_map_source_refs_carry_real_title(ctx: AppContext) -> None:
+    """节点详情要能显示真标题：`source_refs` 回的可读字段，不只是 id。"""
+    _source(ctx.db, "src_a", title="教育智能体的检索增强方法", year=2024)
+    topic_id = save_topic_map(ctx.db, topic="教育智能体", graph=_graph({"n1": ["src_a"]}))
+
+    node = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))["n1"]
+    assert node["source_refs"] == [
+        {
+            "id": "src_a",
+            "title": "教育智能体的检索增强方法",
+            "year": 2024,
+            "has_text": False,
+            "domain": "src_a.test",
+            "source_type": "arxiv",
+        }
+    ]
+    assert node["sources"] == ["src_a"], "老字段原样保留（老消费方不破）"
+    assert node["dropped_sources"] == 0
+
+
+def test_topic_get_map_source_title_falls_back_to_url_tail(ctx: AppContext) -> None:
+    """没有标题就用 URL 尾段 —— 不能留空，更不能编号成「资料 1」。"""
+    _source(ctx.db, "src_a", title=None, url="https://arxiv.org/abs/2501.00001")
+    _source(ctx.db, "src_b", title="   ", url="https://openreview.net/forum/AbC123")
+    topic_id = save_topic_map(ctx.db, topic="图", graph=_graph({"n1": ["src_a"], "n2": ["src_b"]}))
+
+    nodes = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))
+    assert nodes["n1"]["source_refs"][0]["title"] == "2501.00001"
+    assert nodes["n2"]["source_refs"][0]["title"] == "AbC123", "空白标题也算没有标题"
+
+
+def test_topic_get_map_source_title_falls_back_to_domain(ctx: AppContext) -> None:
+    """URL 没有路径段（裸域名/根路径）时退到 `domain`。"""
+    _source(ctx.db, "src_a", title=None, url="https://export.arxiv.org/", domain="export.arxiv.org")
+    topic_id = save_topic_map(ctx.db, topic="图", graph=_graph({"n1": ["src_a"]}))
+
+    node = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))["n1"]
+    assert node["source_refs"][0]["title"] == "export.arxiv.org"
+
+
+def test_topic_get_map_source_title_falls_back_to_id_prefix(ctx: AppContext) -> None:
+    """标题、URL、域名全空时退到 id 前 12 位：仍然能认出是哪条，且不为空。"""
+    _source(ctx.db, "src_0123456789abcdef", title=None, url="", domain="")
+    topic_id = save_topic_map(ctx.db, topic="图", graph=_graph({"n1": ["src_0123456789abcdef"]}))
+
+    node = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))["n1"]
+    assert node["source_refs"][0]["title"] == "src_01234567"
+
+
+def test_topic_get_map_drops_sources_missing_from_library(ctx: AppContext) -> None:
+    """库里查不到的 id 只计数、不进 `source_refs` —— 否则用户点了必弹「还没抓取正文」。"""
+    _source(ctx.db, "src_a")
+    topic_id = save_topic_map(
+        ctx.db, topic="图", graph=_graph({"n1": ["src_a", "src_gone", "src_gone2"]})
+    )
+
+    node = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))["n1"]
+    assert [ref["id"] for ref in node["source_refs"]] == ["src_a"]
+    assert node["dropped_sources"] == 2
+    assert node["sources"] == ["src_a", "src_gone", "src_gone2"], "原始 id 列表不裁剪"
+
+
+def test_topic_get_map_source_refs_are_sorted_by_id(ctx: AppContext) -> None:
+    """一个节点多来源时按 id 排序：两次调用、两次打开顺序都不能变。"""
+    for source_id in ("src_c", "src_a", "src_b"):
+        _source(ctx.db, source_id)
+    graph = _graph({"n1": ["src_c", "src_a", "src_b"]})
+    topic_id = save_topic_map(ctx.db, topic="图", graph=graph)
+
+    first = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))["n1"]
+    second = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))["n1"]
+    assert [ref["id"] for ref in first["source_refs"]] == ["src_a", "src_b", "src_c"]
+    assert first["source_refs"] == second["source_refs"]
+
+
+def test_topic_get_map_node_without_sources_is_empty(ctx: AppContext) -> None:
+    """没来源的节点：`source_refs=[]`、`dropped_sources=0`（不是 0 个来源也报 1 条缺）。"""
+    _source(ctx.db, "src_a")
+    topic_id = save_topic_map(ctx.db, topic="图", graph=_graph({"n1": ["src_a"], "n2": []}))
+
+    nodes = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))
+    assert nodes["n2"]["source_refs"] == []
+    assert nodes["n2"]["dropped_sources"] == 0
+    assert nodes["n2"]["sources"] == []
+
+
+def test_topic_get_map_has_text_separates_full_text_from_metadata(ctx: AppContext) -> None:
+    """`has_text` 要能分出"能看全文"和"只有元数据"两种。"""
+    _source(ctx.db, "src_a")
+    _source(ctx.db, "src_b")
+    _doc(ctx.db, "src_a")
+    topic_id = save_topic_map(ctx.db, topic="图", graph=_graph({"n1": ["src_a", "src_b"]}))
+
+    refs = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))["n1"]["source_refs"]
+    assert {ref["id"]: ref["has_text"] for ref in refs} == {"src_a": True, "src_b": False}
+
+
+def test_topic_get_map_queries_sources_once_for_whole_graph(
+    ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """全图来源**一次**批量查（不许按节点 N+1）。"""
+    for source_id in ("src_a", "src_b", "src_c"):
+        _source(ctx.db, source_id)
+    topic_id = save_topic_map(
+        ctx.db,
+        topic="图",
+        graph=_graph({"n1": ["src_a", "src_b"], "n2": ["src_b", "src_c"]}),
+    )
+
+    calls: list[list[str]] = []
+    real = source_context.sources_with_text
+
+    def counting(db: Database, ids: Sequence[str]) -> dict[str, dict[str, object]]:
+        calls.append([str(item) for item in ids])
+        return real(db, ids)
+
+    monkeypatch.setattr(source_context, "sources_with_text", counting)
+    nodes = _nodes_by_id(dispatch(ctx, "topic.get_map", {"topic_id": topic_id}))
+
+    assert len(calls) == 1, "两个节点、四个引用，只该有一次查询"
+    assert set(calls[0]) == {"src_a", "src_b", "src_c"}, "一次查的是全图合并后的 id 集合"
+    assert [ref["id"] for ref in nodes["n2"]["source_refs"]] == ["src_b", "src_c"]
 
 
 def test_lists_survive_corrupt_json(ctx: AppContext) -> None:

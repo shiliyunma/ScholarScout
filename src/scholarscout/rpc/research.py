@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from scholarscout import __version__
 from scholarscout.learning import knowledge_graph
@@ -15,6 +17,7 @@ from scholarscout.rpc.registry import AppContext, _int_param, _params, _require,
 from scholarscout.runtime import registry
 from scholarscout.runtime.toolctx import ToolContext
 from scholarscout.state import learning, source_context, traces
+from scholarscout.state.db import Database
 
 
 @method("system.health")
@@ -101,7 +104,7 @@ def topic_get_map(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
     payload = learning.get_topic_map(ctx.db, topic_id)
     if payload is None:
         raise RpcError(Code.NOT_FOUND, f"主题地图不存在：{topic_id}")
-    return _map_view(payload)
+    return _map_view(ctx.db, payload)
 
 
 #: 节点类型 / 关系类型：与 `tools/topic_map.py` 的 `ALLOWED_*` **同一口径**。
@@ -365,11 +368,62 @@ def _source_graph_view(
     }
 
 
-def _map_view(payload: dict[str, Any]) -> dict[str, Any]:
+def _ref_title(row: Mapping[str, Any], source_id: str) -> str:
+    """来源显示名三级回退：库里 ``title`` → URL 尾段 → ``domain`` → ``id`` 前 12 位。
+
+    为什么要在后端定这条链：界面只能拿到 id，于是把每条来源都画成「打开资料 1」——
+    用户认不出是哪篇。留空、编号都等于没信息，所以最后一定退到"至少能认出"的东西。
+    """
+    title = str(row.get("title") or "").strip()
+    if title:
+        return title
+    url = str(row.get("url") or "").strip()
+    if url:
+        tail = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
+        if tail:
+            return unquote(tail)
+    domain = str(row.get("domain") or "").strip()
+    if domain:
+        return domain
+    return source_id[:12]
+
+
+def _source_refs(
+    node: Mapping[str, Any], found: Mapping[str, dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """节点的 `sources` → 可解析的 `source_refs` + 被丢弃的条数。
+
+    只把**库里查得到**的 id 放进 `source_refs`：查不到的点了必弹「还没抓取正文」，
+    宁可少一项也不给一个死链接。顺序按 id 排（同一张图两次调用结果不变）。
+    """
+    refs: list[dict[str, Any]] = []
+    dropped = 0
+    for source_id in sorted({str(ref).strip() for ref in node["sources"] if str(ref).strip()}):
+        row = found.get(source_id)
+        if row is None:
+            dropped += 1
+            continue
+        refs.append(
+            {
+                "id": source_id,
+                "title": _ref_title(row, source_id),
+                "year": row.get("year"),
+                "has_text": bool(row.get("has_text")),
+                "domain": row.get("domain"),
+                "source_type": row.get("source_type"),
+            }
+        )
+    return refs, dropped
+
+
+def _map_view(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
     """把 `graph_json` 归一成界面能直接画的图：节点带 `weight`（= 度数）、边两端是节点 id。
 
     坏数据（手工改过库、写一半崩过）逐项跳过，**不整体抛错** —— 界面宁可少画几个点，
     也不该整张图打不开（与 `learning.list_topic_maps` 的容错口径一致）。
+
+    节点的来源一并回带**可读**信息（`source_refs`）而不是只给 id 列表：全图的 id 合成
+    一批查一次（`sources_with_text`），不做 per-node 的 N+1；`sources` 原样保留给老消费方。
     """
     graph = payload.get("graph")
     if not isinstance(graph, dict):
@@ -400,6 +454,16 @@ def _map_view(payload: dict[str, Any]) -> dict[str, Any]:
         }
         index[node_id] = node
         nodes.append(node)
+
+    # 一次批量查：全图所有节点的来源 id 合成一个集合。逐个节点查会变成 N+1 次往返，
+    # 大图（几十个节点 × 每节点数个来源）在 SQLite 上就是几十次查询。
+    found = source_context.sources_with_text(
+        db, [source_id for node in nodes for source_id in node["sources"]]
+    )
+    for node in nodes:
+        refs, dropped = _source_refs(node, found)
+        node["source_refs"] = refs
+        node["dropped_sources"] = dropped
 
     edges: list[dict[str, Any]] = []
     for item in raw_edges if isinstance(raw_edges, list) else []:
