@@ -997,7 +997,7 @@ function mapInfoSourceRow(ref) {
       fetchMapSourceText(ref, item, button);
       return;
     }
-    openMapSource(ref.id);
+    openMapSource(ref.id, ref);
   });
   item.appendChild(button);
 
@@ -1036,7 +1036,7 @@ async function fetchMapSourceText(ref, row, button) {
   if (res && res.ok) {
     /* 抓到了：正文已落库，接着走打开通路（列表那边这时就能查到 doc_id） */
     mapSourceStatus("已获取正文：" + ref.title, false);
-    return openMapSource(ref.id);
+    return openMapSource(ref.id, ref);
   }
   mapInfoDownloadError(note, res || {});
   return false;
@@ -1105,44 +1105,529 @@ function mapSourceStatus(text, bad) {
 }
 
 
-/* 打开一条来源：切到「资料库」页签（走 app.js 已绑好的页签点击，不另写切换），
- * 再调 sources.js 现成的 `showSourceBySourceId` —— **这就是"现有通路"**。
- *
- * 打开后**必须把详情区滚进视口**：`#source-detail` 在资料列表**下面**，只切页签的话
- * 用户看到的还是列表，详情被压在下面（用户第 4 条："资料窗口被压在下面，看不到"）。 */
-function openMapSource(sourceId) {
-  if (typeof showSourceBySourceId !== "function") return null;
-  var tab = document.querySelector('.tab[data-tab="sources"]');
-  if (tab) tab.click();
-  var done = showSourceBySourceId(String(sourceId));
-  /* showSourceBySourceId 回 false = 这条没有可打开的内容：详情区是空的，滚过去只是一片白 */
-  if (!done || typeof done.then !== "function") {
-    mapRevealSourceDetail(done);
-    return done;
-  }
-  return done.then(
-    function (result) {
-      mapRevealSourceDetail(result);
-      return result;
-    },
-    function (error) {
-      mapSourceStatus("打开资料失败：" + ((error && error.message) || error), true);
-      return false;
-    },
-  );
+/* ───────────────────────────────────────────── 资料浮层（#source-zoom）
+ * 点「打开资料」**不切侧栏页签**（用户第 1 条：切页签等于把当前视图强行换掉），
+ * 改成在应用内开一层只读详情。交互照地图「放大」那套（#map-zoom），但：
+ *   · 内容层独立：DOM 是 index.html 里静态声明的 `#source-zoom`，不搬地图那张图；
+ *   · **单例**：DOM 只有一份，再点别的资料只换内容（不叠第二个窗、也不另开一层）；
+ *   · 可拖动（标题栏）+ 可缩放（右下角把手），**最小 420×320**（再小摘要就挤成一行）；
+ *     尺寸记 localStorage，下次打开沿用；
+ *   · 关闭三条路：Esc / 关闭按钮 / 点遮罩外 —— 关掉**不动地图的选中态**（一个字段都不碰）。
+ */
+var SOURCE_ZOOM_MIN_W = 420;
+var SOURCE_ZOOM_MIN_H = 320;
+var SOURCE_ZOOM_SIZE_KEY = "scholarscout.sourceZoom.size";
+
+/* 浮层里现在是哪一条（换内容只改这里，**不重建 DOM**）。`seq` 用来丢掉过期的异步结果：
+ * 连着点两条时，先发的那次 archive.get 晚回来，绝不能把 A 的正文画到 B 的标题下。 */
+var sourceZoomState = {
+  sourceId: "",
+  ref: null,
+  docId: "",
+  doc: null,
+  summary: null,
+  paths: null,
+  seq: 0,
+  drag: null,
+  resize: null,
+};
+
+
+function sourceZoomOverlay() {
+  return el("source-zoom");
 }
 
 
-/* 把摘要详情滚到可见处，并让探针量得到（返回详情区元素）。
- * `block:"nearest"`：已经看得见就不动（不做无意义的跳动），被压在下面才滚上来。 */
-function mapRevealSourceDetail(result) {
-  if (result === false) return null;
-  var detail = el("source-detail");
-  if (!detail) return null;
-  if (typeof detail.scrollIntoView === "function") {
-    detail.scrollIntoView({ block: "nearest", inline: "nearest" });
+function sourceZoomSheet() {
+  var overlay = sourceZoomOverlay();
+  return overlay ? overlay.querySelector(".source-sheet") : null;
+}
+
+
+/* 上次拖出来的尺寸（localStorage）。读不到 / 坏了就回 null —— 那就用 CSS 的默认尺寸。 */
+function sourceZoomStoredSize() {
+  try {
+    var raw = window.localStorage.getItem(SOURCE_ZOOM_SIZE_KEY);
+    if (!raw) return null;
+    var parsed = JSON.parse(raw);
+    var w = Number(parsed && parsed.w);
+    var h = Number(parsed && parsed.h);
+    if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) return null;
+    return { w: w, h: h };
+  } catch (error) {
+    return null;
   }
-  return detail;
+}
+
+
+/* 夹到 [最小尺寸, 视口内]：420×320 是硬下限（拖多小都不许低于它，否则摘要看不清）。 */
+function sourceZoomClamp(w, h) {
+  var maxW = Math.max(SOURCE_ZOOM_MIN_W, window.innerWidth - 24);
+  var maxH = Math.max(SOURCE_ZOOM_MIN_H, window.innerHeight - 24);
+  return {
+    w: Math.min(Math.max(Math.round(w || 0), SOURCE_ZOOM_MIN_W), maxW),
+    h: Math.min(Math.max(Math.round(h || 0), SOURCE_ZOOM_MIN_H), maxH),
+  };
+}
+
+
+function sourceZoomApplySize(w, h) {
+  var sheet = sourceZoomSheet();
+  if (!sheet) return null;
+  var size = sourceZoomClamp(w, h);
+  sheet.style.width = size.w + "px";
+  sheet.style.height = size.h + "px";
+  return size;
+}
+
+
+/* 存尺寸：隐私模式 / 配额满时 setItem 会抛 —— 记不住尺寸不算事，浮层照用。 */
+function sourceZoomPersistSize() {
+  var sheet = sourceZoomSheet();
+  if (!sheet) return;
+  var box = sheet.getBoundingClientRect();
+  if (!box.width || !box.height) return;
+  try {
+    window.localStorage.setItem(
+      SOURCE_ZOOM_SIZE_KEY,
+      JSON.stringify({ w: Math.round(box.width), h: Math.round(box.height) }),
+    );
+  } catch (error) {
+    /* 记不住就不记 —— 不许因为 localStorage 把「打开资料」弄失败 */
+  }
+}
+
+
+/* 打开一条来源：**不切页签**（用户第 1 条：切侧栏会把当前视图强行换掉），
+ * 在应用内开一层只读详情浮层。`ref` 是详情面板那一行（带真标题/年份/类型），
+ * 只有 id 的调用方也能用 —— 标题回落到 `archive.get` 回来的真标题。 */
+function openMapSource(sourceId, ref) {
+  return openSourceZoom(String(sourceId), ref || null);
+}
+
+
+/* 打开（或复用）资料浮层：**无论点多少条，都是往同一个盒子里换内容**（单例）。 */
+function openSourceZoom(sourceId, ref) {
+  var overlay = sourceZoomOverlay();
+  var body = el("source-zoom-body");
+  var title = el("source-zoom-title");
+  var meta = el("source-zoom-meta");
+  if (!overlay || !body || !title || !meta) return null;
+  var id = String(sourceId || "").trim();
+  sourceZoomState.sourceId = id;
+  sourceZoomState.ref = ref || null;
+  sourceZoomState.docId = "";
+  sourceZoomState.doc = null;
+  sourceZoomState.summary = null;
+  sourceZoomState.paths = null;
+  sourceZoomState.seq += 1;
+
+  /* 标题栏先给个能看的：ref 有真标题就用；只有 id 时先写「资料 <id 前 12 位>」，
+     等 archive.get 回来换成真标题。主标题永远是标题，来源 id 只作后面的小字。 */
+  title.textContent = (ref && ref.title) || "资料 " + short(id, 12);
+  title.title = title.textContent;
+  meta.textContent = [
+    ref && ref.year ? String(ref.year) + " 年" : "",
+    ref && ref.source_type ? sourceZoomKindLabel(ref.source_type) : "",
+    id ? "id " + short(id, 18) : "",
+  ]
+    .filter(function (part) {
+      return !!part;
+    })
+    .join("｜");
+
+  body.innerHTML = "";
+  sourceZoomStatus("正在读取这条资料的详情…", false);
+  var stored = sourceZoomStoredSize();
+  if (stored) sourceZoomApplySize(stored.w, stored.h);
+  overlay.hidden = false;
+  return loadSourceZoom(id, sourceZoomState.seq);
+}
+
+
+/* 来源类型 → 中文标签（后端只给 arxiv/github/official/web，旧数据还有 paper/blog 之类）。 */
+function sourceZoomKindLabel(kind) {
+  var key = String(kind || "")
+    .trim()
+    .toLowerCase();
+  var labels = {
+    arxiv: "论文（arXiv）",
+    paper: "论文",
+    github: "代码库",
+    official: "官方文档",
+    web: "网页",
+    blog: "博客",
+    docs: "文档",
+    video: "视频",
+  };
+  return labels[key] || key;
+}
+
+
+async function loadSourceZoom(sourceId, seq) {
+  var payload = null;
+  try {
+    var listed = await scout.call("archive.list", { source_id: sourceId, limit: 1 });
+    var hit = ((listed && listed.items) || [])[0];
+    if (hit && hit.doc_id) {
+      payload = await scout.call("archive.get", { doc_id: hit.doc_id });
+      sourceZoomState.docId = String(hit.doc_id);
+    }
+  } catch (error) {
+    if (seq !== sourceZoomState.seq) return false;
+    sourceZoomState.docId = "";
+    sourceZoomRender();
+    sourceZoomStatus("打开资料失败：" + ((error && error.message) || error), true);
+    return false;
+  }
+  /* 这期间用户点了别的资料：这次结果已过期，直接丢掉（不覆盖新的那一条） */
+  if (seq !== sourceZoomState.seq) return false;
+  if (!payload) {
+    /* 库里没有这条（拿不到 doc_id）：只显示元数据 + 一行说明，并留「去原站」 */
+    sourceZoomState.doc = null;
+    sourceZoomState.summary = null;
+    sourceZoomRender();
+    sourceZoomStatus("这条还没有正文，只有元数据", true);
+    return false;
+  }
+  sourceZoomState.doc = payload.document || null;
+  sourceZoomState.summary = (payload.summaries || [])[0] || null;
+  sourceZoomState.paths = payload.paths || null;
+  sourceZoomRender();
+  return true;
+}
+
+
+/* 重画浮层内容：真标题 / 元数据（年份·类型·域名·来源 id）/ 摘要 / 「原文」「去原站」。
+ * 只读 —— 不写库、不动地图状态；也**不新建第二个浮层**（正文就渲染在本层的 `.source-zoom-text`）。 */
+function sourceZoomRender() {
+  var body = el("source-zoom-body");
+  var titleBox = el("source-zoom-title");
+  var metaBox = el("source-zoom-meta");
+  if (!body) return null;
+  var ref = sourceZoomState.ref || {};
+  var doc = sourceZoomState.doc || {};
+  var first = sourceZoomState.summary || {};
+  var id = sourceZoomState.sourceId;
+
+  /* 真标题：摘要里的中译标题 → 库里的来源标题/文档标题 → ref（地图带上来的）→ 兜底 */
+  var realTitle =
+    String(first.title_zh || doc.source_title || doc.title || ref.title || "").trim() || "（无标题）";
+  var year = doc.year || ref.year || "";
+  var kind = sourceZoomKindLabel(doc.source_type || ref.source_type || "");
+  var domain = String(doc.domain || ref.domain || "").trim();
+  var url = String(doc.url || ref.url || "").trim();
+
+  if (titleBox) {
+    titleBox.textContent = realTitle;
+    titleBox.title = realTitle;
+  }
+  if (metaBox) {
+    metaBox.textContent = [
+      year ? String(year) + " 年" : "",
+      kind || "",
+      domain,
+      id ? "id " + short(id, 18) : "",
+    ]
+      .filter(function (part) {
+        return !!part;
+      })
+      .join("｜");
+  }
+
+  body.innerHTML = "";
+  var facts = document.createElement("div");
+  facts.className = "source-zoom-facts";
+  [
+    ["年份", year ? String(year) + " 年" : ""],
+    ["类型", kind ? String(kind) : ""],
+    ["来源", domain ? String(domain) : ""],
+    ["来源 id", id || ""],
+  ].forEach(function (pair) {
+    /* 不知道就**不写**：三个“未标注”并排，是占位符噪音，不是信息。来源 id 总会渲染。 */
+    if (!pair[1]) return;
+    var item = document.createElement("span");
+    item.setAttribute("data-fact", pair[0]);
+    var label = document.createElement("b");
+    label.textContent = pair[0] + "：";
+    item.appendChild(label);
+    item.appendChild(document.createTextNode(pair[1]));
+    facts.appendChild(item);
+  });
+  body.appendChild(facts);
+
+  /* 摘要（只读，选不中文字也能滚——真正可滚的是外层 .source-zoom-body） */
+  var summary = document.createElement("p");
+  summary.className = "source-zoom-summary";
+  var summaryText = String(first.summary_short || "").trim();
+  if (summaryText) {
+    summary.textContent = summaryText;
+  } else {
+    summary.textContent = "（这条资料还没出摘要）";
+    summary.classList.add("is-empty");
+  }
+  body.appendChild(summary);
+
+  /* 两个出口：「原文」走 archive.open_raw（无原件则把 archive.text 渲染在下面那块），
+     「去原站」走系统浏览器（没有源地址时按钮禁用并在浮层里说明，绝不 alert） */
+  var actions = document.createElement("div");
+  actions.className = "actions source-zoom-actions";
+  var rawBtn = document.createElement("button");
+  rawBtn.type = "button";
+  rawBtn.className = "ghost";
+  rawBtn.id = "btn-source-zoom-raw";
+  rawBtn.textContent = "原文";
+  rawBtn.title = "有原件就用系统默认程序打开；没有原件则把全文显示在这里";
+  if (!sourceZoomState.docId) {
+    rawBtn.disabled = true;
+    rawBtn.title = "这条还没有正文（只有元数据），没有可打开的原件";
+  }
+  rawBtn.addEventListener("click", function () {
+    sourceZoomOpenRaw(rawBtn);
+  });
+  var siteBtn = document.createElement("button");
+  siteBtn.type = "button";
+  siteBtn.className = "ghost";
+  siteBtn.id = "btn-source-zoom-origin";
+  siteBtn.textContent = "去原站";
+  siteBtn.title = "用系统浏览器打开这条资料的源网址";
+  if (!url) {
+    siteBtn.disabled = true;
+    siteBtn.title = "这条资料没有记录源地址";
+  }
+  siteBtn.addEventListener("click", function () {
+    sourceZoomOpenOrigin();
+  });
+  actions.appendChild(rawBtn);
+  actions.appendChild(siteBtn);
+  body.appendChild(actions);
+
+  if (!sourceZoomState.docId) {
+    var onlyMeta = document.createElement("p");
+    onlyMeta.className = "source-zoom-status is-bad";
+    onlyMeta.textContent = "这条还没有正文，只有元数据";
+    body.appendChild(onlyMeta);
+  }
+
+  /* 状态行（打开原件/读全文/失败都写这一行，不弹窗） */
+  var status = document.createElement("p");
+  status.className = "source-zoom-status source-zoom-status-main";
+  status.hidden = true;
+  body.appendChild(status);
+
+  /* 全文落点：没有原件时 `archive.text` 的结果渲染在这里（本层可滚，不开第二个窗） */
+  var holder = document.createElement("pre");
+  holder.id = "source-zoom-text";
+  holder.className = "source-zoom-text";
+  holder.hidden = true;
+  body.appendChild(holder);
+  return body;
+}
+
+
+/* 浮层里那一行状态字（找不到就现造一行追加在最下面）。 */
+function sourceZoomStatus(text, bad) {
+  var body = el("source-zoom-body");
+  if (!body) return null;
+  var line = body.querySelector(".source-zoom-status-main");
+  if (!line) {
+    line = document.createElement("p");
+    line.className = "source-zoom-status source-zoom-status-main";
+    line.hidden = true;
+    body.appendChild(line);
+  }
+  line.textContent = text || "";
+  line.hidden = !text;
+  line.classList.toggle("is-bad", bad === true);
+  return line;
+}
+
+
+/* 「原文」：有原件 → `archive.open_raw`（与资料库「⋯ → 打开文件」同一条通路，系统默认程序打开）；
+ * 没有原件但有全文 → `archive.text` 的结果渲染在本浮层的可滚区域（**不再开第二个窗**）；
+ * 两样都没有 → 在浮层里说清楚（如实说，不弹 alert）。 */
+async function sourceZoomOpenRaw(button) {
+  var docId = sourceZoomState.docId;
+  if (!docId) {
+    sourceZoomStatus("这条还没有正文，只有元数据", true);
+    return false;
+  }
+  var exists = (sourceZoomState.paths && sourceZoomState.paths.exists) || {};
+  if (button) button.disabled = true;
+  try {
+    if (exists.raw_path) {
+      try {
+        await scout.call("archive.open_raw", { doc_id: docId });
+        sourceZoomStatus("已用系统默认程序打开原件", false);
+        return true;
+      } catch (error) {
+        /* 原件被移走/删掉：先说明，再退到全文（不弹窗） */
+        sourceZoomStatus("原件打不开（" + ((error && error.message) || error) + "），改用全文", true);
+      }
+    } else {
+      sourceZoomStatus("原件不在磁盘上，改用全文", false);
+    }
+    return await sourceZoomShowText();
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+
+/* 把全文读进浮层里那块可滚区域（`archive.text` → `.source-zoom-text`）。 */
+async function sourceZoomShowText() {
+  var docId = sourceZoomState.docId;
+  var holder = el("source-zoom-text");
+  if (!docId || !holder) return false;
+  holder.hidden = false;
+  holder.textContent = "正在读取全文…";
+  try {
+    var payload = await scout.call("archive.text", { doc_id: docId });
+    if (payload && payload.available === false) {
+      holder.hidden = true;
+      holder.textContent = "";
+      sourceZoomStatus("读不到全文：" + (payload.reason || "没有落盘的正文"), true);
+      return false;
+    }
+    var text = String((payload && payload.text) || "").trim();
+    holder.textContent = text || "（全文是空的）";
+    if (payload && payload.truncated) {
+      sourceZoomStatus("全文较长，这里只显示前 " + (payload.chars || text.length) + " 字", false);
+    } else {
+      sourceZoomStatus("", false);
+    }
+    return true;
+  } catch (error) {
+    holder.hidden = true;
+    holder.textContent = "";
+    sourceZoomStatus("读全文失败：" + ((error && error.message) || error), true);
+    return false;
+  }
+}
+
+
+/* 「去原站」：系统浏览器打开源网址。空地址**不调** openExternalUrl（它内部会 alert），
+ * 改成在浮层里写一行说明 —— 这条链路上一个 alert 都不许有。 */
+function sourceZoomOpenOrigin() {
+  var doc = sourceZoomState.doc || {};
+  var ref = sourceZoomState.ref || {};
+  var url = String(doc.url || ref.url || "").trim();
+  if (!url) {
+    sourceZoomStatus("这条资料没有记录源地址，去不了原站", true);
+    return false;
+  }
+  openExternalUrl(url);
+  return true;
+}
+
+
+/* 关浮层：只收起，不碰地图的选中态 / 详情面板 / 侧栏页签（用户第 3 条）。 */
+function closeSourceZoom() {
+  var overlay = sourceZoomOverlay();
+  if (!overlay || overlay.hidden) return false;
+  overlay.hidden = true;
+  return true;
+}
+
+
+/* 拖标题栏移动浮层：从 flex 居中改成 left/top 绝对定位，改的只是位置，尺寸不动。 */
+function sourceZoomDragStart(event) {
+  if (event.button !== 0) return;
+  var target = event.target;
+  /* 标题栏里的按钮（关闭）不当拖拽把手 */
+  if (target && target.closest && target.closest("button")) return;
+  var sheet = sourceZoomSheet();
+  if (!sheet) return;
+  var box = sheet.getBoundingClientRect();
+  sheet.style.position = "absolute";
+  sheet.style.margin = "0";
+  sheet.style.left = Math.round(box.left) + "px";
+  sheet.style.top = Math.round(box.top) + "px";
+  sourceZoomState.drag = { dx: event.clientX - box.left, dy: event.clientY - box.top };
+  if (event.preventDefault) event.preventDefault();
+}
+
+
+function sourceZoomDragMove(event) {
+  var drag = sourceZoomState.drag;
+  if (!drag) return;
+  var sheet = sourceZoomSheet();
+  if (!sheet) return;
+  var box = sheet.getBoundingClientRect();
+  /* 不许拖到完全出界：横竖都留 120px/40px 在身上，才抓得回来 */
+  var left = Math.min(
+    Math.max(event.clientX - drag.dx, -box.width + 120),
+    window.innerWidth - 120,
+  );
+  var top = Math.min(Math.max(event.clientY - drag.dy, 0), window.innerHeight - 40);
+  sheet.style.left = Math.round(left) + "px";
+  sheet.style.top = Math.round(top) + "px";
+}
+
+
+function sourceZoomDragEnd() {
+  sourceZoomState.drag = null;
+}
+
+
+/* 右下角把手缩放：最小 420×320 由 sourceZoomClamp 兜住，松手时把尺寸记下来。 */
+function sourceZoomResizeStart(event) {
+  if (event.button !== 0) return;
+  var sheet = sourceZoomSheet();
+  if (!sheet) return;
+  var box = sheet.getBoundingClientRect();
+  sourceZoomState.resize = { x: event.clientX, y: event.clientY, w: box.width, h: box.height };
+  if (event.preventDefault) event.preventDefault();
+  if (event.stopPropagation) event.stopPropagation();
+}
+
+
+function sourceZoomResizeMove(event) {
+  var state = sourceZoomState.resize;
+  if (!state) return;
+  sourceZoomApplySize(state.w + (event.clientX - state.x), state.h + (event.clientY - state.y));
+}
+
+
+function sourceZoomResizeEnd() {
+  if (!sourceZoomState.resize) return;
+  sourceZoomState.resize = null;
+  sourceZoomPersistSize();
+}
+
+
+/* 接线只做一次（浮层不随地图重画，所以不进地图的监听账本 —— mapTeardown 会清账本）。
+ * 关闭三条路：Esc / 关闭按钮 / 点遮罩外（点在 .source-sheet 里不算）。 */
+function wireSourceZoom() {
+  var overlay = sourceZoomOverlay();
+  if (!overlay) return false;
+  var closer = el("btn-source-zoom-close");
+  if (closer) {
+    closer.addEventListener("click", function () {
+      closeSourceZoom();
+    });
+  }
+  overlay.addEventListener("click", function (event) {
+    if (event.target === overlay) closeSourceZoom();
+  });
+  var head = overlay.querySelector(".source-sheet-head");
+  if (head) head.addEventListener("pointerdown", sourceZoomDragStart);
+  var handle = el("source-zoom-resize");
+  if (handle) handle.addEventListener("pointerdown", sourceZoomResizeStart);
+  document.addEventListener("pointermove", function (event) {
+    sourceZoomDragMove(event);
+    sourceZoomResizeMove(event);
+  });
+  document.addEventListener("pointerup", function () {
+    sourceZoomDragEnd();
+    sourceZoomResizeEnd();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    /* 只有真关掉了才拦这一下：浮层没开时 Esc 归地图的搜索框 */
+    if (closeSourceZoom() && event.stopPropagation) event.stopPropagation();
+  });
+  return true;
 }
 
 
@@ -1530,6 +2015,8 @@ async function loadMapTab() {
 
 
 function wireMapTab() {
+  /* 资料浮层（#source-zoom）只接一次线：它不随地图重画，开着的时候也不该被地图的清理带走 */
+  wireSourceZoom();
   var all = el("btn-map-all");
   if (all) {
     all.addEventListener("click", function () {

@@ -244,6 +244,27 @@
     </div>
   </div>
 
+  <!-- 资料详情浮层：知识地图点「打开资料」在这里开，**不切侧栏页签**（用户明确要求）。
+       交互照上面的 #map-zoom（浮层 + 关闭），但内容层独立；DOM 只有这一份 ——
+       再点别的资料只换内容（单例），不叠第二个窗口。拖动/缩放由 map.js 接管。 -->
+  <div id="source-zoom" class="overlay source-zoom" hidden>
+    <div class="sheet source-sheet">
+      <div class="sheet-head source-sheet-head">
+        <strong id="source-zoom-title">资料</strong>
+        <span class="hint" id="source-zoom-meta"></span>
+        <button id="btn-source-zoom-close" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="sheet-body source-zoom-body" id="source-zoom-body"></div>
+      <!-- 右下角缩放手柄：最小 420×320，尺寸记进 localStorage，下次打开沿用 -->
+      <span
+        id="source-zoom-resize"
+        class="source-zoom-resize"
+        title="拖拽调整窗口大小"
+        aria-hidden="true"
+      ></span>
+    </div>
+  </div>
+
   <div id="settings" class="overlay" hidden>
     <div class="sheet">
       <div class="sheet-head">

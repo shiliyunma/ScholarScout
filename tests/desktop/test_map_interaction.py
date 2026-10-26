@@ -13,7 +13,8 @@
    （按标签实测宽度铺的矩形），且两者与标签共用一份贴边平移几何。
 3. **拖拽阈值**：按下即可能拖动，位移不足 `MAP_DRAG_THRESHOLD` 就不许写 transform，
    否则"点一下"会被当成"把图拖走了"。
-4. 点节点里的来源必须走资料库现成通路 `showSourceBySourceId`，不许在地图里另写一套。
+4. 点节点里的来源必须**在应用内浮层里打开**（`#source-zoom`），不许切侧栏页签、
+   也不许复用会切页签的 `showSourceBySourceId`。
 5. 画布必须**按容器实测像素**设 viewBox 并铺满（固定 viewBox + `meet` = 内容缩在中间一条）。
 6. 图层切换与"查路径"整条线已删（收敛成概念图单一视图）：删掉的符号不许偷偷回来 ——
    它们会带回两条已经没人维护的取数路径。
@@ -208,12 +209,23 @@ def test_search_centers_node_within_current_canvas() -> None:
 # --------------------------------------------------------------------- 来源通路
 
 
-def test_source_click_goes_through_show_source_by_source_id() -> None:
-    """点节点里的来源 → 切到资料库页签 → `showSourceBySourceId`（不另写一套）。"""
+def test_source_click_opens_in_app_overlay_and_never_switches_tabs() -> None:
+    """点节点里的来源 → **应用内浮层**（`#source-zoom`），**一个页签都不许切**。
+
+    用户第 1 条：点「打开资料」时侧栏被强行换到资料库 = 当前视图被抢走。
+    所以这里钉三件事：不点 `.tab`、不调 `showSourceBySourceId`（那条路会切页签）、
+    走的是浮层入口 `openSourceZoom`。
+    """
     body = _function_body(MAP_JS, "openMapSource")
-    assert "showSourceBySourceId(" in body, "没有走资料库现成通路 showSourceBySourceId"
-    assert '.tab[data-tab="sources"]' in body, "打开来源前没切到「资料库」页签"
-    assert "archive.get" not in body, "openMapSource 自己调了 archive.get（重复实现打开逻辑）"
+    assert "openSourceZoom(" in body, "openMapSource 没走应用内浮层 openSourceZoom"
+    assert ".tab[data-tab" not in body, "openMapSource 里还在找页签元素（会切侧栏）"
+    assert "tab.click(" not in body, "openMapSource 里还有页签点击（用户明确不许切页签）"
+    assert "showSourceBySourceId(" not in body, "还走资料库那条会切页签的通路"
+    assert ".click()" not in body, "openMapSource 里还有别的点击式切换"
+    # 真标题能从入口带进去（详情面板那行有 year/source_type）
+    assert "function openMapSource(sourceId, ref)" in MAP_JS, (
+        "openMapSource 没接收 ref（拿不到真标题/年份）"
+    )
 
 
 def test_node_info_renders_source_buttons_with_ids() -> None:
@@ -295,7 +307,7 @@ def test_missing_text_source_offers_fetch_button() -> None:
     fetch = _function_body(MAP_JS, "fetchMapSourceText")
     assert 'scout.call("archive.download"' in fetch, "「获取正文」没调 archive.download"
     assert "{ source_id: ref.id }" in fetch, "没按 source_id 传给 archive.download"
-    assert "openMapSource(ref.id)" in fetch, "抓到正文后没继续打开"
+    assert "openMapSource(ref.id, ref)" in fetch, "抓到正文后没继续打开（也没带 ref 过去）"
     assert "alert(" not in fetch, "「获取正文」里用了 alert"
 
 
@@ -315,15 +327,18 @@ def test_download_failure_splits_disabled_from_large() -> None:
     assert "map-info-error" in _function_body(MAP_JS, "mapInfoSourceRow"), "行内错误没有落点"
 
 
-def test_open_source_scrolls_detail_into_view() -> None:
-    """打开资料后把 `#source-detail` 滚进视口（它在列表下面，不滚就是"被压在下面"）。"""
+def test_open_source_uses_overlay_instead_of_scrolling_source_detail() -> None:
+    """打开资料**不再**滚 `#source-detail`（那条路要求先切页签）；内容进浮层。
+
+    `#source-detail` 仍在资料库自己点开时用，但地图这条路已经改成应用内浮层 ——
+    留着「打开后滚详情区」等于开了浮层还去动别的页签的 DOM。
+    """
+    assert "mapRevealSourceDetail" not in MAP_JS, "还留着滚 #source-detail 的旧通路"
     body = _function_body(MAP_JS, "openMapSource")
-    assert "mapRevealSourceDetail(" in body, "打开后没滚详情区"
-    assert "showSourceBySourceId(" in body, "没走资料库现成通路"
-    reveal = _function_body(MAP_JS, "mapRevealSourceDetail")
-    assert 'el("source-detail")' in reveal, "滚的不是 #source-detail"
-    assert 'scrollIntoView({ block: "nearest"' in reveal, "没用 scrollIntoView(block:nearest)"
-    assert "result === false" in reveal, "没正文（false）时也会滚过去 —— 滚到的是一片空白"
+    assert "source-detail" not in body, "openMapSource 还在动资料库的详情区"
+    zoom = _function_body(MAP_JS, "openSourceZoom")
+    assert 'el("source-zoom-body")' in zoom, "浮层没往 #source-zoom-body 写内容"
+    assert "overlay.hidden = false" in zoom, "浮层没被显示出来"
 
 
 def test_no_alert_in_map_or_source_open_path() -> None:
@@ -501,3 +516,140 @@ def test_count_line_reports_pending_edges_only_when_there_are_some() -> None:
     assert "weak_edges" in helper, "没读后端的 stats.weak_edges / counts.weak_edges"
     assert 'typeof value === "number"' in helper, "没做类型容错（undefined 会算出 NaN）"
     assert "mapEdgeIsWeak(" in helper, "后端没给数时没有回落到数画出来的边"
+
+
+# ------------------------------------------------------ 资料浮层（#source-zoom）
+
+
+def test_source_zoom_overlay_exists_and_starts_hidden() -> None:
+    """`#source-zoom` 静态写在 index.html 里、默认 hidden，结构齐（缺一个就静默失效）。"""
+    match = re.search(r'<div id="source-zoom"[^>]*>', INDEX_HTML)
+    assert match, "index.html 里没有 #source-zoom"
+    assert "hidden" in match.group(0), "#source-zoom 没默认 hidden（一进页面就盖住界面）"
+    assert 'class="overlay source-zoom"' in match.group(0), (
+        "浮层没挂 .source-zoom（探针按它数单例）"
+    )
+    for anchor in (
+        'id="source-zoom-title"',
+        'id="source-zoom-meta"',
+        'id="source-zoom-body"',
+        'id="btn-source-zoom-close"',
+        'id="source-zoom-resize"',
+    ):
+        assert anchor in INDEX_HTML, f"浮层缺 {anchor}"
+    assert 'class="sheet source-sheet"' in INDEX_HTML, "浮层没有 .source-sheet（尺寸与拖动都挂它）"
+
+
+def test_source_zoom_is_a_singleton() -> None:
+    """单例：DOM 只有 index.html 那一份，换资料只换内容（不新建元素、不叠第二层）。"""
+    zoom = _function_body(MAP_JS, "openSourceZoom")
+    for forbidden in (
+        'document.createElement("div")',
+        "document.body.appendChild",
+        "body.appendChild(overlay)",
+        "overlay.cloneNode",
+    ):
+        assert forbidden not in zoom, (
+            f"openSourceZoom 会新建浮层 DOM（{forbidden}）—— 点第二次就有两个窗"
+        )
+    assert 'el("source-zoom-body")' in zoom, "没复用固定的 #source-zoom-body"
+    assert 'body.innerHTML = ""' in zoom, "换内容前没清上一次的内容（会串台）"
+    assert "sourceZoomState.seq += 1" in zoom, "换内容没推进序号（过期的异步结果会盖掉新内容）"
+    assert MAP_JS.count("var sourceZoomState = {") == 1, "sourceZoomState 声明了不止一处"
+    assert MAP_JS.count("function openSourceZoom(") == 1, "openSourceZoom 定义了不止一处"
+
+
+def test_source_zoom_renders_real_title_year_kind_and_summary() -> None:
+    """浮层显示**真标题** / 年份 / 类型 / 摘要；来源 id 只作小字（排查用）。"""
+    render = _function_body(MAP_JS, "sourceZoomRender")
+    assert "title_zh" in render and "source_title" in render, (
+        "标题没按 摘要中译标题→来源标题 取（会显示 id）"
+    )
+    assert 'el("source-zoom-title")' in render, "标题没写进 #source-zoom-title"
+    assert '["年份",' in render, "元数据里没有年份"
+    assert '["类型",' in render, "元数据里没有来源类型"
+    assert "sourceZoomKindLabel(" in render, "类型没走中文标签"
+    assert "summary_short" in render, "摘要没显示"
+    assert "source-zoom-summary" in render, "摘要没有自己的 class"
+    assert "short(id, 18)" in render, "没带来源 id 小字（排查时认不出是哪条）"
+    zoom = _function_body(MAP_JS, "openSourceZoom")
+    assert 'el("source-zoom-title")' in zoom, "打开时没先写标题（白框一闪）"
+    assert 'el("source-zoom-meta")' in zoom, "打开时没先写小字"
+
+
+def test_source_zoom_has_raw_and_origin_entries() -> None:
+    """两个入口：「原文」（open_raw，无原件退到浮层内全文）与「去原站」（openExternalUrl）。"""
+    render = _function_body(MAP_JS, "sourceZoomRender")
+    assert '"原文"' in render, "没有「原文」按钮"
+    assert '"去原站"' in render, "没有「去原站」按钮"
+    assert "btn-source-zoom-raw" in render, "「原文」没有 id（探针点不到）"
+    assert "btn-source-zoom-origin" in render, "「去原站」没有 id（探针点不到）"
+    raw = _function_body(MAP_JS, "sourceZoomOpenRaw")
+    assert 'scout.call("archive.open_raw"' in raw, "「原文」没调 archive.open_raw（原件打不开）"
+    assert "exists.raw_path" in raw, "没先看原件在不在（必然 404 才退全文）"
+    assert "sourceZoomShowText(" in raw, "没有原件时没退到浮层内全文"
+    text = _function_body(MAP_JS, "sourceZoomShowText")
+    assert 'scout.call("archive.text"' in text, "无原件时没读 archive.text"
+    assert 'el("source-zoom-text")' in text, "全文没渲染在浮层里那块（等于另开一个窗）"
+    assert "available === false" in text, "读不到全文时没如实说"
+    origin = _function_body(MAP_JS, "sourceZoomOpenOrigin")
+    assert "openExternalUrl(url)" in origin, "「去原站」没走 openExternalUrl（不会走系统浏览器）"
+    assert "alert(" not in origin, "「去原站」用了 alert"
+
+
+def test_source_zoom_without_doc_id_shows_metadata_only_line() -> None:
+    """库里没有这条（无 doc_id）→ 元数据 + 一行「这条还没有正文，只有元数据」，仍给「去原站」。"""
+    load = _function_body(MAP_JS, "loadSourceZoom")
+    assert "hit && hit.doc_id" in load, "没判断 doc_id 就往下走（没有正文时会画空详情）"
+    render = _function_body(MAP_JS, "sourceZoomRender")
+    assert "这条还没有正文，只有元数据" in render, "缺那一行说明"
+    assert "rawBtn.disabled = true" in render, "没有正文时「原文」还点得动（点了必然失败）"
+    assert '"去原站"' in render, "只剩元数据时没给「去原站」"
+    assert "siteBtn.disabled = true" in render, "没有源地址时没禁用「去原站」"
+
+
+def test_source_zoom_closes_on_escape_button_and_mask() -> None:
+    """三种关法（Esc / 关闭按钮 / 点遮罩外），且关闭**不动**地图的选中态。"""
+    wire = _function_body(MAP_JS, "wireSourceZoom")
+    assert 'event.key !== "Escape"' in wire, "Esc 不关浮层"
+    assert 'el("btn-source-zoom-close")' in wire, "关闭按钮没接线"
+    assert "event.target === overlay" in wire, "点遮罩外不关（点在浮层里却关掉是另一种坏）"
+    close = _function_body(MAP_JS, "closeSourceZoom")
+    assert "overlay.hidden = true" in close, "关闭没真的收起浮层"
+    for forbidden in ("mapState", "showMapNodeInfo", ".tab", "click("):
+        assert forbidden not in close, f"closeSourceZoom 动了地图/页签（{forbidden}）"
+    assert "wireSourceZoom()" in _function_body(MAP_JS, "wireMapTab"), "wireMapTab 里没接浮层"
+
+
+def test_source_zoom_is_draggable_resizable_with_a_min_size() -> None:
+    """可拖动（标题栏）+ 可缩放（右下角把手），最小 420×320，尺寸存 localStorage 下次沿用。"""
+    sheet = re.search(r"\.source-zoom \.source-sheet\s*\{([^}]*)\}", STYLE_CSS)
+    assert sheet, "style.css 没有 .source-zoom .source-sheet"
+    css = sheet.group(1)
+    assert "min-width: 420px" in css, "浮层没有最小宽度 420px（会缩到看不清摘要）"
+    assert "min-height: 320px" in css, "浮层没有最小高度 320px"
+    assert "max-width: 96vw" in css and "max-height: 92vh" in css, "尺寸上限没跟视口走（会出屏）"
+    assert ".source-zoom-resize" in STYLE_CSS, "没有右下角缩放手柄的样式"
+    assert "cursor: nwse-resize" in STYLE_CSS, "缩放手柄没有 resize 光标"
+    assert re.search(r"var SOURCE_ZOOM_MIN_W = 420;", MAP_JS), "JS 里最小宽度不是 420"
+    assert re.search(r"var SOURCE_ZOOM_MIN_H = 320;", MAP_JS), "JS 里最小高度不是 320"
+    clamp = _function_body(MAP_JS, "sourceZoomClamp")
+    assert "Math.max(Math.round(w || 0), SOURCE_ZOOM_MIN_W)" in clamp, "宽度没夹到下限"
+    assert "SOURCE_ZOOM_MIN_H" in clamp and "Math.min(" in clamp, "高度没夹 / 没有上限"
+    resize = _function_body(MAP_JS, "sourceZoomResizeMove")
+    assert "sourceZoomApplySize(" in resize, "缩放没走 sourceZoomApplySize（下限形同虚设）"
+    drag = _function_body(MAP_JS, "sourceZoomDragStart")
+    assert 'sheet.style.position = "absolute"' in drag, "拖动没改成 left/top 定位（拖不动）"
+    assert "sheet.style.left" in drag and "sheet.style.top" in drag, "拖动没写 left/top"
+    assert 'closest("button")' in drag, "标题栏里的按钮也会当拖拽把手（点关闭变成拖窗）"
+    persist = _function_body(MAP_JS, "sourceZoomPersistSize")
+    assert "localStorage.setItem" in persist and "SOURCE_ZOOM_SIZE_KEY" in persist, (
+        "尺寸没存 localStorage"
+    )
+    stored = _function_body(MAP_JS, "sourceZoomStoredSize")
+    assert "localStorage.getItem" in stored, "打开时没读回上次的尺寸"
+    zoom = _function_body(MAP_JS, "openSourceZoom")
+    assert "sourceZoomApplySize(stored.w, stored.h)" in zoom, "打开时没沿用上次的尺寸"
+    wire = _function_body(MAP_JS, "wireSourceZoom")
+    assert "pointerdown" in wire and "pointermove" in wire, "拖动/缩放没接 pointer 事件"
+    assert "sourceZoomResizeEnd()" in wire, "松手没结束缩放（尺寸存不下来）"

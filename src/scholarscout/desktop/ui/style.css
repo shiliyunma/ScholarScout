@@ -8282,11 +8282,108 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   padding: 0;
 }
 
-/* ───────── 资料库详情区：打开后必须"看得见" ─────────
- * `#source-detail` 在列表**下面**：从知识地图点开资料时，只切页签等于详情落在视口外
- * （用户："资料窗口被压在下面，看不到"）。滚动由 map.js 的 `mapRevealSourceDetail` 负责；
- * 这里保证"滚过去了有东西可看" —— 内容还少 / 标题只占一行时，详情区不许被压成一条线。
- * 只限资料库这一栏（其它面板的 .detail 各有自己的高度规矩），`:empty` 时仍然收起。 */
+/* ───────── 资料详情浮层（#source-zoom）─────────
+ * 知识地图点「打开资料」在**应用内**开这一层：不切侧栏页签（切页签 = 把用户当前视图换掉）。
+ * 交互照上面的 .map-sheet（浮层 + 关闭 + 遮罩），但内容层独立、DOM 只有一份（单例）。
+ * 拖动标题栏移动；右下角把手缩放 —— **尺寸有下限** 420×320（再小摘要就挤成一行字），
+ * 上限跟着视口走（map.js 里按 window 尺寸夹），尺寸存 localStorage 下次沿用。 */
+.source-zoom .source-sheet {
+  width: min(620px, 90vw);
+  height: auto;
+  max-height: min(520px, 84vh);
+  min-width: 420px;
+  min-height: 320px;
+  max-width: 96vw;
+  max-height: 92vh;
+  /* 缩放手柄以它为定位锚（拖动时 JS 会改成 absolute + left/top） */
+  position: relative;
+}
+.source-zoom .source-sheet-head {
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+.source-zoom .source-sheet-head .hint {
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-zoom-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  gap: 10px;
+}
+/* 只读元数据行：年份 / 类型 / 域名 / 来源 id 小字（排查时认得出是哪条） */
+.source-zoom-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12px;
+  color: var(--ui-text-tertiary);
+}
+.source-zoom-facts b {
+  font-weight: 600;
+  color: var(--ui-text-primary);
+}
+.source-zoom-summary {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.source-zoom-summary.is-empty {
+  color: var(--ui-text-tertiary);
+}
+.source-zoom-status {
+  font-size: 12px;
+  color: var(--ui-text-tertiary);
+}
+.source-zoom-status.is-bad {
+  color: var(--ui-orange, #b45309);
+}
+/* 没有原件但有全文：正文渲染在**这个浮层的可滚区域**里（不再开第二个窗） */
+.source-zoom-text {
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: 100%;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.28));
+  border-radius: 8px;
+  background: var(--ui-bg-subtle, transparent);
+  font-family: var(--ui-font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 右下角缩放手柄（JS 按 pointer 拖动改宽高，最小 420×320） */
+.source-zoom-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(
+    135deg,
+    transparent 0 48%,
+    var(--border, rgba(128, 128, 128, 0.5)) 48% 56%,
+    transparent 56% 70%,
+    var(--border, rgba(128, 128, 128, 0.5)) 70% 78%,
+    transparent 78%
+  );
+}
+
+/* ───────── 资料库详情区：列表里点开的那条要"看得见" ─────────
+ * `#source-detail` 在列表**下面**：在资料库里点一条，只渲染不滚 = 用户看到的还是列表
+ * （"资料窗口被压在下面，看不到"）。知识地图那条路已改成应用内浮层（#source-zoom），
+ * 不再切页签；这里保证资料库自己点开时"滚过去了有东西可看" —— 内容还少 / 标题只占
+ * 一行时，详情区不许被压成一条线。只限资料库这一栏，`:empty` 时仍然收起。 */
 #pane-sources .detail:not(:empty) {
   min-height: 96px;
 }
