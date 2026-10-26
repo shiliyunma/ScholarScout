@@ -263,6 +263,16 @@ FIELDS: dict[str, Field] = dict(
         _f("features", "enable_mineru", kind="bool", label="扫描版走 MinerU"),
         _f("features", "enable_topic_map", kind="bool", label="允许生成主题地图"),
         _f("features", "enable_route_plan", kind="bool", label="允许生成学习路线"),
+        # 按需下载（docs/19 §8.4）：**默认关**，关着时 `archive.download` 不动网。
+        # 为什么要进面板：开关只在 config.yaml 里时，界面上的「获取正文 / 下载」点了只会
+        # 报「已关闭」，用户没有可点的入口（用户反馈「设置→功能→允许下载这条链路没做好」）。
+        _f(
+            "features",
+            "enable_download",
+            kind="bool",
+            label="允许按需下载（获取正文 / 资料库下载）",
+            default=False,
+        ),
         # 默认关：产物由用户主动选择才生成（2026-10-05 用户明确要求），别默认成开
         _f(
             "generation",
@@ -411,6 +421,7 @@ def read_settings(config: Config) -> dict[str, Any]:
                         "enable_mineru": config.features.enable_mineru,
                         "enable_topic_map": config.features.enable_topic_map,
                         "enable_route_plan": config.features.enable_route_plan,
+                        "enable_download": config.features.enable_download,
                     },
                 },
                 parts,

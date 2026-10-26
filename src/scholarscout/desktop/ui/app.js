@@ -2167,6 +2167,18 @@ var SETTINGS_SPEC = [
     ],
   },
   {
+    title: "功能",
+    hint: "默认全关；关着的功能不会对外发请求，打开后立即生效（不必重启）",
+    fields: [
+      {
+        key: "features.enable_download",
+        label: "允许按需下载",
+        kind: "bool",
+        note: "关：不会对外发请求；开：「获取正文」与资料库的「下载」才能用",
+      },
+    ],
+  },
+  {
     title: "搜索引擎",
     hint: "「可用」＝现在就会被检索用到；填了 key 保存即生效，不必重启",
     providers: true,
@@ -2243,7 +2255,7 @@ var SETTINGS_CATEGORIES = [
     name: "model",
     title: "模型与生成",
     hint: "对话与摘要模型、生成策略",
-    sections: ["模型", "生成策略", "用量与预算"],
+    sections: ["模型", "生成策略", "功能", "用量与预算"],
   },
   {
     name: "channel",

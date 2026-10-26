@@ -359,3 +359,89 @@ def test_turning_notify_off_restores_disabled(ctx: AppContext, config_file: Path
     )
     assert outcome.fired is False
     assert outcome.reason == "disabled"
+
+
+# ------------------------------------------- 允许按需下载（`features.enable_download`）
+#
+# 为什么单独一组：用户反馈「设置→功能→允许下载这条链路并没有做好」—— 开关原本只活在
+# config.yaml 里，`settings.get` 读不到、面板没有入口、地图的「去设置」是死路。
+# 这一组钉住三件事：**读得到**（默认 false，不是缺失）、**写进去立即生效**（不必重启）、
+# **白名单没有被新增键弄松**（非法类型与拼错的键照样报错，且盘上一个字节都不变）。
+
+
+def test_settings_get_exposes_download_flag_defaulting_to_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """默认配置（没有 ``features.enable_download`` 这个键）→ `settings.get` 读出 **False**。
+
+    缺失与 false 在界面上长得一样，但语义不同：`read_settings` 一旦漏掉这个键，
+    面板上的复选框就永远显示未勾选、保存时又不发这个字段（"改了没生效"）。
+    """
+    config = load_config(tmp_path / "nonexistent.yaml")
+    values = settings_io.read_settings(config)["values"]
+    assert "features.enable_download" in values, "settings.get 没把这个键给界面"
+    assert values["features.enable_download"] is False
+    assert settings_io.FIELDS["features.enable_download"].kind == "bool"
+
+
+def test_update_download_flag_roundtrip_and_takes_effect_immediately(
+    ctx: AppContext, config_file: Path
+) -> None:
+    """开关写 true 后：回包/`ctx.config`/盘上的 config.yaml 三处都是 true，且**立即生效**。
+
+    "立即生效"不是看 `ctx.config` 就够 —— 真正决定要不要出网的是 `archive.download`。
+    这里用一条**不存在的 source_id** 走真实 RPC：开关关着时它只会回"已关闭"（不动网），
+    打开之后才会走到"库里没有这条资料"。两种情况都不出网，所以能在离线测试里跑。
+    """
+    disabled = dispatch(ctx, "archive.download", {"source_id": "src_missing"})
+    assert disabled["ok"] is False and "enable_download" in disabled["reason"]
+
+    payload = dispatch(ctx, "settings.update", {"updates": {"features": {"enable_download": True}}})
+    assert payload["ok"] is True
+    assert payload["settings"]["values"]["features.enable_download"] is True
+    assert ctx.config.features.enable_download is True, "改完没换掉 ctx.config（没热生效）"
+    assert load_config(config_file).features.enable_download is True, "没写进 config.yaml"
+
+    after = dispatch(ctx, "archive.download", {"source_id": "src_missing"})
+    assert "enable_download" not in after["reason"], "开关打开了，archive.download 还当它是关的"
+    assert "库里没有这条资料" in after["reason"], "打开后没走到真正的下载通路"
+
+    # 拨回去也要真的关掉（不能只认一次"开"）
+    dispatch(ctx, "settings.update", {"updates": {"features": {"enable_download": False}}})
+    assert ctx.config.features.enable_download is False
+    again = dispatch(ctx, "archive.download", {"source_id": "src_missing"})
+    assert "enable_download" in again["reason"]
+
+
+@pytest.mark.parametrize("value", ["true", 1, 0, None, "yes", []])
+def test_update_rejects_non_bool_download_flag(
+    ctx: AppContext, config_file: Path, value: object
+) -> None:
+    """开关只收真 bool：字符串 `"true"` / 数字 1 / null 一律 `-32602`，且**不写盘**。"""
+    before = config_file.read_bytes()
+    with pytest.raises(RpcError) as exc:
+        dispatch(ctx, "settings.update", {"updates": {"features": {"enable_download": value}}})
+    assert exc.value.code == -32602, "非法值必须是参数错误，不能是内部错误"
+    assert "true/false" in str(exc.value)
+    assert config_file.read_bytes() == before, "校验失败却已经把配置写了一半"
+
+
+@pytest.mark.parametrize("key", ["enable_dowload", "enable_download_any", "download"])
+def test_update_still_rejects_unknown_download_keys(
+    ctx: AppContext, config_file: Path, key: str
+) -> None:
+    """新增这个键**不许**把"拒绝未知键"这道门弄松（拼错的键要报错，不能静默不生效）。"""
+    before = config_file.read_bytes()
+    with pytest.raises(RpcError) as exc:
+        dispatch(ctx, "settings.update", {"updates": {"features": {key: True}}})
+    assert exc.value.code == -32602
+    assert "不认识的设置项" in str(exc.value)
+    assert config_file.read_bytes() == before
+    assert not hasattr(ctx.config.features, key), f"config.Features 里冒出个 {key}"
+
+
+def test_download_flag_is_listed_next_to_the_other_features(ctx: AppContext) -> None:
+    """`config.get` 的 features 里与另外三个开关并列（缺一个就有界面读不到状态）。"""
+    features = dispatch(ctx, "config.get", {})["features"]
+    assert features["enable_download"] is ctx.config.features.enable_download
+    assert {"enable_mineru", "enable_topic_map", "enable_route_plan"} <= set(features)

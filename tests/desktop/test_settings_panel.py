@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from ._ui import INDEX_HTML_PATH, between, read_app_js
+from ._ui import INDEX_HTML_PATH, UI_DIR, between, read_app_js
 
 
 def spec_keys() -> list[str]:
@@ -141,3 +141,37 @@ def test_settings_overlay_is_not_open_at_startup() -> None:
     """面板默认关闭（否则一进界面就被糊住）。"""
     html = INDEX_HTML_PATH.read_text(encoding="utf-8")
     assert re.search(r'id="settings"[^>]*hidden', html)
+
+
+def test_download_switch_sits_in_its_own_feature_group() -> None:
+    """「允许按需下载」要在「功能」分组里，且**说清后果**（关＝不出网）。
+
+    用户反馈「设置→功能→允许下载这条链路并没有做好」：开关分散在「生成策略」里、
+    文案也不提"会不会对外发请求"，用户不知道这个勾意味着什么。
+    """
+    block = between(read_app_js(), 'title: "功能"', 'title: "搜索引擎"')
+    assert 'key: "features.enable_download"' in block, "「功能」组里没有这个开关"
+    assert "允许按需下载" in block, "标签不是「允许按需下载」"
+    assert "关：不会对外发请求" in block, "没写关掉的后果"
+    assert "「获取正文」与资料库的「下载」才能用" in block, "没写打开的后果"
+    assert '"功能"' in between(
+        read_app_js(), "var SETTINGS_CATEGORIES = [", "var PROFILE_CATEGORIES = ["
+    ), "「功能」组没挂进任何分类 —— 打开设置看不到它"
+
+
+def test_open_settings_can_jump_to_a_field() -> None:
+    """`openSettings(key)` 要真的定位：切到该字段所在分类 + 滚进视口 + 聚焦。
+
+    地图里的「去设置」只打开面板是不够的（5 个分类、几十行），用户还得自己翻；
+    面板这一侧必须能按字段名定位到行。
+    """
+    text = (UI_DIR / "profile.js").read_text(encoding="utf-8")
+    assert "async function openSettings(focusKey)" in text
+    body = between(text, "function revealSettingsField", "if (input.focus) input.focus();")
+    assert "fieldId(key)" in body, "没按字段名找输入框"
+    assert 'closest(".set-row")' in body, "没定位到行"
+    assert 'pane.getAttribute("data-cat")' in body and "shell.select(cat)" in body, (
+        "没切到该字段所在的分类（会停在上次那一栏）"
+    )
+    assert "scrollIntoView" in body, "没滚进视口"
+    assert text.count("openSettings(focusKey)") == 1, "带字段名打开的分支没接上"

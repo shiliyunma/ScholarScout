@@ -1962,7 +1962,7 @@ async function renderChatModules(body) {
 }
 
 
-async function openSettings() {
+async function openSettings(focusKey) {
   var payload = await scout.call("settings.get", {});
   var values = payload.values || {};
   var secrets = payload.secrets_configured || {};
@@ -2114,6 +2114,57 @@ async function openSettings() {
   shell.panes.scrollTop = 0;
   shell.select(SETTINGS_CATEGORIES[0].name); // 左侧表项回到第一项（打开始终落在「模型与生成」）
   el("settings").hidden = false;
+  /* 带字段名打开（地图里「去设置」）→ 切到该字段所在的分类，滚到那一行并闪一下。
+     判据只看 DOM（`data-cat` + `fieldId`），**不另存一份键→分类的映射** ——
+     两份映射迟早漂移，界面上就会出现"点了去设置、落在一个没有该开关的页面"。 */
+  if (focusKey) revealSettingsField(focusKey, shell);
+}
+
+
+/** 把设置面板定位到某个字段：切分类 → 滚进视口 → 短暂高亮 → 聚焦输入框。
+ *
+ *  「去设置」不能只是打开面板了事：面板有 5 个分类、几十行，用户还得自己翻。
+ *  找不到（字段被删/改名）就返回 false，用 `#settings-note` 如实说"没找到这一项"，
+ *  不假装定位成功。
+ */
+function revealSettingsField(key, shell) {
+  var input = el(fieldId(key));
+  var note = el("settings-note");
+  var row = input && input.closest ? input.closest(".set-row") : null;
+  var pane = row && row.closest ? row.closest(".ui-pane") : null;
+  if (!input || !pane) {
+    if (note) {
+      note.textContent = "没找到「" + key + "」这一项（面板可能已改名），请手动找「功能」分组";
+      note.className = "hint set-bad";
+    }
+    return false;
+  }
+  var cat = pane.getAttribute("data-cat");
+  if (cat && shell) shell.select(cat);
+  /* 高亮是**一次性的临时态**，写成内联而不是给 style.css 加规则：它不进主题、也不该被
+     别的行继承。颜色只用 `--ui-*` 令牌（这套设计里没有 `--border`/`--muted-foreground`）。 */
+  row.style.outline = "1px solid var(--ui-accent)";
+  row.style.outlineOffset = "3px";
+  row.style.borderRadius = "8px";
+  row.style.background = "var(--ui-row-active-background)";
+  if (row.scrollIntoView) row.scrollIntoView({ block: "center" });
+  window.setTimeout(function () {
+    row.style.outline = "";
+    row.style.outlineOffset = "";
+    row.style.borderRadius = "";
+    row.style.background = "";
+  }, 2400);
+  if (input.focus) input.focus();
+  if (note) {
+    // 标签从行里读，不在这里再写一份文案（改标签时这里不会跟着过期）
+    var name = row.querySelector("span");
+    note.textContent =
+      "已定位到「" +
+      (name ? String(name.textContent || "") : key) +
+      "」：改完点「保存」立即生效";
+    note.className = "hint set-ok";
+  }
+  return true;
 }
 
 

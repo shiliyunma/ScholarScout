@@ -29,6 +29,9 @@ from ._ui import INDEX_HTML, STYLE_CSS, UI_DIR
 #: 知识地图的全部前端逻辑都在这一个文件里（app.js 只负责页签接线）
 MAP_JS = (UI_DIR / "map.js").read_text(encoding="utf-8")
 
+#: 资料库（列表 + 详情渲染）在这里；共享的正文渲染器 renderSourceBody 也住在它家
+SOURCES_JS = (UI_DIR / "sources.js").read_text(encoding="utf-8")
+
 
 def _function_body(text: str, name: str) -> str:
     """按大括号配对切出 `function name(...) {...}` 的函数体（含签名）。
@@ -320,8 +323,11 @@ def test_download_failure_splits_disabled_from_large() -> None:
     err = _function_body(MAP_JS, "mapInfoDownloadError")
     assert "res.disabled === true" in err, "没认回包的 disabled:true"
     assert "/未开启|已关闭/" in err, "没按 reason 认「功能未开启」这一类"
-    assert "设置 → 功能 → 允许下载" in err, "没告诉用户去哪儿开下载"
+    assert "设置 → 功能 → 允许按需下载" in err, "没告诉用户去哪儿开下载（面板上的标签原样）"
     assert "去设置" in err and "openSettings" in err, "没给「去设置」按钮（复用现有设置通路）"
+    assert 'openSettings("features.enable_download")' in err, (
+        "「去设置」没把字段名带进去 —— 只打开面板，用户还得自己在 5 个分类里翻"
+    )
     assert "文件较大，可在资料库里确认后重试" in err, "大文件没给二次确认的提示"
     assert "alert(" not in err, "失败提示用了 alert"
     assert "map-info-error" in _function_body(MAP_JS, "mapInfoSourceRow"), "行内错误没有落点"
@@ -569,8 +575,9 @@ def test_source_zoom_renders_real_title_year_kind_and_summary() -> None:
     assert '["年份",' in render, "元数据里没有年份"
     assert '["类型",' in render, "元数据里没有来源类型"
     assert "sourceZoomKindLabel(" in render, "类型没走中文标签"
-    assert "summary_short" in render, "摘要没显示"
-    assert "source-zoom-summary" in render, "摘要没有自己的 class"
+    # 摘要正文改由共享渲染器出（原来这里自己读 summary_short，只画一句）
+    assert "renderSourceBody(first)" in render, "摘要没走共享的 renderSourceBody"
+    assert "summary_short" not in render, "浮层还在自己读 summary_short（会只显示短摘要）"
     assert "short(id, 18)" in render, "没带来源 id 小字（排查时认不出是哪条）"
     zoom = _function_body(MAP_JS, "openSourceZoom")
     assert 'el("source-zoom-title")' in zoom, "打开时没先写标题（白框一闪）"
@@ -653,3 +660,71 @@ def test_source_zoom_is_draggable_resizable_with_a_min_size() -> None:
     wire = _function_body(MAP_JS, "wireSourceZoom")
     assert "pointerdown" in wire and "pointermove" in wire, "拖动/缩放没接 pointer 事件"
     assert "sourceZoomResizeEnd()" in wire, "松手没结束缩放（尺寸存不下来）"
+
+
+# ---------------------------------------- 资料正文：一份渲染两处用（用户：为什么不用资料库的摘要）
+#
+# 起因：同一条资料在资料库详情里有摘要 + 要点，在地图浮层里只有 `summary_short`
+# 一句 —— 看着像浮层把摘要截了。库里并没有更长的摘要字段，短的那份就是"少画了要点"。
+# 这两份渲染器合到一处之后，下面四条钉住"别再分叉"。
+
+
+def test_source_body_renders_summary_points_and_why_relevant() -> None:
+    """共享正文 = 摘要段 + 「要点」列表 + 「为什么相关」；损坏的 points_json 不许炸。"""
+    body = _function_body(SOURCES_JS, "renderSourceBody")
+    assert "document.createDocumentFragment()" in body, (
+        "共享渲染器没返回 DocumentFragment（调用方就没法只换正文）"
+    )
+    assert 'className = "source-body-text"' in body, "摘要段没有共用的 .source-body-text"
+    assert "safePoints(record.points_json)" in body, "要点列表没走 safePoints（坏 JSON 会抛）"
+    assert '"要点"' in body, "要点列表没有「要点」小标题"
+    assert '"source-body-points-title"' in body and '"source-body-points"' in body, (
+        "要点列表没有自己的 class（样式无处可挂）"
+    )
+    assert "record.why_relevant" in body, "没渲染 why_relevant（判权理由丢了）"
+    assert '"source-body-why"' in body, "why_relevant 那行没有 class"
+    for cls in (".source-body-text", ".source-body-points", ".source-body-why"):
+        assert cls in STYLE_CSS, f"style.css 里没有 {cls}（共享正文的排版没定义）"
+
+
+def test_only_one_source_body_renderer_and_both_views_call_it() -> None:
+    """防分叉：渲染器只有一份（sources.js），资料库详情与地图浮层都调它，且都不再自读摘要。"""
+    assert SOURCES_JS.count("function renderSourceBody(") == 1, "renderSourceBody 定义了不止一处"
+    assert MAP_JS.count("function renderSourceBody(") == 0, (
+        "map.js 又自己写了一份正文渲染器（两份就是上次「浮层摘要太短」的根源）"
+    )
+    detail = _function_body(SOURCES_JS, "showSource")
+    zoom = _function_body(MAP_JS, "sourceZoomRender")
+    assert "renderSourceBody(first)" in detail, "资料库详情没调共享渲染器"
+    assert "renderSourceBody(first)" in zoom, "地图浮层没调共享渲染器"
+    assert "summary_short" not in detail, "资料库详情还在自己读 summary_short"
+    assert "summary_short" not in zoom, "地图浮层还在自己读 summary_short（只显示短摘要）"
+    assert "source-zoom-summary" not in MAP_JS, "浮层还留着自建的摘要 class（说明又分叉了）"
+
+
+def test_source_body_is_never_truncated() -> None:
+    """不截断：共享渲染器与浮层渲染都不许 slice/substring/short，样式也不许裁。"""
+    body = _function_body(SOURCES_JS, "renderSourceBody")
+    zoom = _function_body(MAP_JS, "sourceZoomRender")
+    for name, text in (("renderSourceBody", body), ("sourceZoomRender", zoom)):
+        for forbidden in ("slice(", "substring("):
+            assert forbidden not in text, f"{name} 对正文做了截断（{forbidden}）"
+    assert "short(" not in body, "renderSourceBody 对正文用了 short()（会砍字）"
+    css = re.search(r"\.source-body-text\s*\{([^}]*)\}", STYLE_CSS)
+    assert css, "style.css 里找不到 .source-body-text"
+    for forbidden in ("max-height", "line-clamp", "text-overflow"):
+        assert forbidden not in css.group(1), f".source-body-text 会截断正文（{forbidden}）"
+
+
+def test_source_zoom_keeps_its_shell_and_borrows_the_body() -> None:
+    """浮层只保留外壳（标题/元数据/原文/去原站），正文位置交给共享渲染器。"""
+    render = _function_body(MAP_JS, "sourceZoomRender")
+    assert 'el("source-zoom-title")' in render and 'el("source-zoom-meta")' in render, (
+        "浮层外壳（标题/元数据）被一起删了"
+    )
+    assert "body.appendChild(renderSourceBody(first))" in render, "正文没按顺序挂在浮层自己那块"
+    assert render.index("renderSourceBody(first)") < render.index('"原文"'), (
+        "正文挂在按钮之后（用户得先看按钮才看到摘要）"
+    )
+    css = re.search(r"\.source-zoom-body\s*\{([^}]*)\}", STYLE_CSS)
+    assert css and "overflow: auto" in css.group(1), "浮层正文区不可滚（内容一长就被裁）"

@@ -32,6 +32,8 @@ def config_get(ctx: AppContext, params: dict[str, Any]) -> dict[str, Any]:
             "enable_mineru": ctx.config.features.enable_mineru,
             "enable_topic_map": ctx.config.features.enable_topic_map,
             "enable_route_plan": ctx.config.features.enable_route_plan,
+            # 按需下载：默认关；关着时 `archive.download` 不动网（docs/19 §8.4）
+            "enable_download": ctx.config.features.enable_download,
             # 本地知识库检索（`kb.search`）：默认关；关着时这个工具**不在**工具清单里
             # （docs/01 §5.8）。回给界面是为了能看出"为什么没有 kb.search"。
             "enable_kb": ctx.config.features.enable_kb,

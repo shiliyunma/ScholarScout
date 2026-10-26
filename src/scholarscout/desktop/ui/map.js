@@ -1054,19 +1054,20 @@ function mapInfoDownloadError(note, res) {
   note.title = reason;
   if (res.disabled === true || /未开启|已关闭/.test(reason)) {
     note.appendChild(
-      document.createTextNode("下载未开启：设置 → 功能 → 允许下载，打开后再点一次"),
+      document.createTextNode("下载未开启：设置 → 功能 → 允许按需下载，打开后再点一次"),
     );
     var go = document.createElement("button");
     go.type = "button";
     go.className = "mini map-info-goto-settings";
     go.textContent = "去设置";
-    go.title = "打开设置（按需下载由 features.enable_download 控制）";
+    go.title = "打开设置并定位到「允许按需下载」（features.enable_download）";
     go.addEventListener("click", function () {
       if (typeof openSettings !== "function") {
         note.textContent = "这个版本没有设置面板，请直接改 config.yaml 的 features.enable_download";
         return;
       }
-      Promise.resolve(openSettings()).catch(function (error) {
+      // 带字段名进去：面板会切到「功能」那一栏、滚到该行并高亮（只打开面板＝还要用户自己翻）
+      Promise.resolve(openSettings("features.enable_download")).catch(function (error) {
         note.textContent = "打不开设置：" + ((error && error.message) || error);
       });
     });
@@ -1356,17 +1357,10 @@ function sourceZoomRender() {
   });
   body.appendChild(facts);
 
-  /* 摘要（只读，选不中文字也能滚——真正可滚的是外层 .source-zoom-body） */
-  var summary = document.createElement("p");
-  summary.className = "source-zoom-summary";
-  var summaryText = String(first.summary_short || "").trim();
-  if (summaryText) {
-    summary.textContent = summaryText;
-  } else {
-    summary.textContent = "（这条资料还没出摘要）";
-    summary.classList.add("is-empty");
-  }
-  body.appendChild(summary);
+  /* 正文（摘要 + 要点 + 「为什么相关」）：**调资料库那份 renderSourceBody**，
+     不在这里再写一遍 —— 上一版这里只画一句短摘要，同一条资料在浮层里
+     比资料库详情短一截，用户看到的就是「摘要太短」。浮层只保留自己的外壳。 */
+  body.appendChild(renderSourceBody(first));
 
   /* 两个出口：「原文」走 archive.open_raw（无原件则把 archive.text 渲染在下面那块），
      「去原站」走系统浏览器（没有源地址时按钮禁用并在浮层里说明，绝不 alert） */

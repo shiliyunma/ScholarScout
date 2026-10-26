@@ -158,12 +158,74 @@ function sourceGroupHeader(group, folded) {
 }
 
 
+/* 资料正文：摘要段 + 要点列表 + 「为什么相关」—— **资料库详情与知识地图浮层共用这一份**。
+ *
+ * 为什么必须共用：这两处原来各写一份渲染器 —— 资料库那份有要点，地图浮层那份只有
+ * `summary_short`，于是同一条资料在两处"长短不一"，看着像浮层把摘要截了。
+ * 库里本来就没有更长的摘要字段（`summaries` 只有 summary_short / points_json /
+ * why_relevant），所以"复用资料库的摘要"= 复用这一份渲染（含要点），
+ * 而不是去找一个不存在的长字段。
+ *
+ * 只负责**正文**，返回 DocumentFragment，挂到哪由调用方决定；标题、元数据、按钮、
+ * 原件路径这些"外壳"仍归各自视图（它们本来就该不同）。
+ *
+ * `opts.emptyText` 可换掉"还没出摘要"那句提示，其余交给同一份排版。
+ */
+function renderSourceBody(summary, opts) {
+  const record = summary || {};
+  const options = opts || {};
+  const frag = document.createDocumentFragment();
+
+  // 摘要：整段照原样渲染。**不许截断**（不 slice / 不 short）——
+  // 资料库详情与浮层都靠外层容器自己滚，砍字只会让"摘要太短"再回来一次。
+  const paragraph = document.createElement("p");
+  paragraph.className = "source-body-text";
+  const summaryText = String(record.summary_short || "").trim();
+  if (summaryText) {
+    paragraph.textContent = summaryText;
+  } else {
+    paragraph.textContent = options.emptyText || "（这条资料还没出摘要）";
+    paragraph.classList.add("is-empty");
+  }
+  frag.appendChild(paragraph);
+
+  // 要点：库里 points_json 存的是 JSON 数组字符串，坏了就当没有（safePoints）
+  const points = safePoints(record.points_json);
+  if (points.length) {
+    const heading = document.createElement("div");
+    heading.className = "source-body-points-title";
+    heading.textContent = "要点";
+    frag.appendChild(heading);
+    const list = document.createElement("ul");
+    list.className = "source-body-points";
+    points.forEach(function (point) {
+      const li = document.createElement("li");
+      li.textContent = point;
+      list.appendChild(li);
+    });
+    frag.appendChild(list);
+  }
+
+  // 「为什么相关」：AI 判权时的理由。有就整行显示，没有就不占高度。
+  const why = String(record.why_relevant || "").trim();
+  if (why) {
+    const line = document.createElement("div");
+    line.className = "source-body-why";
+    const label = document.createElement("b");
+    label.textContent = "为什么相关：";
+    line.appendChild(label);
+    line.appendChild(document.createTextNode(why));
+    frag.appendChild(line);
+  }
+  return frag;
+}
+
+
 async function showSource(docId) {
   const payload = await scout.call("archive.get", { doc_id: docId });
   const doc = payload.document || {};
   const summaries = payload.summaries || [];
   const first = summaries[0] || {};
-  const points = safePoints(first.points_json);
 
   const box = el("source-detail");
   box.innerHTML = "";
@@ -220,19 +282,9 @@ async function showSource(docId) {
   actions.appendChild(downloadBtn);
   box.appendChild(actions);
 
-  const body = document.createElement("div");
-  body.textContent = first.summary_short || "（这条资料还没出摘要）";
-  box.appendChild(body);
-
-  if (points.length) {
-    const ul = document.createElement("ul");
-    points.forEach(function (point) {
-      const li = document.createElement("li");
-      li.textContent = point;
-      ul.appendChild(li);
-    });
-    box.appendChild(ul);
-  }
+  // 正文（摘要 + 要点 + 为什么相关）：与地图浮层**共用** renderSourceBody，
+  // 一份渲染两处用 —— 两处各写一份就是这次"浮层摘要太短"的根源。
+  box.appendChild(renderSourceBody(first));
 
   const paths = await scout.call("archive.paths", { doc_id: docId });
   const pathInfo = document.createElement("div");
