@@ -1,18 +1,22 @@
-"""知识地图四个交互 + "铺满可用区"的源码契约（可入库的那一半）。
+"""知识地图交互 + "铺满可用区"的源码契约（可入库的那一半）。
 
 为什么这份能入库、`run/ui_map_probe.py` 不能：`run/` 是本地证据目录（含截图、桩桥、
 本机 Edge 路径），被 .gitignore 挡着，也不该为它改惯例。所以把**不依赖排版**的契约
 提到这里跑门禁；"包围盒占可用区 ≥60%、四边边距 ≥8px" 这类必须靠真排版才能量的，
 留在探针里当本地证据。
 
-钉住的四件事（每件都真出过问题）：
-1. 图层切换必须走 `mapTeardown()` → 清账本 → 再建图。漏了清理，上一层的监听/定时器
+钉住的几件事（每件都真出过问题）：
+1. 重画必须走 `mapTeardown()` → 清账本 → 再建图。漏了清理，上一张图的监听/定时器
    会活到页面关闭（拖拽挂的是 window 上的 mousemove）。
-2. 路径高亮读边时 `rel` 与 `kind` 都得认（后端 `topic.find_path` 回的是 `rel`），
-   图上画出来的边 class 用 `rel-` 前缀（CSS 的 `.map-edge.rel-*` 才生效）。
-3. 点节点里的来源必须走资料库现成通路 `showSourceBySourceId`，不许在地图里另写一套打开逻辑。
-4. 画布必须**按容器实测像素**设 viewBox 并铺满（固定 viewBox + `meet` = 内容缩在中间一条，
-   侧栏里看着就是缩在右下角一小块），且尺寸监听要进账本、换层时一起断掉。
+2. **节点热区**：圆点只有 7~9px，标签又是 `pointer-events:none` —— 不做热区就是
+   "点文字没反应"。所以每个节点都要有 `.map-hit`（圆点外扩）与 `.map-hit-rect`
+   （按标签实测宽度铺的矩形），且两者与标签共用一份贴边平移几何。
+3. **拖拽阈值**：按下即可能拖动，位移不足 `MAP_DRAG_THRESHOLD` 就不许写 transform，
+   否则"点一下"会被当成"把图拖走了"。
+4. 点节点里的来源必须走资料库现成通路 `showSourceBySourceId`，不许在地图里另写一套。
+5. 画布必须**按容器实测像素**设 viewBox 并铺满（固定 viewBox + `meet` = 内容缩在中间一条）。
+6. 图层切换与"查路径"整条线已删（收敛成概念图单一视图）：删掉的符号不许偷偷回来 ——
+   它们会带回两条已经没人维护的取数路径。
 """
 
 from __future__ import annotations
@@ -57,24 +61,113 @@ def test_index_html_loads_map_js_and_its_controls() -> None:
         'id="map-info"',
         'id="map-search"',
         'id="btn-map-search"',
-        'id="btn-map-layer-concept"',
-        'id="btn-map-layer-source"',
-        'id="map-path-from"',
-        'id="map-path-to"',
-        'id="btn-map-path"',
     ):
         assert anchor in INDEX_HTML, f"index.html 缺少 {anchor}"
 
 
-def test_wire_map_tab_binds_layer_switch_and_search() -> None:
-    """页签接线：图层按钮、搜索、路径三个入口都接到了对应函数。"""
+def test_layer_switch_and_path_controls_are_gone() -> None:
+    """图层切换与查路径已整条删除：控件、符号都不许留（留着就是没人维护的第二条取数路径）。"""
+    for gone in (
+        "btn-map-layer-source",
+        "btn-map-layer-concept",
+        "map-path-from",
+        "map-path-to",
+        "btn-map-path",
+        "map-path-note",
+    ):
+        assert gone not in INDEX_HTML, f"index.html 还留着已删的 {gone}"
+    for symbol in ("mapSwitchLayer", "mapRunPath", "MAP_LAYERS", "mapEdgeBand"):
+        assert symbol not in MAP_JS, f"map.js 还留着已删的 {symbol}"
+    # RPC 契约本身还在（后端有），但界面不许再调这两条已下线的取数路径
+    for call in ('scout.call("topic.get_source_graph"', 'scout.call("topic.find_path"'):
+        assert call not in MAP_JS, f"map.js 还在调已下线的 {call}"
+
+
+def test_wire_map_tab_binds_search_and_zoom() -> None:
+    """页签接线：搜索与放大两个入口都接到了对应函数。"""
     body = _function_body(MAP_JS, "wireMapTab")
-    assert "mapSwitchLayer(" in body, "图层按钮没接到 mapSwitchLayer"
     assert "mapRunSearch(" in body, "搜索没接到 mapRunSearch"
-    assert "mapRunPath(" in body, "路径没接到 mapRunPath"
+    assert 'el("btn-map-zoom")' in body, "放大按钮没接线"
 
 
-# --------------------------------------------------------------------- 图层切换与清理
+# --------------------------------------------------------------------- 节点热区（点文字也能开）
+
+
+def test_every_node_ships_two_hit_shapes() -> None:
+    """每个节点都有两片热区：圆点外扩的圆 + 盖住标签的矩形（标签自己吃不到事件）。
+
+    只留 7~9px 的圆点，"点标签文字没反应"就是必然 —— 用户点的是字。
+    """
+    body = _function_body(MAP_JS, "buildMapSvg")
+    assert '"map-hit"' in body, "buildMapSvg 没给节点挂 .map-hit（圆点热区）"
+    assert '"map-hit-rect"' in body, "buildMapSvg 没给节点挂 .map-hit-rect（标签热区）"
+    assert body.count('fill: "transparent"') >= 2, "热区不是透明填充（会画成实心块）"
+    assert body.count('"pointer-events": "all"') >= 2, (
+        "热区没开 pointer-events:all（透明填充默认不接事件）"
+    )
+    # 热区必须先挂（在圆点/文字之前）= 画在下面，不遮住可见图形
+    assert body.index('"map-hit"') < body.index('"map-dot"'), "热区挂在圆点之后（会盖住圆点）"
+    assert body.index('"map-hit-rect"') < body.index('"map-label"'), "热区挂在标签之后"
+
+
+def test_hit_geometry_pads_dot_and_covers_label_width() -> None:
+    """热区尺寸由几何函数算：圆点半径 + `MAP_HIT_DOT_PAD`，矩形宽 = 标签宽 + 左右各 4。"""
+    assert re.search(r"var MAP_HIT_DOT_PAD = 10;", MAP_JS), "没有 MAP_HIT_DOT_PAD = 10"
+    assert re.search(r"var MAP_HIT_PAD_X = \d+;", MAP_JS), "没有 MAP_HIT_PAD_X（标签热区左右留白）"
+    assert re.search(r"var MAP_HIT_HEIGHT = \d+;", MAP_JS), "没有 MAP_HIT_HEIGHT（标签热区高度）"
+
+    body = _function_body(MAP_JS, "mapSyncHitShapes")
+    assert "mapNodeRadius(" in body, "热区没按节点半径算"
+    assert "MAP_HIT_DOT_PAD" in body, "圆点热区没加 MAP_HIT_DOT_PAD（半径不够点）"
+    assert "mapLabelHalfWidth(" in body, "标签热区没按标签宽度算"
+    assert "MAP_HIT_PAD_X" in body and "MAP_HIT_HEIGHT" in body, "标签热区没用自己的宽高常量"
+    for attr in ('"x"', '"y"', '"width"', '"height"'):
+        assert f"rect.setAttribute({attr}" in body, f"标签热区没同步 {attr}"
+
+
+def test_hit_shapes_share_the_label_shift() -> None:
+    """贴边节点：标签被平移回画布内，热区矩形必须跟着同一份位移（否则字挪了、热区没挪）。"""
+    body = _function_body(MAP_JS, "mapSyncHitShapes")
+    assert "mapLabelShift(" in body, "热区没复用 mapLabelShift（贴边标签会与热区错位）"
+    assert "shift" in body, "mapSyncHitShapes 没把平移量交出去（标签没法共用）"
+    build = _function_body(MAP_JS, "buildMapSvg")
+    assert "mapSyncHitShapes(group, node, text, canvas.width)" in build, (
+        "buildMapSvg 没用 mapSyncHitShapes 算标签位移与热区"
+    )
+    refit = _function_body(MAP_JS, "mapRefit")
+    assert "mapSyncHitShapes(" in refit, "换尺寸后没重算热区（重铺一次字又点不中了）"
+
+    label = re.search(r"\.map-node \.map-label\s*\{([^}]*)\}", STYLE_CSS)
+    assert label, "style.css 里找不到 .map-node .map-label"
+    assert "pointer-events: none" in " ".join(label.group(1).split()), (
+        ".map-label 又吃事件了（本该让热区接手）"
+    )
+    hits = re.search(r"\.map-hit,\s*\n?\.map-hit-rect\s*\{([^}]*)\}", STYLE_CSS)
+    assert hits, "style.css 里找不到 .map-hit / .map-hit-rect"
+    assert "pointer-events: all" in " ".join(hits.group(1).split()), "热区没开 pointer-events:all"
+
+
+# --------------------------------------------------------------------- 拖拽阈值
+
+
+def test_drag_writes_transform_only_past_threshold() -> None:
+    """按下可能变成拖拽，但位移不足阈值一个像素都不许写 transform（点击不能被当成拖动）。"""
+    assert re.search(r"var MAP_DRAG_THRESHOLD = 4;", MAP_JS), "没有 MAP_DRAG_THRESHOLD = 4"
+    body = _function_body(MAP_JS, "mapDragStart")
+    assert "MAP_DRAG_THRESHOLD" in body, "mapDragStart 没用阈值常量"
+    assert re.search(r"Math\.sqrt\(dx \* dx \+ dy \* dy\) < MAP_DRAG_THRESHOLD", body), (
+        "阈值不是按位移长度判的（斜着抖 3px+3px 会被当成拖拽）"
+    )
+    guard = body.index("Math.sqrt(")
+    first_write = body.index("stage.setAttribute(")
+    assert guard < first_write, "阈值判定排在写 transform 之后（等于没有阈值）"
+    assert re.search(r"if \(!dragging\) \{", body), "没有 dragging 标记（越过阈值那次写不进去）"
+    # 拖拽挂的是 window 上的监听：必须在 stop 里摘掉并划掉账本
+    assert 'mapOff(window, "mousemove", move)' in body, "拖拽结束没摘 mousemove"
+    assert 'mapOff(window, "mouseup", stop)' in body, "拖拽结束没摘 mouseup"
+
+
+# --------------------------------------------------------------------- 重画清理
 
 
 def test_render_tears_down_before_building_new_figure() -> None:
@@ -84,14 +177,6 @@ def test_render_tears_down_before_building_new_figure() -> None:
     build = body.index("buildMapSvg(")
     assert teardown < build, "renderMapFigure 里 mapTeardown() 没有排在 buildMapSvg() 之前"
     assert "mapState.epoch += 1" in body, "重建时没换 epoch —— 探针数不出上一张图的残留"
-
-
-def test_switch_layer_uses_source_graph_rpc_and_keeps_cache() -> None:
-    """资料层走 `topic.get_source_graph`；两层各缓存一份（切回来不重取）。"""
-    body = _function_body(MAP_JS, "mapSwitchLayer")
-    assert "topic.get_source_graph" in body, "资料层没有调 topic.get_source_graph"
-    assert "mapState.layers" in body, "图层载荷没有分层缓存（切回来会重取）"
-    assert "mapState.layer" in body, "切换后没记当前层"
 
 
 def test_teardown_clears_listeners_timers_and_observers() -> None:
@@ -104,15 +189,7 @@ def test_teardown_clears_listeners_timers_and_observers() -> None:
     assert "mapState.observers = []" in body, "mapTeardown 没把 observers 账本清空"
 
 
-# --------------------------------------------------------------------- 路径 / 搜索
-
-
-def test_path_edges_read_rel_key_not_only_kind() -> None:
-    """`topic.find_path` 的边用 `rel`：只认 `kind` 会把关系名显示成"未知"。"""
-    body = _function_body(MAP_JS, "mapRunPath")
-    assert re.search(r"edge\.rel\s*\|\|\s*edge\.kind", body), (
-        "mapRunPath 里没有 `edge.rel || edge.kind` —— 路径的边类型会退化成未知"
-    )
+# --------------------------------------------------------------------- 边
 
 
 def test_svg_edge_class_uses_rel_prefix() -> None:

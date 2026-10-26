@@ -30,16 +30,10 @@ var MAP_EDGE_KINDS = [
   ["shared_concept", "共同支撑"],
 ];
 
-/* 两层：概念图（落库）+ 资料图（现算）。界面一个开关切换，两层节点/边字段同形状。 */
-var MAP_LAYERS = [
-  ["concept", "概念图"],
-  ["source", "资料图"],
-];
-
-/* 资料层线宽三档（下标 = band-1）。**档位由本图最大权重相对分档**（1/3、2/3 切），
- * 不写死绝对阈值：小主题最大权重只有 3，写死"≥5 才算粗"就永远只有一档。
- * 概念层不按权重分档（保持原来的 rel 线型语义），所以这个数组只在资料层用。 */
-var MAP_EDGE_BAND_WIDTH = [1.2, 2.4, 3.8];
+/* 单一视图：**概念图**（落库的那一张）。资料不再是另一张图 —— 点节点看它关联的
+ * 资料、点资料直接打开（`showMapNodeInfo` → `openMapSource`），一屏里闭环。
+ * 后端的 `topic.get_source_graph` / `topic.find_path` 仍在（RPC 契约没动），界面不再调。
+ */
 
 /* 超过这个数就默认只画前 30 个（用户要求：大图要可读） */
 var MAP_TRUNCATE_OVER = 50;
@@ -62,19 +56,29 @@ var MAP_PAD_MIN_Y = 24;
 var MAP_PAD_MAX_X = 110;
 var MAP_PAD_MAX_Y = 90;
 
-/* 状态：两层载荷各存一份（切回来不重取）；`payload` 永远是**当前层**那一份。
+/* 节点热区：圆点只有 7~9px，而标签是 `pointer-events:none`（不挡住下面的线），
+ * 所以"点标签"这件事以前**根本不成立** —— 只有那个小圆点能点中。
+ * 每个节点补一块透明热区：圆点外扩 10px 的圆 + 一条盖住标签的矩形（高 34px，
+ * 两端各外扩 4px），两者都 `pointer-events: all`，点文字与点圆点走同一个 click。 */
+var MAP_HIT_DOT_PAD = 10;
+var MAP_HIT_PAD_X = 8;
+var MAP_HIT_HEIGHT = 34;
+
+/* 拖拽阈值：按下后位移 **< 4px 一律不算拖拽**（一个像素都不写 transform）。
+ * 以前是无条件立即平移：手抖 1px 图就动，click 落在移动后的坐标上 —— 点击被判成拖拽。 */
+var MAP_DRAG_THRESHOLD = 4;
+
+/* 状态：`payload` 是当前这张概念图的载荷。
  *
  * 还有一本**监听/定时器账本**（`listeners` / `timers`）。为什么要账本而不是"反正
  * innerHTML="" 就没了"：节点/边上的监听确实随 DOM 一起被回收，但
  *   · 拖拽往 `window` 上挂 mousemove/mouseup —— 不删就活到页面关闭；
- *   · 搜索防抖的 setTimeout —— 不清理就会在换了图层之后拿新图去定位旧节点；
+ *   · 搜索防抖的 setTimeout —— 不清理就会在重画之后拿新图去定位旧节点；
  *   · `svg.__mapView` 把整棵旧 SVG 挂在闭包里。
- * 换层/重画一律先 `mapTeardown()`：删监听、清定时器、断引用，再建新的。
+ * 重画一律先 `mapTeardown()`：删监听、清定时器、断引用，再建新的。
  * 账本上每条都记 `epoch`（第几张图），探针靠它断言"没有上一张图的残留"。 */
 var mapState = {
   topicId: "",
-  layer: "concept",
-  layers: { concept: null, source: null },
   payload: null,
   view: null,
   showAll: false,
@@ -86,7 +90,6 @@ var mapState = {
   clearedTimers: 0,
   clearedObservers: 0,
   refits: 0,
-  path: null,
 };
 
 var MAP_NS = "http://www.w3.org/2000/svg";
@@ -107,7 +110,7 @@ function mapOn(target, type, handler, options) {
 }
 
 
-/* 定时器也记账：防抖搜索用，换图层时必须清掉（否则会拿新图定位旧节点）。 */
+/* 定时器也记账：防抖搜索用，重画时必须清掉（否则会拿新图定位旧节点）。 */
 function mapLater(fn, ms) {
   var slot = { id: 0, epoch: mapState.epoch };
   slot.id = setTimeout(function () {
@@ -121,7 +124,7 @@ function mapLater(fn, ms) {
 }
 
 
-/* 换层/重画前的清理：删干净这一层的监听与定时器，并断开旧 SVG 的引用。 */
+/* 重画前的清理：删干净上一张图的监听与定时器，并断开旧 SVG 的引用。 */
 function mapTeardown() {
   mapState.listeners.forEach(function (item) {
     item.target.removeEventListener(item.type, item.handler, item.options);
@@ -171,13 +174,7 @@ function mapDebugCounts() {
   var staleObservers = mapState.observers.filter(function (item) {
     return item.epoch !== epoch;
   }).length;
-  var bands = {};
-  Array.prototype.forEach.call(document.querySelectorAll(".map-svg .map-edge"), function (edge) {
-    var band = edge.getAttribute("data-band");
-    if (band) bands[band] = (bands[band] || 0) + 1;
-  });
   return {
-    layer: mapState.layer,
     epoch: epoch,
     listeners: mapState.listeners.length,
     staleListeners: stale,
@@ -192,8 +189,7 @@ function mapDebugCounts() {
     svgCount: document.querySelectorAll(".map-svg").length,
     nodes: document.querySelectorAll(".map-svg .map-node").length,
     edges: document.querySelectorAll(".map-svg .map-edge").length,
-    bands: bands,
-    picked: mapState.path ? String(mapState.path.from) + "->" + String(mapState.path.to) : "",
+    hits: document.querySelectorAll(".map-svg .map-hit").length,
   };
 }
 
@@ -227,8 +223,8 @@ function mapVisibleGraph(payload, showAll) {
       kind: String(node.kind || "concept"),
       weight: Number(node.weight || 0),
       sources: (node.sources || []).slice(),
-      /* 资料层节点自带的元数据（概念层没有就是 undefined，不影响画图）：
-       * 详情面板靠它说清"这篇来源支撑了几个概念、正文在不在库里"。 */
+      /* 节点可能带的元数据（没有就是 undefined，不影响画图）：详情面板靠它
+       * 说清"这个点是什么、正文在不在库里"。 */
       url: node.url || "",
       sourceType: node.source_type || "",
       year: node.year === null || node.year === undefined ? null : node.year,
@@ -448,7 +444,7 @@ function mapNodeRadius(weight) {
 }
 
 
-/* 标签贴边会有一半跑到画布外（资料层标题很长，"被切掉一半"就是这么来的）：
+/* 标签贴边会有一半跑到画布外（标题很长时"被切掉一半"就是这么来的）：
  * 按字数估半个标签宽，再把标签在画布内平移回来。估算而不是 measureText：
  * 标签还没挂进 DOM 时量不到宽度，而 px 字号下按"中文 11.5 / 西文 6.2"估足够。 */
 function mapLabelHalfWidth(text) {
@@ -466,6 +462,29 @@ function mapLabelShift(x, half, width) {
   if (x - half < pad) return pad - (x - half);
   if (x + half > width - pad) return width - pad - (x + half);
   return 0;
+}
+
+
+/* 热区几何：圆点外扩一圈 + 一条按标签实际宽度铺的矩形（**跟着标签的平移走**）。
+ * 为什么矩形也要算 `mapLabelShift`：贴边节点的标签被挪回画布内，热区不跟着挪就
+ * 又变成"点文字没反应"（挪动量与标签一致才盖得住）。
+ * 返回的 shift 给标签的 `x` 用，两边共用同一份几何 → 永远不会错位。 */
+function mapSyncHitShapes(group, node, text, canvasWidth) {
+  var radius = mapNodeRadius(node.weight);
+  var half = mapLabelHalfWidth(text);
+  var shift = mapLabelShift(node.x, half, canvasWidth);
+  var labelY = radius + 12;
+  var hit = group.querySelector(".map-hit");
+  if (hit) hit.setAttribute("r", (radius + MAP_HIT_DOT_PAD).toFixed(1));
+  var rect = group.querySelector(".map-hit-rect");
+  if (rect) {
+    var width = half * 2 + MAP_HIT_PAD_X;
+    rect.setAttribute("x", (shift - width / 2).toFixed(1));
+    rect.setAttribute("y", (labelY - MAP_HIT_HEIGHT / 2).toFixed(1));
+    rect.setAttribute("width", width.toFixed(1));
+    rect.setAttribute("height", String(MAP_HIT_HEIGHT));
+  }
+  return { radius: radius, shift: shift, labelY: labelY };
 }
 
 
@@ -542,6 +561,9 @@ function mapOff(target, type, handler) {
 }
 
 
+/* 按下即记账，但**位移不足 `MAP_DRAG_THRESHOLD`（4px）就不算拖拽**：
+ * 阈值以内一个像素都不写 transform，「点击」不会被当成「拖着图走了一下」。
+ * 阈值由长度（不是单轴）判定 —— 斜着抖 3px+3px 也算点击。 */
 function mapDragStart(event) {
   if (event.button !== 0) return;
   var svg = event.currentTarget;
@@ -552,10 +574,17 @@ function mapDragStart(event) {
   if (!box.width) return;
   var scale = mapViewSize(svg).width / box.width;
   var anchor = { x: event.clientX, y: event.clientY, vx: record.x, vy: record.y };
+  var dragging = false;
 
   function move(moveEvent) {
-    record.x = anchor.vx + (moveEvent.clientX - anchor.x) * scale;
-    record.y = anchor.vy + (moveEvent.clientY - anchor.y) * scale;
+    var dx = moveEvent.clientX - anchor.x;
+    var dy = moveEvent.clientY - anchor.y;
+    if (!dragging) {
+      if (Math.sqrt(dx * dx + dy * dy) < MAP_DRAG_THRESHOLD) return;
+      dragging = true;
+    }
+    record.x = anchor.vx + dx * scale;
+    record.y = anchor.vy + dy * scale;
     svg.__mapView = record;
     stage.setAttribute(
       "transform",
@@ -573,7 +602,7 @@ function mapDragStart(event) {
 }
 
 
-/* 悬停提示：概念层说"几条连接"，资料层说"支撑几个概念 / 正文在不在库里"。 */
+/* 悬停提示：一句话说清这个点是什么、几条连接（原生 <title>，不额外挂 tooltip）。 */
 function mapNodeTooltipText(node) {
   var parts = [node.label + "（" + mapNodeKindLabel(node.kind) + "）"];
   if (node.kind === "source") {
@@ -588,29 +617,10 @@ function mapNodeTooltipText(node) {
 }
 
 
-/* 资料层：线宽三档（本图最大权重相对切 1/3、2/3）。 */
-function mapEdgeBand(weight, maxWeight) {
-  var top = Number(maxWeight || 0);
-  if (!top) return 1;
-  var ratio = Number(weight || 0) / top;
-  if (ratio > 0.66) return 3;
-  if (ratio > 0.33) return 2;
-  return 1;
-}
-
-
-function buildMapSvg(payload, showAll, layer, size) {
-  var layerName = layer === "source" ? "source" : "concept";
+function buildMapSvg(payload, showAll, size) {
   var canvas = size || { width: MAP_VIEW_WIDTH, height: MAP_VIEW_HEIGHT, measured: false };
   var view = mapVisibleGraph(payload, showAll);
   var iterations = mapLayout(view.nodes, view.edges, canvas.width, canvas.height);
-
-  var maxWeight = 0;
-  if (layerName === "source") {
-    view.edges.forEach(function (edge) {
-      maxWeight = Math.max(maxWeight, Number(edge.weight || 0));
-    });
-  }
 
   /* viewBox = 实测像素 ⇒ 与容器等比，`meet` 的缩放比恒为 1：既没有上下留白，
    * 也不再把 11px 的标签缩成 5px（以前固定坐标系就是这样"缩小小"的）。 */
@@ -627,7 +637,6 @@ function buildMapSvg(payload, showAll, layer, size) {
   svg.setAttribute("data-edge-count", String(view.edges.length));
   svg.setAttribute("data-iterations", String(iterations));
   svg.setAttribute("data-truncated", view.truncated ? "1" : "0");
-  svg.setAttribute("data-layer", layerName);
 
   var stage = mapSvgEl("g", { class: "map-stage" });
 
@@ -640,12 +649,8 @@ function buildMapSvg(payload, showAll, layer, size) {
       if (node.id === edge.target) dst = node;
     });
     if (!src || !dst) return;
-    var band = layerName === "source" ? mapEdgeBand(edge.weight, maxWeight) : 0;
     var line = mapSvgEl("line", {
-      class:
-        "map-edge rel-" +
-        String(edge.kind || "uses") +
-        (band ? " w-band-" + band : ""),
+      class: "map-edge rel-" + String(edge.kind || "uses"),
       "data-kind": String(edge.kind || "uses"),
       "data-source": edge.source,
       "data-target": edge.target,
@@ -654,13 +659,6 @@ function buildMapSvg(payload, showAll, layer, size) {
       x2: dst.x.toFixed(1),
       y2: dst.y.toFixed(1),
     });
-    if (band) {
-      /* 档位写在 `data-band` 上（探针读），宽度由 CSS 的 w-band-* 落地 ——
-       * 不能只写 stroke-width 属性：CSS 的 `.map-svg .map-edge` 会盖掉表现属性。 */
-      line.setAttribute("data-band", String(band));
-      line.setAttribute("data-weight", String(Number(edge.weight || 0)));
-      line.classList.add("w-band-" + band);
-    }
     stage.appendChild(line);
   });
 
@@ -672,12 +670,30 @@ function buildMapSvg(payload, showAll, layer, size) {
       "data-weight": String(node.weight || 0),
       transform: "translate(" + node.x.toFixed(1) + " " + node.y.toFixed(1) + ")",
     });
+    /* 热区先挂（在圆点/文字下面）：圆点外扩 10px 的圆 + 盖住标签的矩形。
+       两者都是 `fill="transparent"` + `pointer-events="all"`，点圆点与点文字
+       落到同一个 group 的 click 上 —— 这是"点某些点不响应"的正面修法。 */
+    group.appendChild(
+      mapSvgEl("circle", { class: "map-hit", r: 1, fill: "transparent", "pointer-events": "all" }),
+    );
+    group.appendChild(
+      mapSvgEl("rect", {
+        class: "map-hit-rect",
+        x: 0,
+        y: 0,
+        width: 1,
+        height: MAP_HIT_HEIGHT,
+        fill: "transparent",
+        "pointer-events": "all",
+      }),
+    );
     group.appendChild(mapSvgEl("circle", { class: "map-dot", r: mapNodeRadius(node.weight).toFixed(1) }));
     var text = short(node.label || node.id, 14);
     var label = mapSvgEl("text", { class: "map-label", x: 0, y: mapNodeRadius(node.weight) + 12 });
     label.textContent = text;
-    /* 贴边的节点：把标签在画布内平移回来，别让半串字落到框外 */
-    label.setAttribute("x", mapLabelShift(node.x, mapLabelHalfWidth(text), canvas.width).toFixed(1));
+    /* 贴边的节点：把标签在画布内平移回来，别让半串字落到框外。
+     * 平移量与热区矩形共用一份几何（`mapSyncHitShapes`），所以文字永远在热区里。 */
+    label.setAttribute("x", mapSyncHitShapes(group, node, text, canvas.width).shift.toFixed(1));
     group.appendChild(label);
     var tip = mapSvgEl("title", {});
     tip.textContent = mapNodeTooltipText(node);
@@ -694,6 +710,8 @@ function buildMapSvg(payload, showAll, layer, size) {
     mapOn(group, "click", function (event) {
       event.stopPropagation();
       svg.setAttribute("data-picked", node.id);
+      /* 点击只做两件事：切 class（高亮邻居）+ 填**浮层**详情（absolute，不占文档流）。
+       * **不许**在这里重排/重画 —— 一次点击重建一遍全图就是"点了很久才响应"的来源。 */
       mapFocusNode(svg, node.id);
       showMapNodeInfo(node);
     });
@@ -728,10 +746,9 @@ function mapRefit(svg, view, host) {
     group.setAttribute("transform", "translate(" + node.x.toFixed(1) + " " + node.y.toFixed(1) + ")");
     var label = group.querySelector(".map-label");
     if (label) {
-      label.setAttribute(
-        "x",
-        mapLabelShift(node.x, mapLabelHalfWidth(label.textContent || ""), size.width).toFixed(1),
-      );
+      /* 标签与热区矩形一起挪（同一个几何函数）：只挪标签不挪热区，字又点不中了。 */
+      var geom = mapSyncHitShapes(group, node, label.textContent || "", size.width);
+      label.setAttribute("x", geom.shift.toFixed(1));
     }
   });
   Array.prototype.forEach.call(svg.querySelectorAll(".map-edge"), function (line) {
@@ -778,8 +795,7 @@ function mapWatchSize(svg, view, host) {
  * （`showSourceBySourceId` → `archive.list(source_id)` → `showSource(doc_id)` → `archive.get`
  *  → 摘要渲染进 `#source-detail`）。这里只负责"把哪个 source_id 交出去"，不另写一套打开逻辑。
  *
- * 概念节点的 `sources` 是 source_id 列表；资料层节点的 `sources` 是它自己（`[nid]`），
- * 所以两种节点共用同一个按钮与同一条通路。 */
+ * 节点的 `sources` 是 source_id 列表：每个 id 一个按钮，共用同一条通路。 */
 function showMapNodeInfo(node) {
   var box = el("map-info");
   if (!box) return;
@@ -877,27 +893,6 @@ function renderMapLegend(payload) {
   title.className = "map-legend-title";
   title.textContent = "图例";
   box.appendChild(title);
-
-  /* 资料层：节点只有"来源"一种，边只有"共同支撑"一种 —— 图例要说清**线宽三档**的含义，
-   * 否则用户只能看出线粗线细却不知道粗细代表什么。 */
-  if (mapState.layer === "source") {
-    var note = document.createElement("span");
-    note.className = "map-legend-note";
-    note.textContent = "资料层：点=来源，线=共同支撑概念数（线宽三档）";
-    box.appendChild(note);
-    [1, 2, 3].forEach(function (band) {
-      var item = document.createElement("span");
-      item.className = "map-legend-edge";
-      item.setAttribute("data-band", String(band));
-      var swatch = document.createElement("i");
-      swatch.className = "map-line band-" + band;
-      item.appendChild(swatch);
-      /* 档名只写一个字：一行 20px 的图例放不下"少（第 1 档）"这种三倍长度的写法 */
-      item.appendChild(document.createTextNode(["少", "中", "多"][band - 1]));
-      box.appendChild(item);
-    });
-    return;
-  }
 
   var counts = (payload && payload.counts && payload.counts.kinds) || {};
   MAP_NODE_KINDS.forEach(function (pair) {
@@ -1084,7 +1079,7 @@ function mapRenderSearchResults(items, note) {
 }
 
 
-/* 搜索：走后端 `topic.search_nodes`（与图同一层，`layer` 一起带过去）。 */
+/* 搜索：走后端 `topic.search_nodes`（只管概念图这一层，不再带 layer）。 */
 async function mapRunSearch() {
   var input = el("map-search");
   if (!input) return;
@@ -1100,14 +1095,13 @@ async function mapRunSearch() {
     payload = await scout.call("topic.search_nodes", {
       topic_id: mapState.topicId,
       q: query,
-      layer: mapState.layer,
       limit: 8,
     });
   } catch (error) {
     mapRenderSearchResults([], "搜索失败：" + ((error && error.message) || String(error)));
     return;
   }
-  /* 搜索期间换了图层：这批结果属于上一张图，丢掉（否则定位到不存在的节点）。 */
+  /* 搜索期间图被重画：这批结果属于上一张图，丢掉（否则定位到不存在的节点）。 */
   if (epoch !== mapState.epoch) return;
   mapRenderSearchResults((payload && payload.nodes) || []);
 }
@@ -1132,7 +1126,7 @@ function mapLocateNode(nodeId) {
 }
 
 
-/* --------------------------------------------------------------- 路径查询 */
+/* --------------------------------------------------------------- 提示行 */
 
 function mapLabelOf(nodeId) {
   var nodes = (mapState.view && mapState.view.nodes) || [];
@@ -1143,200 +1137,13 @@ function mapLabelOf(nodeId) {
 }
 
 
+/* 一行提示（搜不到 / 节点被截断时说话）。查路径那一行已经删掉，这里只剩搜索用。 */
 function mapShowMapNote(text, kind) {
-  var note = el("map-path-note");
+  var note = el("map-note");
   if (!note) return;
   note.textContent = text;
   note.hidden = !text;
   note.setAttribute("data-kind", String(kind || "info"));
-}
-
-
-function mapClearPathMarks(svg) {
-  if (!svg) return;
-  svg.classList.remove("is-pathing");
-  Array.prototype.forEach.call(svg.querySelectorAll(".map-node.is-path"), function (node) {
-    node.classList.remove("is-path");
-  });
-  Array.prototype.forEach.call(svg.querySelectorAll(".map-edge.is-path"), function (edge) {
-    edge.classList.remove("is-path");
-  });
-}
-
-
-function mapHighlightPath(svg, path) {
-  mapClearPathMarks(svg);
-  if (!svg || !path) return 0;
-  var wanted = {};
-  (path.nodes || []).forEach(function (id) {
-    wanted[String(id)] = true;
-  });
-  var marked = 0;
-  Array.prototype.forEach.call(svg.querySelectorAll(".map-node"), function (node) {
-    if (wanted[node.getAttribute("data-id")]) {
-      node.classList.add("is-path");
-      marked += 1;
-    }
-  });
-  (path.edges || []).forEach(function (edge) {
-    Array.prototype.forEach.call(svg.querySelectorAll(".map-edge"), function (line) {
-      var a = line.getAttribute("data-source");
-      var b = line.getAttribute("data-target");
-      /* 后端保留存储方向，前端两个方向都认（无向连通是 `find_path` 的口径） */
-      if ((a === edge.src && b === edge.dst) || (a === edge.dst && b === edge.src)) {
-        line.classList.add("is-path");
-      }
-    });
-  });
-  svg.classList.add("is-pathing");
-  return marked;
-}
-
-
-/* 两个下拉框：填当前**显示中**的节点（截断到 30 个时，选不到的节点也查不出路径来）。 */
-function mapRefreshPathSelects(view) {
-  var from = el("map-path-from");
-  var to = el("map-path-to");
-  if (!from || !to) return;
-  var keepFrom = from.value;
-  var keepTo = to.value;
-  from.innerHTML = "";
-  to.innerHTML = "";
-  var nodes = ((view && view.nodes) || []).slice().sort(function (a, b) {
-    return String(a.label || a.id).localeCompare(String(b.label || b.id));
-  });
-  nodes.forEach(function (node) {
-    [from, to].forEach(function (select) {
-      var option = document.createElement("option");
-      option.value = node.id;
-      option.textContent = short(node.label || node.id, 16);
-      select.appendChild(option);
-    });
-  });
-  var ids = nodes.map(function (node) {
-    return node.id;
-  });
-  if (keepFrom && ids.indexOf(keepFrom) >= 0) from.value = keepFrom;
-  if (keepTo && ids.indexOf(keepTo) >= 0) to.value = keepTo;
-  else if (nodes.length > 1) to.value = nodes[1].id;
-}
-
-
-/* 路径查询：`topic.find_path` → 高亮路径 + 列出经过的边类型；查不到给人话。 */
-async function mapRunPath() {
-  var from = el("map-path-from");
-  var to = el("map-path-to");
-  if (!from || !to) return;
-  if (!mapState.topicId) return;
-  if (!from.value || !to.value) {
-    mapShowMapNote("先选起点和终点两个节点。", "warn");
-    return;
-  }
-  if (from.value === to.value) {
-    mapShowMapNote("起点和终点是同一个节点：换个终点。", "warn");
-    return;
-  }
-  var epoch = mapState.epoch;
-  var payload = null;
-  try {
-    payload = await scout.call("topic.find_path", {
-      topic_id: mapState.topicId,
-      from: from.value,
-      to: to.value,
-      layer: mapState.layer,
-      max_depth: 4,
-    });
-  } catch (error) {
-    mapShowMapNote("查路径失败：" + ((error && error.message) || String(error)), "warn");
-    return;
-  }
-  if (epoch !== mapState.epoch) return;
-  var svg = mapActiveSvg();
-  var paths = (payload && payload.paths) || [];
-  var head = "「" + mapLabelOf(from.value) + "」→「" + mapLabelOf(to.value) + "」";
-
-  if (!paths.length) {
-    mapClearPathMarks(svg);
-    mapState.path = null;
-    mapShowMapNote(
-      head + "：在 " + String((payload && payload.max_depth) || 4) + " 跳内没有连起来（换一对节点，或切到资料图看看）。",
-      "warn",
-    );
-    return;
-  }
-
-  var path = paths[0];
-  var marked = mapHighlightPath(svg, path);
-  mapState.path = { from: from.value, to: to.value, edges: path.edges || [] };
-
-  var kinds = [];
-  (path.edges || []).forEach(function (edge) {
-    /* 路径里的边用 `rel` 键（`knowledge_graph._path_edge`），图上画出来的边用 `kind` ——
-     * 两个都认，缺一个就会把关系名显示成"未知"。 */
-    var kind = String(edge.rel || edge.kind || "");
-    var text =
-      mapEdgeKindLabel(kind) +
-      "（" + kind + (edge.weight === undefined ? "" : "·" + String(edge.weight)) + "）";
-    if (kinds.indexOf(text) < 0) kinds.push(text);
-  });
-  var chain = (path.nodes || []).map(mapLabelOf).join(" → ");
-  var note =
-    head + "：最短 " + String(Math.max(0, (path.nodes || []).length - 1)) + " 跳｜" + chain +
-    "｜边类型：" + (kinds.join("、") || "无");
-  if (!marked) {
-    note += "｜路径上的节点不在当前显示的前 30 个里，点「显示全部」再查一次";
-  }
-  mapShowMapNote(note, marked ? "ok" : "warn");
-}
-
-
-/* --------------------------------------------------------------- 图层切换 */
-
-function mapUpdateLayerButtons() {
-  Array.prototype.forEach.call(document.querySelectorAll(".map-layer"), function (button) {
-    var on = button.getAttribute("data-layer") === mapState.layer;
-    button.classList.toggle("is-active", on);
-    button.setAttribute("aria-pressed", on ? "true" : "false");
-  });
-}
-
-
-/* 概念图 ⇄ 资料图。两层载荷各留一份（切回来不重取、不重算），每次重画都先清理旧图。 */
-async function mapSwitchLayer(layer) {
-  var next = layer === "source" ? "source" : "concept";
-  if (!mapState.topicId) return;
-  if (next === mapState.layer && mapState.payload) return;
-  var host = el("map-body");
-  var payload = mapState.layers[next];
-  if (!payload) {
-    try {
-      payload =
-        next === "source"
-          ? await scout.call("topic.get_source_graph", { topic_id: mapState.topicId, min_shared: 2 })
-          : await scout.call("topic.get_map", { topic_id: mapState.topicId });
-    } catch (error) {
-      renderMapEmpty(host, "切不过去（" + next + "）：" + ((error && error.message) || String(error)));
-      return;
-    }
-    mapState.layers[next] = payload;
-  }
-  mapState.layer = next;
-  mapState.payload = payload;
-  mapState.showAll = false;
-  mapState.path = null;
-  if (!payload || !(payload.nodes || []).length) {
-    mapState.view = null;
-    mapTeardown();
-    mapUpdateLayerButtons();
-    renderMapEmpty(
-      host,
-      next === "source"
-        ? "资料层是空的：这张图里的来源还没有正文/摘要，导不出来源之间的共同支撑"
-        : "这张知识地图还是空的，先在会话里重新建一张",
-    );
-    return;
-  }
-  renderMapFigure(host, payload);
 }
 
 
@@ -1348,15 +1155,13 @@ function renderMapFigure(host, payload) {
 
   /* 画布按**容器实测像素**建（量不到就 800x520 兜底，随后 mapWatchSize 会纠正）。 */
   var canvas = mapMeasure(host);
-  var built = buildMapSvg(payload, mapState.showAll, mapState.layer, canvas);
+  var built = buildMapSvg(payload, mapState.showAll, canvas);
   mapState.view = built.view;
   mapKeepInfo(host);
   host.appendChild(built.svg);
   /* 挂尺寸监听：侧栏拖宽 / 页签重新显示 / 搬进放大浮层都按新尺寸重铺 */
   mapWatchSize(built.svg, built.view, host);
   renderMapLegend(payload);
-  mapUpdateLayerButtons();
-  mapRefreshPathSelects(built.view);
   mapShowMapNote("", "info");
 
   var info = el("map-info");
@@ -1367,10 +1172,9 @@ function renderMapFigure(host, payload) {
 
   var count = el("map-count");
   if (count) {
-    var prefix = mapState.layer === "source" ? "资料层 · " : "";
     count.textContent = built.view.truncated
-      ? prefix + "共 " + built.view.total + " 个节点，显示前 " + built.view.shown + "（按连接数排序）"
-      : prefix + "共 " + built.view.shown + " 个节点、" + built.view.edges.length + " 条边";
+      ? "共 " + built.view.total + " 个节点，显示前 " + built.view.shown + "（按连接数排序）"
+      : "共 " + built.view.shown + " 个节点、" + built.view.edges.length + " 条边";
   }
 
   var all = el("btn-map-all");
@@ -1399,9 +1203,7 @@ async function loadMapTab() {
     mapState.topicId = "";
     mapState.payload = null;
     mapState.view = null;
-    mapState.layers = { concept: null, source: null };
     mapState.showAll = false;
-    mapState.path = null;
     mapTeardown();
     var legend = el("map-legend");
     if (legend) legend.innerHTML = "";
@@ -1425,14 +1227,9 @@ async function loadMapTab() {
   }
   if (mapState.topicId !== topicId) {
     mapState.showAll = false;
-    /* 换了主题：两层的缓存都属于上一张图，必须一起丢掉（否则资料层还是旧图）。 */
-    mapState.layers = { concept: null, source: null };
-    mapState.layer = "concept";
-    mapState.path = null;
   }
   mapState.topicId = topicId;
   mapState.payload = payload;
-  mapState.layers.concept = payload;
   if (!payload || !(payload.nodes || []).length) {
     mapTeardown();
     renderMapEmpty(host, "这张知识地图还是空的（建图时没取到任何节点），先在会话里重新建一张");
@@ -1452,15 +1249,7 @@ function wireMapTab() {
     });
   }
 
-  /* 图层开关：概念图 ⇄ 资料图（资料图走 `topic.get_source_graph`，线宽按权重分三档） */
-  Array.prototype.forEach.call(document.querySelectorAll(".map-layer"), function (button) {
-    button.addEventListener("click", function () {
-      mapSwitchLayer(button.getAttribute("data-layer"));
-    });
-  });
-  mapUpdateLayerButtons();
-
-  /* 图内搜索：输入框防抖 220ms（定时器记账，换层会清掉），回车/按钮立即搜 */
+  /* 图内搜索：输入框防抖 220ms（定时器记账，重画会清掉），回车/按钮立即搜 */
   var searchInput = el("map-search");
   if (searchInput) {
     searchInput.addEventListener("input", function () {
@@ -1479,13 +1268,6 @@ function wireMapTab() {
   if (searchBtn) {
     searchBtn.addEventListener("click", function () {
       mapRunSearch();
-    });
-  }
-
-  var pathBtn = el("btn-map-path");
-  if (pathBtn) {
-    pathBtn.addEventListener("click", function () {
-      mapRunPath();
     });
   }
 

@@ -7977,6 +7977,16 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .map-node {
   cursor: pointer;
 }
+/* 透明热区：圆点外扩的圆 + 盖住标签的矩形。`fill="transparent"` 画不出颜色但仍占
+ * 命中区，`pointer-events: all` 让它在没有任何可见填充时也能接事件 —— 只靠那个
+ * 7~9px 的圆点，点标签就是"没反应"。`.map-label` 保持 pointer-events:none（不挡线），
+ * 点击由这两块热区接住，再冒泡到 `.map-node` 上的 click。 */
+.map-hit,
+.map-hit-rect {
+  fill: transparent;
+  pointer-events: all;
+  cursor: pointer;
+}
 .map-node .map-dot {
   fill: var(--ui-accent);
   stroke: var(--ui-bg-chrome);
@@ -8119,7 +8129,7 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   gap: 4px 8px;
 }
 
-/* 图层开关 / 搜索 / 路径：都挤在右栏里，只调间距，不动列宽（几何基线只量列宽）。
+/* 搜索行：挤在右栏里，只调间距，不动列宽（几何基线只量列宽）。
  * **高度预算固定**：不换行、定高 30px —— 右栏只有 380px，一换行就多出 26px，
  * 这几行多出来的高度全是从画布上扣的（画布被压扁 = 内容看着缩在角上）。 */
 .row.map-tools {
@@ -8132,35 +8142,6 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
 .row.map-tools > * {
   min-width: 0;
 }
-.map-layer {
-  flex: 1 1 0;
-  font-size: 12px;
-  padding: 3px 8px;
-}
-.map-layer.is-active {
-  border-color: var(--ui-accent);
-  color: var(--ui-text-primary);
-  background: var(--ui-bg-chrome);
-}
-.map-path {
-  gap: 4px;
-}
-.map-path select {
-  flex: 1 1 0;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  padding: 2px 4px;
-  color: var(--ui-text-primary);
-  background: var(--ui-bg-elevated);
-  border: 0.0625rem solid var(--ui-stroke-secondary);
-  border-radius: var(--radius-md);
-}
-.map-path-arrow {
-  color: var(--ui-text-tertiary);
-  font-size: 12px;
-}
-
 /* 搜索结果下拉 */
 .map-search-results {
   list-style: none;
@@ -8188,30 +8169,6 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   font-size: 11.5px;
 }
 
-/* 资料层线宽三档（`data-band` 由 map.js 写在边元素上；宽度只能靠 class，
-   因为 CSS 的 .map-svg .map-edge 会盖掉 stroke-width 表现属性） */
-.map-svg .map-edge.w-band-1 {
-  stroke-width: 1.2;
-}
-.map-svg .map-edge.w-band-2 {
-  stroke-width: 2.4;
-}
-.map-svg .map-edge.w-band-3 {
-  stroke-width: 3.8;
-}
-.map-line.band-1 {
-  border-top-width: 1.2px;
-}
-.map-line.band-2 {
-  border-top-width: 2.4px;
-}
-.map-line.band-3 {
-  border-top-width: 3.8px;
-}
-.map-legend-note {
-  flex: 1 1 100%;
-}
-
 /* 搜索命中：加一圈描边 + 光晕（不用动画，截图/无头下也稳定） */
 .map-node.is-found .map-dot {
   stroke: var(--ui-accent);
@@ -8223,27 +8180,7 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   font-weight: 600;
 }
 
-/* 路径高亮：路径之外的压暗，路径上的点与边提亮 */
-.map-svg.is-pathing .map-node {
-  opacity: 0.25;
-}
-.map-svg.is-pathing .map-node.is-path {
-  opacity: 1;
-}
-.map-svg.is-pathing .map-node.is-path .map-dot {
-  stroke: var(--ui-accent);
-  stroke-width: 2.6;
-}
-.map-svg.is-pathing .map-edge {
-  opacity: 0.12;
-}
-.map-svg.is-pathing .map-edge.is-path {
-  opacity: 1;
-  stroke: var(--ui-accent);
-  stroke-width: 3.2;
-}
-
-/* 路径结论 / 搜索提示 */
+/* 搜索提示 */
 .map-note {
   padding: 0 12px;
 }
