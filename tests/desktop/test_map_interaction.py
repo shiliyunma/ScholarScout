@@ -728,3 +728,110 @@ def test_source_zoom_keeps_its_shell_and_borrows_the_body() -> None:
     )
     css = re.search(r"\.source-zoom-body\s*\{([^}]*)\}", STYLE_CSS)
     assert css and "overflow: auto" in css.group(1), "浮层正文区不可滚（内容一长就被裁）"
+
+
+# ------------------------------------------------ 遮罩让位（D5）/ 重画不清详情（D7）
+
+#: 页签栏在 index.html 里的位置（CSS 用直子选择器 `.col-right > .tabs`，结构一变就落空）
+
+
+def test_source_zoom_mask_yields_the_tab_bar() -> None:
+    """浮层开着时页签栏要压在遮罩之上：**一次点击**就切页签，不是"第一次只关浮层"（D5）。
+
+    证据（`run/ui_eval/final/defects.md`）：`element_at_tab="DIV#source-zoom.overlay source-zoom"`、
+    `switched=false`、`overlay_still_open=false` —— 点页签的位置其实点在铺满视口的遮罩上。
+    """
+    rule = re.search(r"body\.source-zoom-open\s+\.col-right\s*>\s*\.tabs\s*\{([^}]*)\}", STYLE_CSS)
+    assert rule, (
+        "style.css 没有 `body.source-zoom-open .col-right > .tabs`（遮罩会继续吃掉第一次点页签）"
+    )
+    body = " ".join(rule.group(1).split())
+    assert "position: relative" in body, (
+        "页签栏没建立自己的层叠上下文（z-index 对 static 元素无效）"
+    )
+    mine = re.search(r"z-index:\s*(\d+)", body)
+    assert mine, "页签栏没设 z-index"
+    overlay = re.search(r"\.overlay\s*\{([^}]*)\}", STYLE_CSS)
+    assert overlay, "style.css 里找不到 .overlay"
+    theirs = re.search(r"z-index:\s*(\d+)", overlay.group(1))
+    assert theirs, ".overlay 没有 z-index（没法比谁在上面）"
+    assert int(mine.group(1)) > int(theirs.group(1)), (
+        f"页签栏 z-index {mine.group(1)} 不大于遮罩的 {theirs.group(1)}（还是被盖住）"
+    )
+
+    # 直子选择器要求 .tabs 就在 .col-right 里面（中间夹一层就失效，而失效是静默的）
+    right = INDEX_HTML.index('<section class="col col-right">')
+    nav = INDEX_HTML.index('<nav class="tabs">')
+    first_pane = INDEX_HTML.index('<div class="pane is-active" id="pane-sources">')
+    assert right < nav < first_pane, (
+        "index.html 的 .tabs 不在 .col-right 下（CSS 直子选择器会落空）"
+    )
+
+
+def test_source_zoom_mask_still_blocks_the_canvas() -> None:
+    """让位只给页签栏：遮罩仍铺满视口、画布照旧点不到（浮层开着时不许误点节点）。"""
+    overlay = re.search(r"\.overlay\s*\{([^}]*)\}", STYLE_CSS)
+    assert overlay, "style.css 里找不到 .overlay"
+    body = " ".join(overlay.group(1).split())
+    assert "position: fixed" in body, "遮罩不再 fixed（铺不满视口就盖不住画布）"
+    assert "inset: 0" in body, "遮罩不再 inset:0（缩成一块就盖不住整页，点哪儿都能穿过去）"
+
+    # source-zoom-open 这个开关只许抬页签栏一条；抬了画布就是"浮层开着还能点到节点"
+    selectors = re.findall(r"[^\n{}]*source-zoom-open[^\n{}]*\{", STYLE_CSS)
+    assert len(selectors) == 1, (
+        f"body.source-zoom-open 的规则有 {len(selectors)} 条（只该抬页签栏一条）"
+    )
+    assert ".tabs" in selectors[0], f"抬升的不是页签栏（{selectors[0].strip()}）"
+    assert "map-body" not in selectors[0] and ".map-svg" not in selectors[0], (
+        "把画布也抬到遮罩之上了（浮层开着会误点到节点）"
+    )
+
+
+def test_overlay_marks_body_and_tab_click_closes_it() -> None:
+    """打开/关闭浮层要挂/摘 body 标记；页签那一下除了切页签，还要把浮层收掉（D5）。"""
+    opener = _function_body(MAP_JS, "openSourceZoom")
+    assert "sourceZoomMarkOpen(true)" in opener, "打开浮层时没给 body 挂标记（页签栏抬不起来）"
+    closer = _function_body(MAP_JS, "closeSourceZoom")
+    assert "sourceZoomMarkOpen(false)" in closer, "关浮层时没摘标记（页签栏会一直压在别的遮罩上）"
+    mark = _function_body(MAP_JS, "sourceZoomMarkOpen")
+    assert "SOURCE_ZOOM_BODY_CLASS" in mark and "classList" in mark, (
+        "标记不是走 classList 加的那个常量"
+    )
+
+    wire = _function_body(MAP_JS, "wireSourceZoom")
+    assert 'target.closest(".tabs")' in wire, "点页签不会关浮层（切了页签浮层还盖在新页签上）"
+    tail = wire[wire.index('target.closest(".tabs")') :][:400]
+    assert "closeSourceZoom();" in tail, "命中页签时没调 closeSourceZoom"
+    assert re.search(r"\},\s*\n?\s*true,?\s*\)", tail), (
+        "监听没挂捕获阶段（app.js 的页签处理会先跑，浮层还压在页签上）"
+    )
+
+
+def test_render_does_not_clear_the_open_info_panel() -> None:
+    """重画（重进页签 / 「显示全部」）不许清 `#map-info`：刚点开的面板和按钮要留着（D7）。
+
+    改之前 `renderMapFigure` 末尾无条件 `info.hidden = true; info.textContent = ""`，
+    与 `mapKeepInfo` 的注释「换图时不能连它一起清掉…清了等于刚点开就被抹掉」正面矛盾。
+    """
+    body = _function_body(MAP_JS, "renderMapFigure")
+    assert "mapKeepInfo(host)" in body, "renderMapFigure 没用 mapKeepInfo 保下面板"
+    assert 'textContent = ""' not in body, (
+        "renderMapFigure 里还有清空 textContent（重画就抹掉详情）"
+    )
+    assert not re.search(r'el\("map-info"\)[\s\S]{0,240}?\.hidden = true', body), (
+        "renderMapFigure 又把详情面板藏起来了（D7：重画后按钮全没）"
+    )
+    assert "mapClearInfo(" not in body, "renderMapFigure 自己清面板了（清场只该由换主题触发）"
+
+
+def test_only_topic_switch_clears_the_info_panel() -> None:
+    """清场只走 `mapClearInfo()`，且只有**换主题**才调：旧面板里的节点 id 属于上一张图。"""
+    clear = _function_body(MAP_JS, "mapClearInfo")
+    assert 'el("map-info")' in clear, "mapClearInfo 没找 #map-info"
+    assert "info.hidden = true" in clear, "mapClearInfo 没藏面板"
+    assert 'info.textContent = ""' in clear, "mapClearInfo 没清内容（下次点开还是旧节点的字）"
+
+    load = _function_body(MAP_JS, "loadMapTab")
+    start = load.index("mapState.topicId !== topicId")
+    branch = load[start : load.index("mapState.topicId = topicId", start)]
+    assert "mapClearInfo()" in branch, "换主题时没清详情面板（旧主题的节点会留在新图上）"

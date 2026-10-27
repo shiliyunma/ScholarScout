@@ -1119,6 +1119,11 @@ var SOURCE_ZOOM_MIN_W = 420;
 var SOURCE_ZOOM_MIN_H = 320;
 var SOURCE_ZOOM_SIZE_KEY = "scholarscout.sourceZoom.size";
 
+/* 浮层开着时给 body 挂的标记：CSS 靠它把**页签栏**抬到遮罩之上（D5）。
+ * 不这么做的话遮罩 `inset:0` 铺满视口，用户第一次点页签其实点在遮罩上 ——
+ * 页签一点没动、浮层却关了，得点第二次才切。 */
+var SOURCE_ZOOM_BODY_CLASS = "source-zoom-open";
+
 /* 浮层里现在是哪一条（换内容只改这里，**不重建 DOM**）。`seq` 用来丢掉过期的异步结果：
  * 连着点两条时，先发的那次 archive.get 晚回来，绝不能把 A 的正文画到 B 的标题下。 */
 var sourceZoomState = {
@@ -1242,6 +1247,7 @@ function openSourceZoom(sourceId, ref) {
   var stored = sourceZoomStoredSize();
   if (stored) sourceZoomApplySize(stored.w, stored.h);
   overlay.hidden = false;
+  sourceZoomMarkOpen(true);
   return loadSourceZoom(id, sourceZoomState.seq);
 }
 
@@ -1515,11 +1521,22 @@ function sourceZoomOpenOrigin() {
 }
 
 
+/* body 上那个标记的开关：只有它决定 CSS 要不要把页签栏抬到遮罩之上（D5）。
+ * 单独成函数是为了让"开"和"关"两处不会各写一份 class 名（写错一处就是浮层开着页签还是点不动）。 */
+function sourceZoomMarkOpen(open) {
+  var body = document.body;
+  if (!body || !body.classList) return;
+  if (open) body.classList.add(SOURCE_ZOOM_BODY_CLASS);
+  else body.classList.remove(SOURCE_ZOOM_BODY_CLASS);
+}
+
+
 /* 关浮层：只收起，不碰地图的选中态 / 详情面板 / 侧栏页签（用户第 3 条）。 */
 function closeSourceZoom() {
   var overlay = sourceZoomOverlay();
   if (!overlay || overlay.hidden) return false;
   overlay.hidden = true;
+  sourceZoomMarkOpen(false);
   return true;
 }
 
@@ -1604,6 +1621,19 @@ function wireSourceZoom() {
   overlay.addEventListener("click", function (event) {
     if (event.target === overlay) closeSourceZoom();
   });
+  /* 页签栏压在遮罩之上（CSS: `body.source-zoom-open .col-right > .tabs`），所以那一下是
+   * **真点到了页签**。语义就是"我要换视图" → 浮层让位。用捕获阶段先关，再让 app.js 的
+   * 页签处理照常跑：一次点击 = 切页签 + 关浮层（D5，之前要点两次）。 */
+  document.addEventListener(
+    "click",
+    function (event) {
+      var target = event.target;
+      if (!target || !target.closest) return;
+      if (!target.closest(".tabs")) return;
+      closeSourceZoom();
+    },
+    true,
+  );
   var head = overlay.querySelector(".source-sheet-head");
   if (head) head.addEventListener("pointerdown", sourceZoomDragStart);
   var handle = el("source-zoom-resize");
@@ -1713,6 +1743,18 @@ function mapKeepInfo(host) {
   box.hidden = true;
   host.appendChild(box);
   return box;
+}
+
+
+/* 真正需要清掉详情的只有**换主题**：面板里的节点 id 属于上一张图，留着就是错的内容
+ * （点进去是别的主题的节点）。普通重画（重进页签 / 「显示全部」）一律不清 —— 那是 D7：
+ * `renderMapFigure` 末尾曾经的 `info.hidden = true` 把刚点开的面板连按钮一起抹掉，
+ * 与 `mapKeepInfo` 的注释「换图时不能连它一起清掉」正面矛盾。 */
+function mapClearInfo() {
+  var info = el("map-info");
+  if (!info) return;
+  info.hidden = true;
+  info.textContent = "";
 }
 
 
@@ -1929,11 +1971,9 @@ function renderMapFigure(host, payload) {
   renderMapLegend(payload);
   mapShowMapNote("", "info");
 
-  var info = el("map-info");
-  if (info) {
-    info.hidden = true;
-    info.textContent = "";
-  }
+  /* 详情面板（#map-info）**不由重画负责清**：`mapKeepInfo` 已经把它留在画布里，
+   * 重画（重进页签 / 「显示全部」）时用户刚点开的面板和按钮必须还在。
+   * 该清的是「换主题」—— 那时面板里的节点 id 已经不属于这张图（见 loadMapTab 里调 mapClearInfo）。 */
 
   var count = el("map-count");
   if (count) {
@@ -1982,6 +2022,7 @@ async function loadMapTab() {
     if (all) all.hidden = true;
     mapHideSearchResults();
     mapShowMapNote("", "info");
+    mapClearInfo();
     renderMapEmpty(host);
     return;
   }
@@ -1996,11 +2037,14 @@ async function loadMapTab() {
   }
   if (mapState.topicId !== topicId) {
     mapState.showAll = false;
+    /* 换主题：详情面板里的节点 id 是上一张图的，必须清（同一个主题重画则保留，见 D7）。 */
+    mapClearInfo();
   }
   mapState.topicId = topicId;
   mapState.payload = payload;
   if (!payload || !(payload.nodes || []).length) {
     mapTeardown();
+    mapClearInfo();
     renderMapEmpty(host, "这张知识地图还是空的（建图时没取到任何节点），先在会话里重新建一张");
     return;
   }
