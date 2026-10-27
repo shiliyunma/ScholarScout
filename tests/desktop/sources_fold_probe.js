@@ -50,7 +50,9 @@ function extractState(src) {
 const STATE_DECL = extractState(SRC);
 const IS_FOLDED = extractFunction(SRC, "sourcesIsFolded");
 const SET_FOLDED = extractFunction(SRC, "sourcesSetFolded");
-const HEADER = extractFunction(SRC, "sourceGroupHeader");
+const LABEL = extractFunction(SRC, "sourceGroupLabel");
+// 组头文案由 sourceGroupLabel 统一算（搜索时要报本组命中数）—— 少了它组头求值不出来
+const HEADER = LABEL + "\n" + extractFunction(SRC, "sourceGroupHeader");
 
 /* ------------------------------------------------------------ 最小假 DOM */
 

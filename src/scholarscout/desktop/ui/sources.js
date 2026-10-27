@@ -22,14 +22,20 @@ function normalize(item) {
 
 
 async function loadSources(query) {
+  // 有没有搜索词要贯穿整次画列表：命中分组默认展开、组头只报命中数、顶部加汇总行
+  // —— 这三件事都只在"搜"的时候成立，不搜时保持原来的折叠习惯（用户要求启动即收起）。
+  const searchText = String(query || "").trim();
+  const searching = !!searchText;
   const params = { limit: 50 };
-  if (query) params.query = query;
+  if (searching) params.query = searchText;
   const payload = await scout.call("archive.list", params);
   const items = (payload.items || []).map(normalize);
   const list = el("source-list");
   list.innerHTML = "";
   if (!items.length) {
-    list.innerHTML = '<li class="hint">库里还没有资料。先在左边让它去搜一轮。</li>';
+    // 0 命中：有搜索词时必须说清"搜了但没命中"并给下一步（换个词 / 清空），
+    // 只留一片空白列表的话用户会以为搜索坏了。
+    list.appendChild(sourceEmptyRow(searchText));
     return;
   }
   // 按会话分组：同一会话的资料聚在一起，可折叠（用户要求不再一锅平铺）
@@ -43,11 +49,17 @@ async function loadSources(query) {
     }
     groups[seen[key]].items.push(item);
   });
+  // 搜索时先给一行总览：命中数 + 分散在几组。否则屏幕上只有一排收起的分组头，
+  // 看着跟"没搜到"一样（实测 50 条命中全躺在 13 个折叠组里）。
+  if (searching) {
+    list.appendChild(sourceSummaryRow(items.length, groups.length));
+  }
   groups.forEach(function (group) {
-    // 默认折叠（用户要求：每次启动列表都是收起的）。用户在本会话内展开过的组，
-    // 状态记在 sourcesFoldState 里 —— 列表重画（搜索 / 换标签）之后不会被折回去。
-    const folded = sourcesIsFolded(group.key);
-    list.appendChild(sourceGroupHeader(group, folded));
+    // 不搜时默认折叠（用户要求：每次启动列表都是收起的）；有搜索词时命中分组默认展开。
+    // 用户在本会话内手动展开/折过的组，状态记在 sourcesFoldState 里 ——
+    // 搜索时也以这张表为准（点过组头就按点过的来），只是"没记录过的"改成展开。
+    const folded = sourcesIsFolded(group.key, searching);
+    list.appendChild(sourceGroupHeader(group, folded, searching));
     group.items.forEach(function (item) {
       const li = document.createElement("li");
       li.className = "source-row" + (folded ? " is-folded-row" : "");
@@ -114,8 +126,16 @@ async function refreshSourcesInPlace() {
 var sourcesFoldState = {};
 
 
-/** 该组当前是否折叠：**没记录过就是折叠**（这条就是"启动默认折叠"的唯一判据）。 */
-function sourcesIsFolded(key) {
+/** 该组当前是否折叠。
+ *
+ * 两档默认值，共用一张手动状态表：
+ *   · 没搜索词（平时）：**没记录过就折叠** —— 这条就是「启动默认折叠」的唯一判据；
+ *   · 有搜索词（`expandedByDefault=true`）：**没记录过就展开** —— 50 条命中全躺在
+ *     13 个折叠组里时，屏幕看着跟没搜到一样（实测缺陷 D4）。
+ * 手动点过组头的组在两档里都以表为准，所以搜索时照样能点着折回去，状态不写死。
+ */
+function sourcesIsFolded(key, expandedByDefault) {
+  if (expandedByDefault === true) return sourcesFoldState[key] === true;
   return sourcesFoldState[key] !== false;
 }
 
@@ -126,14 +146,14 @@ function sourcesSetFolded(key, folded) {
 }
 
 
-/* 会话分组头：点一下折叠/展开（默认折叠 —— 列表一进来是收起的，点组头才看得到条目） */
-function sourceGroupHeader(group, folded) {
+/* 会话分组头：点一下折叠/展开（平时默认折叠；有搜索词时命中分组默认展开） */
+function sourceGroupHeader(group, folded, searching) {
   const li = document.createElement("li");
   li.className = "source-group" + (folded ? " is-folded" : "");
   const button = document.createElement("button");
   button.type = "button";
   button.className = "group-toggle";
-  button.textContent = (folded ? "▸ " : "▾ ") + group.title + "（" + group.items.length + " 条）";
+  button.textContent = sourceGroupLabel(group, folded, searching);
   button.title = "点一下折叠/展开这一组";
   button.setAttribute("aria-expanded", folded ? "false" : "true");
   button.addEventListener("click", function (event) {
@@ -143,8 +163,7 @@ function sourceGroupHeader(group, folded) {
     // 记进状态表：列表重画之后这一组仍保持用户选的态
     sourcesSetFolded(group.key, next);
     button.setAttribute("aria-expanded", next ? "false" : "true");
-    button.textContent =
-      (next ? "▸ " : "▾ ") + group.title + "（" + group.items.length + " 条）";
+    button.textContent = sourceGroupLabel(group, next, searching);
     let node = li.nextElementSibling;
     while (node && node.classList.contains("source-row")) {
       // 用 class 而不是 hidden 属性：.source-row 自己带 display，CSS 的 display 会盖过 [hidden]，
@@ -154,6 +173,58 @@ function sourceGroupHeader(group, folded) {
     }
   });
   li.appendChild(button);
+  return li;
+}
+
+
+/** 组头文案。搜索时括号里只报**命中数**（`RAG 综述（3）`）；
+ *  不搜时维持原来的「（N 条）」—— 那时括号表达的是"这一组攒了多少资料"。 */
+function sourceGroupLabel(group, folded, searching) {
+  const mark = folded ? "▸ " : "▾ ";
+  const count = searching ? "（" + group.items.length + "）" : "（" + group.items.length + " 条）";
+  return mark + group.title + count;
+}
+
+
+/** 列表顶部那行汇总：搜索命中多少条、散在多少个会话组里（`共 50 条，分布在 13 组`）。
+ *  没有它的话用户只看到一排收起的三角，判断不了"到底搜到没有"。 */
+function sourceSummaryRow(hits, groupCount) {
+  const li = document.createElement("li");
+  li.className = "source-summary";
+  li.textContent = "共 " + hits + " 条，分布在 " + groupCount + " 组";
+  return li;
+}
+
+
+/** 0 命中的列表内容：**说清搜了没命中** + 给两个可操作出口（换词 / 清空搜索）。
+ *  有搜索词时绝不返回空列表 —— 一片空白会让人以为搜索功能坏了（缺陷 D4）。 */
+function sourceEmptyRow(searchText) {
+  const li = document.createElement("li");
+  if (!searchText) {
+    li.className = "hint";
+    li.textContent = "库里还没有资料。先在左边让它去搜一轮。";
+    return li;
+  }
+  li.className = "hint source-empty";
+  const headline = document.createElement("div");
+  headline.className = "source-empty-title";
+  headline.textContent = "没找到包含「" + searchText + "」的资料";
+  li.appendChild(headline);
+  const tip = document.createElement("div");
+  tip.className = "source-empty-tip";
+  tip.textContent = "换个更短的词试试（比如只留核心术语），或者直接看全部资料。";
+  li.appendChild(tip);
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "mini source-empty-clear";
+  clear.textContent = "清空搜索";
+  clear.title = "清掉搜索框里的词，重新列出全部资料";
+  clear.addEventListener("click", function () {
+    const input = el("search");
+    if (input) input.value = "";
+    loadSources("");
+  });
+  li.appendChild(clear);
   return li;
 }
 

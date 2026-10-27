@@ -6804,6 +6804,42 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   display: none;
 }
 
+/* 搜到命中之后列表顶部那行总览：`共 50 条，分布在 13 组`。
+   没有它的话用户只看到一排收起的三角，判断不了"到底搜到没有"（缺陷 D4）。 */
+#source-list li.source-summary {
+  display: block;
+  list-style: none;
+  margin: 2px 0 6px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--ui-text-secondary);
+}
+
+/* 0 命中：说清"没找到包含「词」的资料" + 给换词/清空的出口，绝不留空白列表。
+   选择器带 #source-list 前缀，压得过 `.list li.hint` 给的 padding/margin。 */
+#source-list li.source-empty {
+  display: block;
+  list-style: none;
+  margin: 10px 4px;
+  padding: 10px 12px;
+  border: 0.0625rem solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-md);
+  background: var(--ui-bg-card);
+  color: var(--ui-text-tertiary);
+}
+#source-list li.source-empty .source-empty-title {
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: var(--ui-text-primary);
+}
+#source-list li.source-empty .source-empty-tip {
+  line-height: 1.6;
+}
+#source-list li.source-empty .source-empty-clear {
+  margin-top: 8px;
+  color: var(--ui-text-secondary);
+}
+
 /* 路线「放大」浮层里也要占满：详情区搬进浮层后不再是 #pane-routes 的后代，
    面板里那条占满规则对它就不生效了（这就是"放大后仍占一半"的原因）。 */
 .route-sheet #route-zoom-body #route-detail {

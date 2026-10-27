@@ -93,10 +93,10 @@ def test_unrecorded_group_counts_as_folded() -> None:
 def test_rows_are_born_in_the_same_state_as_their_header() -> None:
     """新画出来的行必须与组头**同态**（否则组头 ▸ 而条目全显示）。"""
     block = SOURCES_JS[SOURCES_JS.index("async function loadSources(") :]
-    assert "const folded = sourcesIsFolded(group.key);" in block, (
+    assert "const folded = sourcesIsFolded(group.key, searching);" in block, (
         "画列表时没问折叠态（每个组都按默认画）"
     )
-    assert "list.appendChild(sourceGroupHeader(group, folded));" in block, (
+    assert "list.appendChild(sourceGroupHeader(group, folded, searching));" in block, (
         "组头没拿到折叠态（会永远画成展开）"
     )
     assert re.search(
