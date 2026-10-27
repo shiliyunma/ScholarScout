@@ -7170,7 +7170,6 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
   }
 }
 
-
 /* ------------------------------------- 加载圈（会话流内的状态行，不再是浮层）
 
    它在「进行中」气泡**内部**（最后一行），既不占别人的位置，也不在输入框上方飘。
@@ -8513,6 +8512,18 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; color: var(--ui-text-secondary); }
     var(--border, rgba(128, 128, 128, 0.5)) 70% 78%,
     transparent 78%
   );
+}
+
+/* 浮层开着时，**页签栏要压在这层遮罩之上**（D5）。
+ * 遮罩是 `.overlay{position:fixed; inset:0}` —— 铺满视口，连右上角那排页签一起盖住。
+ * 于是用户第一次点页签，其实点在遮罩空白处：页签一点没动、浮层却被关掉，得点第二次才切
+ * （真机证据：`element_at_tab=DIV#source-zoom.overlay source-zoom`、`switched=false`）。
+ * 抬升只给页签栏这一条，且只在浮层开着时（`body.source-zoom-open`）：设置 / 放大这些
+ * 遮罩仍然连页签一起挡住，点页签不会在对话框后面偷偷换视图。画布**不抬** ——
+ * 遮罩照旧挡住画布点击，浮层开着时不会误点到节点。 */
+body.source-zoom-open .col-right > .tabs {
+  position: relative;
+  z-index: 60;
 }
 
 /* ───────── 资料库详情区：列表里点开的那条要"看得见" ─────────
