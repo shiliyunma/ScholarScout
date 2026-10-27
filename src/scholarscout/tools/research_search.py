@@ -188,14 +188,20 @@ def _choice_event(ctx: ToolContext, *, query: str, intent: search_intent.Intent 
     emit = ctx.emit
     if emit is None:
         return
-    # 界面事件失败不能连累检索（与 research.delegate 的口径一致）
+    # D2：卡片标题只留那句中文提问，模型给的检索式降为小字且截到 40 字。界面把 ``query``
+    # 拼进标题的「」里，所以这里给它的是**清洗后的中文主题**（英文改写式 → 空串 → 标题只剩
+    # 中文提问句）；原检索式随 ``query_raw`` 留在事件里，排查时仍看得到。
+    title, subtitle = search_intent.choice_card_text(query)
     with contextlib.suppress(Exception):
         emit(
             "chat.needs_choice",
             {
                 "turn_id": ctx.turn_id,
                 "session_id": ctx.session_id,
-                "query": query,
+                "query": subtitle,
+                "query_raw": query,
+                "title": title,
+                "subtitle": subtitle,
                 "options": search_intent.options(),
                 "intent": intent.as_dict() if intent is not None else None,
             },
@@ -268,6 +274,22 @@ def research_search(
         # 用户明确说"别搜了/直接回答"——不消耗任何出网与 token
         return _skipped_result(query)
 
+    # ---- 闸门第一道（D3）：**先判用户原话**，再判模型给的参数。
+    # 真机证据：同一类泛指意图两种行为 —— "找点资料"出卡，"帮我找点资料了解一下"不出卡直接搜。
+    # 根因是模型把用户原话改写成一句很具体的英文检索式，只判工具参数就等于让改写绕过闸门。
+    # 所以只要本轮原话"没说清要哪类资料"，一律先问一句（用户已明说的除外，那是选完了）。
+    user_text = search_intent.original_text_for(ctx)
+    explicit_choice = intent is not None and intent.source == "explicit"
+    if (
+        gate_enabled
+        and not explicit_choice
+        and user_text is not None
+        and search_intent.requests_unclear_material(user_text)
+    ):
+        forced = search_intent.Intent("other", 0.0, "user_text")
+        _choice_event(ctx, query=query, intent=forced)
+        return _choice_result(query, forced)
+
     if (
         gate_enabled
         and preference is None
@@ -305,6 +327,15 @@ def research_search(
                 f"{research_state.DEFAULT_SIMILARITY}）。同一件事换词重搜不会带来新证据。"
                 f"请按缺口清单换方向：{hint}"
             )
+
+    # ---- 闸门第二道（D3 兜底）：本轮没有可用判定（分类器没跑/没留下 intent）时，
+    # 至少看住**模型自己给的 query**：它明显是泛指（"帮我找点资料"）也拦。
+    # 为什么不作为唯一判据：模型改写成一句具体的英文检索式就能绕过它 —— 那正是 D3。
+    # 位置在判重之后：同一会话换词重搜的拒绝理由更具体（还带缺口清单），优先给它。
+    if gate_enabled and preference is None and search_intent.looks_generic_query(query):
+        forced = search_intent.Intent("other", 0.0, "query")
+        _choice_event(ctx, query=query, intent=forced)
+        return _choice_result(query, forced)
 
     settings = ctx.config.search_cfg
     requested = [str(name) for name in sources] if sources else list(settings.providers)

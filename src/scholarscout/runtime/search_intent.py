@@ -29,6 +29,13 @@
 
 ## 四种路径（``research.search`` 据此行事，见 tools/research_search.py）
 
+**两道闸门，先看用户原话、再看模型给的参数**（D3）：
+
+1. **原话闸门（第一道）**：本轮用户原话（``resolve_turn`` 记进台账的 ``user_text``）
+   只说"找点资料/了解一下"这类没有具体对象的话 → 直接出选择卡。**分类器猜得再自信也不放行**：
+   模型会把原话改写成一句具体的英文检索式，只判参数等于让改写绕过闸门（真机两种行为）。
+2. **参数闸门（第二道）**：本轮没留下判定时，模型自己给的 ``query`` 明显泛指 → 也出卡。
+
 | 情况 | 行为 |
 |---|---|
 | 有偏好（非 none） | 只查该族的 provider；该族没有可用来源就如实回"没来源"而不是退回去查别的 |
@@ -64,10 +71,20 @@ CACHE_SIZE = 256
 #: 提示词名（``prompts/classify-search-intent.md``）
 PROMPT_NAME = "classify-search-intent"
 
-#: 研究台账里的三个键。**只落库、不渲染进任何提示词**（``render_note`` 不认识它们）
+#: 研究台账里的键。**只落库、不渲染进任何提示词**（``render_note`` 不认识它们）
 PREFERENCE_KEY = "search_preference"
 PREFERENCE_TURN_KEY = "search_preference_turn"
 INTENT_KEY = "search_intent"
+#: 本轮**用户原话**（不归一化、不改写）。为什么必须落库：模型会把「帮我找点资料了解一下」
+#: 改写成一句具体的英文检索式，到了工具参数上就**看不出泛指**了 —— 只判参数的闸门被这样绕过去过
+#: （真机缺陷 D3）。原话是"用户到底说清没说清"的唯一凭据，`research.search` 据此再判一次。
+USER_TEXT_KEY = "user_text"
+USER_TEXT_TURN_KEY = "user_text_turn"
+
+#: 选择卡标题里那句固定的中文提问（界面上的大字只留这一句，D2）
+CHOICE_QUESTION = "这次要搜哪类资料？"
+#: 卡片小字（模型给的检索式）最多留多少字：再长就不是"小字"了，是一整行英文
+CHOICE_SUBJECT_MAX_CHARS = 40
 
 #: 来源族：偏好 → 该查哪些 provider（``other`` 不在表里 = 全量）
 PAPER_PROVIDERS: tuple[str, ...] = (
@@ -256,6 +273,81 @@ def looks_ambiguous(text: str) -> bool:
     if any(word in query for word in _GENERIC_WORDS):
         return True  # 泛指（"找点资料/了解一下"）
     return len(query) <= 10  # 短查询且没有任何类型线索
+
+
+#: "有具体对象"的第二种证据：点了名的拉丁词（RAG / LLM / transformer…）。
+#: 与领域词分开算：模型改写过的英文检索式是**一整串**拉丁词，而用户点名的对象通常是一个词。
+_SPECIFIC_LATIN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+#.\-]{2,}")
+
+
+def _has_concrete_object(text: str) -> bool:
+    """这句里有没有**具体对象**（领域词或点了名的拉丁词）。有就说明用户说清了要什么。"""
+    compact = normalize(text)
+    lowered = str(text or "").lower()
+    if any(hint in compact for hint in _DOMAIN_HINTS):
+        return True
+    return _SPECIFIC_LATIN_RE.search(lowered) is not None
+
+
+def looks_generic_query(text: str) -> bool:
+    """**工具参数**是不是一句泛指（"帮我找点资料"）—— 闸门的第二道判据。
+
+    只认泛指词（说清了类型/点了名的都不算），**不看长度**：长度那条属于成本闸门
+    （:func:`looks_ambiguous`），拿它拦行为会把 ``query="x"`` 这类单测/调试调用一起拦掉。
+    """
+    if explicit_preference(text) is not None:
+        return False
+    if _has_concrete_object(text):
+        return False
+    return any(word in normalize(text) for word in _GENERIC_WORDS)
+
+
+def requests_unclear_material(text: str) -> bool:
+    """**用户原话**是不是"没说清要哪类资料"（闸门的第一道判据，D3）。
+
+    与 :func:`looks_ambiguous` 的分工：那个是**成本闸门**（值不值得花一次分类调用，看长度与领域词）；
+    这个是**行为闸门**（要不要先问用户），只问一件事 —— 有没有具体对象：
+
+    - 有领域词（论文/代码/教程/综述…）或点了名的拉丁词（RAG、LLM…）→ 说清了，放行；
+    - 只剩泛指词（资料/东西/了解一下/看看/推荐…）→ 没说清，先出选择卡；
+    - 极短（≤3 字，如"那个"）且没有对象 → 也没说清。
+
+    为什么必须看原话：模型会把「帮我找点资料了解一下」改写成一句很具体的英文检索式，
+    只看工具参数就等于让改写绕过闸门（真机缺陷 D3：同一类意图两种行为）。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if explicit_preference(raw) is not None:
+        return False  # 用户已经选过了（"只看论文/别搜了"），那不是"没说清"
+    if _has_concrete_object(raw):
+        return False
+    if any(word in normalize(raw) for word in _GENERIC_WORDS):
+        return True
+    return len(normalize(raw)) <= 3
+
+
+def choice_subject(query: str) -> str:
+    """把检索式收成选择卡上那一小行：只留中文、单句、≤40 字（D2）。
+
+    - **整句没有中文**（模型改写的英文检索式）→ 空串。界面这时只显示那句固定中文提问，
+      不把一百多字符的英文摊到中文界面上；英文原文仍随 ``query_raw`` 留在事件里给排查用。
+    - 中文但过长 → 截到第一个句末标点或 40 字，避免标题吃掉一整行。
+    """
+    text = re.sub(r"\s+", " ", str(query or "")).strip()
+    if not text or re.search(r"[\u4e00-\u9fff]", text) is None:
+        return ""
+    for mark in ("。", "！", "？", "；", "\n"):
+        head = text.split(mark, 1)[0].strip()
+        if head:
+            text = head
+            break
+    return text[:CHOICE_SUBJECT_MAX_CHARS].strip()
+
+
+def choice_card_text(query: str) -> tuple[str, str]:
+    """选择卡的 ``(标题, 副标题)``：标题永远是那句中文提问，检索式降为小字并截断。"""
+    return CHOICE_QUESTION, choice_subject(query)
 
 
 def providers_for(preference: str | None) -> tuple[str, ...] | None:
@@ -475,6 +567,29 @@ def preference_for(ctx: Any) -> tuple[str | None, Intent | None]:
     return preference, intent
 
 
+def original_text_for(ctx: Any) -> str | None:
+    """本轮**用户原话**（判闸门的第一手证据）；不是本轮的就回 ``None``。
+
+    两条来源，显式覆盖优先（与 :func:`preference_for` 同口径）：
+
+    1. ``ctx.extra[USER_TEXT_KEY]`` —— 调用方直接给的（评测脚本/界面透传）；
+    2. 研究台账 —— 轮次开始时 :func:`resolve_turn` 记下的那一份；**只认本轮**
+       （上一轮的原话不能拿来决定这一轮要不要问用户）。
+    """
+    extra = getattr(ctx, "extra", None) or {}
+    if USER_TEXT_KEY in extra:
+        return str(extra.get(USER_TEXT_KEY) or "").strip() or None
+    session_id = getattr(ctx, "session_id", None)
+    if not session_id:
+        return None
+    from scholarscout.runtime import research_state
+
+    state = research_state.load_state(ctx.db, session_id) or {}
+    if state.get(USER_TEXT_TURN_KEY) != getattr(ctx, "turn_id", None):
+        return None
+    return str(state.get(USER_TEXT_KEY) or "").strip() or None
+
+
 def resolve_turn(
     llm: LlmClient | None,
     text: str,
@@ -495,6 +610,10 @@ def resolve_turn(
     """
     if not enabled:
         return None
+    # 先把**用户原话**记进台账：工具层的闸门要拿它复核（模型会把原话改写成具体检索式，
+    # 参数上看不出泛指 —— D3 就是这样绕过闸门的）。这一步免费，且与判定结果无关。
+    state[USER_TEXT_KEY] = str(text or "").strip()[:400]
+    state[USER_TEXT_TURN_KEY] = turn_id
     explicit = explicit_preference(text)
     if explicit is not None:
         intent = Intent(explicit, 1.0, "explicit")
