@@ -373,6 +373,177 @@ function renderMessage(message, sessionId) {
 }
 
 
+/* ------------------------------------------ 工具行「说人话」（映射表 + 容错解析）
+
+   真后端评测里最差的手感不是慢，而是**慢的时候屏幕上只有英文**：一轮 51.7s、首字 47.6s，
+   前 91% 的时间里界面上只有 `research.search {"query": "…"}` / `source.fetch {"url": "…"}`
+   这种原样工具调用，正文一个字都没到 —— 看着就像卡死了。
+
+   工具名与参数 JSON 是给开发者看的；用户要看的是「它在干什么」。所以工具行一律走这张表：
+   工具名 → 一句中文动作，参数里挑得到可读信息就接在冒号后面（「正在检索：教育智能体」）。
+   **没登记的工具回退成「正在执行：<工具名>」；任何分支都不许把参数 JSON 铺到界面上。**
+   参数里找不到可读信息时**只显示动作名**（「正在检索」），不拿 ID / 字段名凑数。
+*/
+var TOOL_ACTIONS = {
+  "research.search": { action: "正在检索", fields: ["query", "question"] },
+  "kb.search": { action: "正在检索资料库", fields: ["query", "question"] },
+  "source.fetch": { action: "正在抓取", fields: ["url", "source_id"], format: "domain" },
+  "archive.download": { action: "正在抓取", fields: ["url", "path"], format: "domain" },
+  "source.grade": { action: "正在评估来源", fields: ["topic", "url"], format: "domain" },
+  "file.read": { action: "正在读取", fields: ["path", "file", "name"], format: "file" },
+  "file.list": { action: "正在浏览目录", fields: ["path", "dir"], format: "file" },
+  "note.save": { action: "正在整理笔记", fields: ["title", "front"] },
+  "py.exec": { action: "正在运行代码", fields: [] },
+  "topic.build_map": { action: "正在梳理主题地图", fields: ["topic"] },
+  "route.plan": { action: "正在规划路线", fields: ["topic"] },
+  "route.revise": { action: "正在修订路线", fields: ["topic", "instruction"] },
+  "research.delegate": { action: "正在拆分调研", fields: ["goals"], unit: "个子问题" },
+  "tool.search": { action: "正在查找工具", fields: ["query"] },
+  "tool.describe": { action: "正在读取工具说明", fields: ["name"] },
+  "skill.list": { action: "正在查看技能", fields: [] },
+  "skill.load": { action: "正在加载技能", fields: ["name", "query"] },
+};
+
+/*: 同族工具的前缀规则：后端加了 `note.xxx` / `skill.xxx` 也不至于退化成英文工具名。 */
+var TOOL_ACTION_PREFIXES = [
+  { prefix: "note.", action: "正在整理笔记", fields: ["title", "front"] },
+  { prefix: "skill.", action: "正在查看技能", fields: ["name", "query"] },
+];
+
+/** JSON 字符串字面量里的转义还原（`\n`、`\"` 之类）。抠不出来就原样用。 */
+function toolUnescapeJson(raw) {
+  try {
+    return JSON.parse('"' + raw + '"');
+  } catch (error) {
+    return raw;
+  }
+}
+
+/** 参数预览 → 对象（容错）。后端给的是 `call.arguments[:200]`，**完全可能是截断的** JSON：
+ *  先整体解析，失败再按 `"键": 值` 抠出已经闭包的那几对 —— 截断只影响最后一个键，
+ *  前面已经写完的 query / url 照样读得出来（真实的 47s 等待里第一件事就是别把可读信息丢掉）。 */
+function toolArgsObject(preview) {
+  var text = String(preview === null || preview === undefined ? "" : preview).trim();
+  if (!text) return {};
+  try {
+    var parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    /* 截断 / 非 JSON：往下走正则抠键值 */
+  }
+  var out = {};
+  var keyRe = /"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*/g;
+  var match = null;
+  while ((match = keyRe.exec(text)) !== null) {
+    var rest = text.slice(keyRe.lastIndex);
+    var str = /^"((?:[^"\\]|\\.)*)"/.exec(rest);
+    if (str) {
+      out[match[1]] = toolUnescapeJson(str[1]);
+      continue;
+    }
+    var lit = /^(-?[0-9][0-9.]*|true|false|null)/.exec(rest);
+    if (lit) out[match[1]] = lit[1] === "null" ? null : lit[1];
+  }
+  return out;
+}
+
+/** URL → 域名（去协议、去 userinfo、去端口、去 www、去路径）；不像 URL 就原样返回（topic 走这条）。 */
+function toolDomainText(value) {
+  var text = String(value === null || value === undefined ? "" : value).trim();
+  var scheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/?#\s]+)/.exec(text);
+  if (scheme) {
+    text = scheme[1];
+  } else if (!/^[\w-]+(\.[\w-]+)+(:[0-9]+)?$/.test(text)) {
+    return text;
+  }
+  return text
+    .replace(/^[^@/]*@/, "")
+    .replace(/:[0-9]+$/, "")
+    .replace(/^www\./i, "");
+}
+
+/** 文件路径 → 文件名（正反斜杠都认；空路径就原样）。 */
+function toolFileText(value) {
+  var text = String(value === null || value === undefined ? "" : value)
+    .trim()
+    .replace(/\\/g, "/");
+  var parts = text.split("/").filter(function (item) {
+    return !!item;
+  });
+  return parts.length ? parts[parts.length - 1] : text;
+}
+
+/** 可读性判定：看着像 JSON / 纯符号的值一律不展示（宁可只显示动作名，也不铺一串花括号）。
+ *  超长值截到 48 字（工具行的角色是"一句摘要"，不是把 query 念完）。 */
+function toolDetailUsable(text) {
+  var value = String(text === null || text === undefined ? "" : text)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!value) return "";
+  if (/^[\[\{<"']/.test(value)) return "";
+  if (value.indexOf('":"') >= 0 || value.indexOf('","') >= 0 || value.indexOf('":') >= 0) return "";
+  return value.length > 48 ? value.slice(0, 48) + "…" : value;
+}
+
+/** 工具 + 参数预览 → 人话三段 `{action, detail, text}`。
+ *  `text` 是整句（「正在检索：教育智能体」，测试拿它做真值表）；
+ *  DOM 里拆成 action（.tool-row-name）+ detail（.tool-row-args）两段，好让长 query 省略号收尾。 */
+function toolHumanParts(tool, argsPreview) {
+  var name = String(tool === null || tool === undefined ? "" : tool).trim();
+  var spec = TOOL_ACTIONS[name] || null;
+  if (!spec) {
+    TOOL_ACTION_PREFIXES.forEach(function (rule) {
+      if (!spec && name.indexOf(rule.prefix) === 0) spec = rule;
+    });
+  }
+  if (!spec) {
+    /* 未登记的工具：只说工具名（「正在执行：foo.bar」），参数 JSON 一个字都不上界面 */
+    var label = name || "未知工具";
+    return { action: "正在执行", detail: label, text: "正在执行：" + label };
+  }
+  var args = toolArgsObject(argsPreview);
+  var fields = spec.fields || [];
+  var detail = "";
+  for (var i = 0; i < fields.length; i += 1) {
+    var raw = args[fields[i]];
+    if (raw === null || raw === undefined) continue;
+    if (Object.prototype.toString.call(raw) === "[object Array]") {
+      detail = raw.length ? raw.length + " " + (spec.unit || "项") : "";
+      if (detail) break;
+      continue;
+    }
+    var value = String(raw);
+    if (spec.format === "domain") value = toolDomainText(value);
+    else if (spec.format === "file") value = toolFileText(value);
+    detail = toolDetailUsable(value);
+    if (detail) break;
+  }
+  return { action: spec.action, detail: detail, text: detail ? spec.action + "：" + detail : spec.action };
+}
+
+/*: 超过这么多秒还没出正文，就在进度行后面追一句提示（**只提示**，不新增停止逻辑）。 */
+var TOOL_PROGRESS_HINT_S = 20;
+
+/** 进度行文案（纯函数）：`{action, step, elapsedMs}` → `{step, text, elapsed, hint, main}`。
+ *  `main` 是整行（「第 2 步 · 正在检索… 12s」）；DOM 拆成四个 span 各自上色。 */
+function toolProgressText(state) {
+  var s = state || {};
+  var action = s.action ? String(s.action) : "正在处理";
+  var secs = Math.max(0, Math.floor((Number(s.elapsedMs) || 0) / 1000));
+  var stepNo = Math.floor(Number(s.step) || 0);
+  var step = stepNo > 1 ? "第 " + stepNo + " 步" : "";
+  var text = action + "…";
+  var elapsed = secs + "s";
+  var hint = secs >= TOOL_PROGRESS_HINT_S ? "还在跑，可继续等或按停止" : "";
+  return {
+    step: step,
+    text: text,
+    elapsed: elapsed,
+    hint: hint,
+    main: (step ? step + " · " : "") + text + " " + elapsed,
+  };
+}
+
 function makePending(sessionId) {
   const node = bubble("assistant", "ScholarScout · 进行中", sessionId);
   /* 工具调用信息条：一次调用**一条**（工具名 + 参数摘要 + 结果/状态 + 耗时）。
@@ -380,6 +551,28 @@ function makePending(sessionId) {
   const toolFlow = document.createElement("div");
   toolFlow.className = "tool-flow";
   node.body.appendChild(toolFlow);
+  /* 实时进度行（工具区**顶部**一行）：走秒 + 第 N 步 + >20s 提示。
+     为什么必须在这儿：首字 47.6s 的那一轮里，屏幕上唯一在动的东西就是这条气泡 ——
+     没有它，用户看到的是 50 秒静止的英文工具名，只能判断"卡死了"。 */
+  const toolProgress = document.createElement("div");
+  toolProgress.className = "tool-progress";
+  toolProgress.setAttribute("role", "status");
+  toolProgress.setAttribute("aria-live", "polite");
+  toolProgress.hidden = true;
+  const tpStep = document.createElement("span");
+  tpStep.className = "tool-progress-step";
+  const tpText = document.createElement("span");
+  tpText.className = "tool-progress-text";
+  const tpElapsed = document.createElement("span");
+  tpElapsed.className = "tool-progress-elapsed";
+  const tpHint = document.createElement("span");
+  tpHint.className = "tool-progress-hint";
+  tpHint.hidden = true;
+  toolProgress.appendChild(tpStep);
+  toolProgress.appendChild(tpText);
+  toolProgress.appendChild(tpElapsed);
+  toolProgress.appendChild(tpHint);
+  toolFlow.appendChild(toolProgress);
   const traceBox = document.createElement("div");
   traceBox.className = "trace";
   node.body.appendChild(traceBox);
@@ -413,6 +606,13 @@ function makePending(sessionId) {
   let finished = false;
   const openRows = {};       // call_id → 还没拿到结果的工具行
   let lastRow = null;        // 最近一条待结果的工具行（call_id 对不上时兜底）
+  let tpTimer = null;        // 进度行走秒定时器（工具结束/正文到达时停）
+  let tpLeaveTimer = null;   // 淡出后摘节点的定时器
+  let tpStartedAt = null;    // 当前这一步的开始时刻（null = 还没起过表；每一步各自计时）
+  let tpCalls = 0;           // 这条气泡里已经走到第几个工具（>1 才显示「第 N 步」）
+  let tpAction = "";         // 当前这一步的动作（「正在检索」）
+  let tpLeaving = false;     // 是否已在淡出（防重复触发）
+  let bodySeen = false;      // 首个正文是否已到（到了就淡出进度行）
 
   function scrollDown() {
     el("messages").scrollTop = el("messages").scrollHeight;
@@ -439,8 +639,11 @@ function makePending(sessionId) {
     return currentRound;
   }
 
-  /** 建一条工具行（草稿态：状态「运行中…」，耗时先空着）。 */
-  function createRow(tool) {
+  /** 建一条工具行（草稿态：状态「运行中…」，耗时先空着）。
+      行内文案一律走 toolHumanParts：动作**给人看**（正在检索），原始工具名只留在
+      data-tool / title 里供排查 —— 界面上不再出现英文工具调用与参数 JSON。 */
+  function createRow(tool, parts) {
+    const human = parts || toolHumanParts(tool, "");
     const row = document.createElement("div");
     row.className = "tool-row";
     row.setAttribute("data-tool", tool);
@@ -449,14 +652,16 @@ function makePending(sessionId) {
     dot.setAttribute("aria-hidden", "true");
     const name = document.createElement("span");
     name.className = "tool-row-name";
-    name.textContent = tool;
+    name.textContent = human.action;
     const args = document.createElement("span");
     args.className = "tool-row-args";
+    args.textContent = human.detail ? "：" + human.detail : "";
     const status = document.createElement("span");
     status.className = "tool-row-status";
     status.textContent = "运行中…";
     const latency = document.createElement("span");
     latency.className = "tool-row-latency";
+    row.title = "工具：" + tool; // 参数 JSON 不上界面（工具提示里也只留工具名）
     row.appendChild(dot);
     row.appendChild(name);
     row.appendChild(args);
@@ -466,12 +671,84 @@ function makePending(sessionId) {
     return { row: row, args: args, status: status, latency: latency, startedAt: Date.now() };
   }
 
-  function showProgress(text, kind) {
+  /** 进度行按当前状态重画（走秒 / 第 N 步 / >20s 提示全由纯函数 toolProgressText 给）。 */
+  function paintToolProgress() {
+    const view = toolProgressText({
+      action: tpAction,
+      step: tpCalls,
+      elapsedMs: tpStartedAt === null ? 0 : Date.now() - tpStartedAt,
+    });
+    tpStep.textContent = view.step;
+    tpText.textContent = view.text;
+    tpElapsed.textContent = view.elapsed;
+    tpHint.textContent = view.hint;
+    tpHint.hidden = !view.hint;
+  }
+
+  /** 一次工具调用 → 进度行亮起并开始走秒（被淡出摘掉过也补得回来）。 */
+  function startToolProgress(human) {
+    if (tpLeaveTimer !== null) {
+      clearTimeout(tpLeaveTimer);
+      tpLeaveTimer = null;
+    }
+    tpLeaving = false;
+    /* 永远留在**工具区顶部**：淡出时节点被摘过，回来也要插回第一条（不是追加到底部） */
+    if (!toolProgress.parentNode) toolFlow.insertBefore(toolProgress, toolFlow.firstChild || null);
+    toolProgress.classList.remove("is-leaving");
+    toolProgress.hidden = false;
+    tpCalls += 1;
+    tpAction = human.action;
+    tpStartedAt = Date.now();
+    bodySeen = false; // 新一轮等待重新开始："这一轮正文到了没有"按工具调用重新判
+    if (tpTimer === null) tpTimer = setInterval(paintToolProgress, 1000);
+    paintToolProgress();
+    scrollDown();
+  }
+
+  /** 工具结束：**停表**（用冻结的耗时再画一次，不再往上跳）。 */
+  function stopToolProgressTick() {
+    if (tpTimer !== null) {
+      clearInterval(tpTimer);
+      tpTimer = null;
+    }
+    paintToolProgress();
+  }
+
+  /** 首个正文到达：淡出 + 折叠（CSS 过渡），过一会儿再摘节点 —— 不是突然消失（那像出错）。 */
+  function fadeToolProgress() {
+    if (tpLeaving || toolProgress.hidden || !toolProgress.parentNode) return;
+    tpLeaving = true;
+    stopToolProgressTick();
+    toolProgress.classList.add("is-leaving");
+    tpLeaveTimer = setTimeout(function () {
+      tpLeaveTimer = null;
+      if (toolProgress.parentNode) toolProgress.remove();
+    }, 240);
+  }
+
+  /** 收尾/兜底：定时器与节点一起清干净（幂等）。 */
+  function dropToolProgress() {
+    if (tpLeaveTimer !== null) {
+      clearTimeout(tpLeaveTimer);
+      tpLeaveTimer = null;
+    }
+    if (tpTimer !== null) {
+      clearInterval(tpTimer);
+      tpTimer = null;
+    }
+    tpLeaving = false;
+    if (toolProgress.parentNode) toolProgress.remove();
+  }
+
+  function showProgress(text, kind, tool) {
     // 被兜底清扫摘掉过也还能补回来（正常路径不会走到这里）
     if (!progress.parentNode) node.body.appendChild(progress);
     progress.hidden = false;
     progress.setAttribute("data-kind", kind || "");
-    progressText.textContent = text || "";
+    /* 工具名也是英文（"正在调用 research.search 工具"）：这一行同样说人话。
+       api.js 的 turnSpinnerText 一个字不改 —— 它给的原文只在拿不到工具名时兜底。 */
+    const human = kind === "tool" && tool ? toolHumanParts(tool, "").action : "";
+    progressText.textContent = (human ? human + "…" : text) || "";
     scrollDown();
   }
 
@@ -488,20 +765,19 @@ function makePending(sessionId) {
       traceBox.appendChild(line);
       el("messages").scrollTop = el("messages").scrollHeight;
     },
-    /** chat.tool_call → 落成一条工具行（工具名 + 参数摘要）。 */
+    /** chat.tool_call → 落成一条工具行（人话动作 + 可读摘要），并点亮进度行。 */
     addToolCall: function (params) {
       const p = params || {};
       const tool = p.tool ? String(p.tool) : "未知工具";
-      const entry = createRow(tool);
-      const argsText = toolArgsSummary(p.args_preview, 120);
-      entry.args.textContent = argsText;
-      entry.row.title = tool + "（参数：" + argsText + "）";
+      const parts = toolHumanParts(tool, p.args_preview);
+      const entry = createRow(tool, parts);
+      startToolProgress(parts);
       if (p.call_id) openRows[String(p.call_id)] = entry;
       lastRow = entry;
       roundClosed = true; // 一次工具调用 = 这一轮的正文流到此收尾
       scrollDown();
     },
-    /** chat.tool_result → 补齐这条工具的返回摘要/状态与耗时（按 call_id 配对）。 */
+    /** chat.tool_result → 补齐这条工具的返回摘要/状态与耗时（按 call_id 配对），**停表**。 */
     addToolResult: function (params) {
       const p = params || {};
       const key = p.call_id ? String(p.call_id) : "";
@@ -511,17 +787,23 @@ function makePending(sessionId) {
       if (!entry) {
         /* 后端只推了结果没推调用（理论上不会）：**补一条**，绝不让结果凭空消失 ——
            「工具调用一条都不丢」是这个界面的契约。 */
-        entry = createRow("未知工具");
+        entry = createRow("未知工具", toolHumanParts("未知工具", ""));
       }
       entry.status.textContent = toolResultSummary(p);
       entry.latency.textContent = toolLatencyText(p, entry.startedAt, Date.now());
       entry.row.classList.add(p.ok === false ? "is-bad" : "is-ok");
       entry.row.setAttribute("data-status", p.ok === false ? "bad" : "ok");
       if (entry === lastRow) lastRow = null;
+      stopToolProgressTick(); // 工具结束：秒数停在真实耗时上，不再跳
       scrollDown();
     },
     /** chat.delta → 每轮正文各自成段：同一轮是替换（累计值），新一轮是新开一段。 */
     pushDelta: function (text) {
+      /* 首个正文到达 = 等待结束：进度行淡出折叠（不是突然消失） */
+      if (!bodySeen && String(text || "").trim()) {
+        bodySeen = true;
+        fadeToolProgress();
+      }
       const next = replyRoundNext(roundClosed, text);
       if (next.isNew || !currentRound) newRound();
       roundClosed = false;
@@ -541,6 +823,10 @@ function makePending(sessionId) {
     setFinal: function (text) {
       const value = String(text || "");
       if (!value) return;
+      if (!bodySeen && value.trim()) {
+        bodySeen = true;
+        fadeToolProgress(); // 正文已到，进度行该退了（收尾时 dropToolProgress 会兜底摘掉）
+      }
       if (!currentRound) newRound();
       roundText = value;
       roundClosed = true; // 轮次已收尾，万一再来增量也该新开一段
@@ -554,6 +840,7 @@ function makePending(sessionId) {
       flush();
       node.who.textContent = "ScholarScout";
       hideProgress();
+      dropToolProgress(); // 收尾：进度行的定时器与节点一起清干净（幂等）
     },
     node: node,
   };
